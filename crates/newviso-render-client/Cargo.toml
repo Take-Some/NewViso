@@ -1,0 +1,9 @@
+[package]
+name = "newviso-render-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+newviso-host.workspace = true
+serde_json.workspace = true

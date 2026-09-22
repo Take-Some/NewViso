@@ -1,0 +1,14 @@
+[package]
+name = "newviso-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+newviso-compat-abi.workspace = true
+newviso-config.workspace = true
+newviso-core.workspace = true
+newviso-host.workspace = true
+newviso-platform.workspace = true
+newviso-provider-runtime.workspace = true
+newviso-scene.workspace = true

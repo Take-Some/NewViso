@@ -1,0 +1,22 @@
+{
+  "paths": {
+    "base": ".",
+    "providers": "runtime/providers",
+    "assets": "assets",
+    "content": "content",
+    "cache": "cache",
+    "codecs": "runtime/providers/codecs"
+  },
+  "providers": {
+    "logging": "engine.logging.chronicle",
+    "input": "engine.input.compass",
+    "assets": "engine.assets.starvault",
+    "ecs": "engine.ecs.constellation",
+    "platform": "engine.platform.winit",
+    "renderer": "engine.render.vulkan"
+  },
+  "runtime": {
+    "platform_smoke_frames": 30,
+    "skip_platform_smoke": false
+  }
+}

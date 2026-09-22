@@ -1,0 +1,10 @@
+[package]
+name = "newviso-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+newviso-compat-abi.workspace = true
+abi_stable.workspace = true
+serde_json.workspace = true

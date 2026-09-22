@@ -1,0 +1,11 @@
+[package]
+name = "newviso-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+newviso-compat-abi.workspace = true
+newviso-host.workspace = true
+abi_stable.workspace = true
+libloading.workspace = true
