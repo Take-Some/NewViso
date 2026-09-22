@@ -78,15 +78,15 @@ impl Default for ProviderSelectionConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RuntimeConfig {
-    pub platform_smoke_frames: u64,
-    pub skip_platform_smoke: bool,
+    pub max_frames: Option<u64>,
+    pub skip_platform: bool,
 }
 
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
-            platform_smoke_frames: 30,
-            skip_platform_smoke: false,
+            max_frames: None,
+            skip_platform: false,
         }
     }
 }
@@ -109,8 +109,8 @@ pub struct ResolvedBootstrapConfig {
     pub ecs_provider: String,
     pub platform_provider: String,
     pub renderer_provider: String,
-    pub platform_smoke_frames: u64,
-    pub skip_platform_smoke: bool,
+    pub max_frames: Option<u64>,
+    pub skip_platform: bool,
     pub cli_overrides: Vec<String>,
 }
 
@@ -281,20 +281,20 @@ impl ResolvedBootstrapConfig {
             &config.paths.codecs,
         );
 
-        let platform_smoke_frames = cli
-            .u64("runtime.platform_smoke_frames")?
+        let max_frames = cli
+            .u64("runtime.max_frames")?
             .or_else(|| {
-                env::var("NEWVISO_PLATFORM_SMOKE_FRAMES")
+                env::var("NEWVISO_MAX_FRAMES")
                     .ok()
                     .and_then(|value| value.parse::<u64>().ok())
             })
-            .unwrap_or(config.runtime.platform_smoke_frames)
-            .max(1);
+            .or(config.runtime.max_frames)
+            .map(|value| value.max(1));
 
-        let skip_platform_smoke = cli
-            .bool("runtime.skip_platform_smoke")?
-            .or_else(|| env_bool("NEWVISO_SKIP_PLATFORM_SMOKE"))
-            .unwrap_or(config.runtime.skip_platform_smoke);
+        let skip_platform = cli
+            .bool("runtime.skip_platform")?
+            .or_else(|| env_bool("NEWVISO_SKIP_PLATFORM"))
+            .unwrap_or(config.runtime.skip_platform);
 
         let logging_provider = resolve_layered_string(
             cli.get("providers.logging"),
@@ -344,8 +344,8 @@ impl ResolvedBootstrapConfig {
             ecs_provider,
             platform_provider,
             renderer_provider,
-            platform_smoke_frames,
-            skip_platform_smoke,
+            max_frames,
+            skip_platform,
             cli_overrides: cli.applied,
         })
     }
@@ -391,7 +391,7 @@ where
             "--content-dir" => Some("paths.content"),
             "--cache-dir" => Some("paths.cache"),
             "--codecs-dir" => Some("paths.codecs"),
-            "--platform-smoke-frames" => Some("runtime.platform_smoke_frames"),
+            "--max-frames" => Some("runtime.max_frames"),
             "--logging-provider" => Some("providers.logging"),
             "--input-provider" => Some("providers.input"),
             "--assets-provider" => Some("providers.assets"),
@@ -407,12 +407,12 @@ where
             continue;
         }
 
-        if arg == "--skip-platform-smoke" {
-            set_override(&mut out, "runtime.skip_platform_smoke", "true".to_owned())?;
+        if arg == "--skip-platform" {
+            set_override(&mut out, "runtime.skip_platform", "true".to_owned())?;
             continue;
         }
-        if arg == "--run-platform-smoke" {
-            set_override(&mut out, "runtime.skip_platform_smoke", "false".to_owned())?;
+        if arg == "--run-platform" {
+            set_override(&mut out, "runtime.skip_platform", "false".to_owned())?;
             continue;
         }
 
@@ -458,8 +458,8 @@ fn set_override(
         "paths.content",
         "paths.cache",
         "paths.codecs",
-        "runtime.platform_smoke_frames",
-        "runtime.skip_platform_smoke",
+        "runtime.max_frames",
+        "runtime.skip_platform",
         "providers.logging",
         "providers.input",
         "providers.assets",
@@ -577,8 +577,8 @@ mod tests {
                 "cache": "var/cache"
               },
               "runtime": {
-                "platform_smoke_frames": 77,
-                "skip_platform_smoke": true
+                "max_frames": 77,
+                "skip_platform": true
               }
             }"#,
         )
@@ -591,8 +591,8 @@ mod tests {
         assert_eq!(config.provider_dir, exe_dir.join("game/bin/providers"));
         assert_eq!(config.assets_dir, exe_dir.join("game/data/assets"));
         assert_eq!(config.cache_dir, exe_dir.join("game/var/cache"));
-        assert_eq!(config.platform_smoke_frames, 77);
-        assert!(config.skip_platform_smoke);
+        assert_eq!(config.max_frames, Some(77));
+        assert!(config.skip_platform);
 
         let _ = fs::remove_dir_all(root);
     }
@@ -613,7 +613,7 @@ mod tests {
                 "cache": "cache"
               },
               "runtime": {
-                "platform_smoke_frames": 30
+                "max_frames": 30
               }
             }"#,
         )
@@ -624,10 +624,10 @@ mod tests {
             [
                 "--set",
                 "paths.providers=alternate/providers",
-                "--set=runtime.platform_smoke_frames=144",
+                "--set=runtime.max_frames=144",
                 "--cache-dir",
                 "fast-cache",
-                "--skip-platform-smoke",
+                "--skip-platform",
                 "--set",
                 "providers.renderer=engine.render.test",
             ],
@@ -639,8 +639,8 @@ mod tests {
             exe_dir.join(".").join("alternate/providers")
         );
         assert_eq!(config.cache_dir, exe_dir.join(".").join("fast-cache"));
-        assert_eq!(config.platform_smoke_frames, 144);
-        assert!(config.skip_platform_smoke);
+        assert_eq!(config.max_frames, Some(144));
+        assert!(config.skip_platform);
         assert_eq!(config.renderer_provider, "engine.render.test");
         assert_eq!(config.cli_overrides.len(), 5);
 

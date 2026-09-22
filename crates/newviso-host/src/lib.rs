@@ -16,12 +16,45 @@ use std::{
 type ServiceSlot = Arc<Mutex<ServiceV1Dyn<'static>>>;
 type SinkSlot = Arc<Mutex<EventSinkV1Dyn<'static>>>;
 
+const LOGGING_SERVICE_ID: &str = "logging.api";
+const LOGGING_WRITE_METHOD: &str = "write_json";
+
+#[derive(Clone, Copy, Debug)]
+pub enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl LogLevel {
+    fn wire_name(self) -> &'static str {
+        match self {
+            Self::Trace => "TRACE",
+            Self::Debug => "DEBUG",
+            Self::Info => "INFO",
+            Self::Warn => "WARN",
+            Self::Error => "ERROR",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PendingLog {
+    level: LogLevel,
+    target: String,
+    message: String,
+    fields: serde_json::Value,
+}
+
 #[derive(Default)]
 struct HostState {
     services: HashMap<String, ServiceSlot>,
     aliases: HashMap<String, String>,
     sinks: Vec<SinkSlot>,
     platform_snapshot: Option<PlatformWindowReadyV1>,
+    early_logs: Vec<PendingLog>,
 }
 
 static HOST_STATE: OnceLock<RwLock<HostState>> = OnceLock::new();
@@ -111,6 +144,90 @@ pub fn call_json(
     })
 }
 
+pub fn log(level: LogLevel, target: impl Into<String>, message: impl Into<String>) {
+    log_with_fields(level, target, message, serde_json::json!({}));
+}
+
+pub fn log_with_fields(
+    level: LogLevel,
+    target: impl Into<String>,
+    message: impl Into<String>,
+    fields: serde_json::Value,
+) {
+    let record = PendingLog {
+        level,
+        target: target.into(),
+        message: message.into(),
+        fields,
+    };
+
+    let logging_service = {
+        let host = state().read().expect("NewViso host state poisoned");
+        host.services.get(LOGGING_SERVICE_ID).cloned()
+    };
+
+    if let Some(service) = logging_service {
+        let _ = write_log_record(&service, &record);
+        return;
+    }
+
+    state()
+        .write()
+        .expect("NewViso host state poisoned")
+        .early_logs
+        .push(record);
+}
+
+pub fn trace(target: impl Into<String>, message: impl Into<String>) {
+    log(LogLevel::Trace, target, message);
+}
+
+pub fn debug(target: impl Into<String>, message: impl Into<String>) {
+    log(LogLevel::Debug, target, message);
+}
+
+pub fn info(target: impl Into<String>, message: impl Into<String>) {
+    log(LogLevel::Info, target, message);
+}
+
+pub fn warn(target: impl Into<String>, message: impl Into<String>) {
+    log(LogLevel::Warn, target, message);
+}
+
+pub fn error(target: impl Into<String>, message: impl Into<String>) {
+    log(LogLevel::Error, target, message);
+}
+
+fn write_log_record(service: &ServiceSlot, record: &PendingLog) -> Result<(), String> {
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "level": record.level.wire_name(),
+        "target": record.target,
+        "message": record.message,
+        "module_path": serde_json::Value::Null,
+        "file": serde_json::Value::Null,
+        "line": serde_json::Value::Null,
+        "run_id": serde_json::Value::Null,
+        "run_tag": serde_json::Value::Null,
+        "event_id": serde_json::Value::Null,
+        "fields": record.fields
+    }))
+    .map_err(|error| error.to_string())?;
+
+    let service = service
+        .lock()
+        .map_err(|_| "NewViso logging service slot poisoned".to_owned())?;
+    match service.call(MethodName::from(LOGGING_WRITE_METHOD), Blob::from(payload)) {
+        RResult::ROk(_) => Ok(()),
+        RResult::RErr(error) => Err(error.to_string()),
+    }
+}
+
+fn flush_early_logs(service: &ServiceSlot, logs: Vec<PendingLog>) {
+    for record in logs {
+        let _ = write_log_record(service, &record);
+    }
+}
+
 pub fn add_alias(alias: impl Into<String>, service_id: impl Into<String>) {
     state()
         .write()
@@ -120,15 +237,15 @@ pub fn add_alias(alias: impl Into<String>, service_id: impl Into<String>) {
 }
 
 extern "C" fn log_info(message: RString) {
-    eprintln!("[provider/info] {message}");
+    info("provider", message.to_string());
 }
 
 extern "C" fn log_warn(message: RString) {
-    eprintln!("[provider/warn] {message}");
+    warn("provider", message.to_string());
 }
 
 extern "C" fn log_error(message: RString) {
-    eprintln!("[provider/error] {message}");
+    error("provider", message.to_string());
 }
 
 extern "C" fn register_service_v1(service: ServiceV1Dyn<'static>) -> RResult<(), RString> {
@@ -140,50 +257,65 @@ extern "C" fn register_service_v1(service: ServiceV1Dyn<'static>) -> RResult<(),
     }
 
     let slot = Arc::new(Mutex::new(service));
-    let mut host = state().write().expect("NewViso host state poisoned");
-    if host.services.contains_key(&id) {
-        return RResult::RErr(RString::from(format!(
-            "service '{id}' is already registered"
-        )));
+    let (logging_slot, pending_logs) = {
+        let mut host = state().write().expect("NewViso host state poisoned");
+        if host.services.contains_key(&id) {
+            return RResult::RErr(RString::from(format!(
+                "service '{id}' is already registered"
+            )));
+        }
+
+        host.services.insert(id.clone(), slot.clone());
+
+        match id.as_str() {
+            "logging.api" => {
+                host.aliases.insert("engine.logging".into(), id.clone());
+            }
+            "asset_manager.api" => {
+                host.aliases.insert("engine.assets".into(), id.clone());
+                host.aliases
+                    .insert("engine.assets.streaming".into(), id.clone());
+                host.aliases.insert("engine.assets.uid".into(), id.clone());
+                host.aliases
+                    .insert("engine.assets.dependencies".into(), id.clone());
+                host.aliases
+                    .insert("engine.assets.import_queue".into(), id.clone());
+                host.aliases
+                    .insert("engine.assets.package_writer".into(), id.clone());
+            }
+            "ecs.api" => {
+                host.aliases.insert("engine.ecs".into(), id.clone());
+            }
+            "entity.api" => {
+                host.aliases.insert("engine.entity".into(), id.clone());
+            }
+            "scene.api" => {
+                host.aliases.insert("engine.scene".into(), id.clone());
+            }
+            "input.api" | "newengine.input.v1" => {
+                host.aliases.insert("engine.input".into(), id.clone());
+            }
+            "render.api" => {
+                host.aliases.insert("engine.render".into(), id.clone());
+            }
+            "physics.api" => {
+                host.aliases.insert("engine.physics".into(), id.clone());
+            }
+            _ => {}
+        }
+
+        if id == LOGGING_SERVICE_ID {
+            (Some(slot.clone()), std::mem::take(&mut host.early_logs))
+        } else {
+            (None, Vec::new())
+        }
+    };
+
+    if let Some(logging) = logging_slot {
+        flush_early_logs(&logging, pending_logs);
     }
 
-    host.services.insert(id.clone(), slot);
-
-    match id.as_str() {
-        "asset_manager.api" => {
-            host.aliases.insert("engine.assets".into(), id.clone());
-            host.aliases
-                .insert("engine.assets.streaming".into(), id.clone());
-            host.aliases.insert("engine.assets.uid".into(), id.clone());
-            host.aliases
-                .insert("engine.assets.dependencies".into(), id.clone());
-            host.aliases
-                .insert("engine.assets.import_queue".into(), id.clone());
-            host.aliases
-                .insert("engine.assets.package_writer".into(), id.clone());
-        }
-        "ecs.api" => {
-            host.aliases.insert("engine.ecs".into(), id.clone());
-        }
-        "entity.api" => {
-            host.aliases.insert("engine.entity".into(), id.clone());
-        }
-        "scene.api" => {
-            host.aliases.insert("engine.scene".into(), id.clone());
-        }
-        "input.api" | "newengine.input.v1" => {
-            host.aliases.insert("engine.input".into(), id.clone());
-        }
-        "render.api" => {
-            host.aliases.insert("engine.render".into(), id.clone());
-        }
-        "physics.api" => {
-            host.aliases.insert("engine.physics".into(), id.clone());
-        }
-        _ => {}
-    }
-
-    eprintln!("[newviso/host] registered service '{id}'");
+    info("newviso.host", format!("registered service '{id}'"));
     RResult::ROk(())
 }
 
@@ -317,6 +449,6 @@ extern "C" fn subscribe_events_v1(sink: EventSinkV1Dyn<'static>) -> RResult<(), 
         .expect("NewViso host state poisoned")
         .sinks
         .push(Arc::new(Mutex::new(sink)));
-    eprintln!("[newviso/host] event sink subscribed");
+    info("newviso.host", "event sink subscribed");
     RResult::ROk(())
 }

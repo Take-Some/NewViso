@@ -302,9 +302,12 @@ impl Scene3dRuntime {
             pipeline,
         });
 
-        eprintln!(
-            "[newviso/scene3d] GPU scene ready buffer={} vs={} fs={} pipeline={}",
-            vertex_buffer, vertex_shader, fragment_shader, pipeline
+        host_runtime::info(
+            "newviso.scene",
+            format!(
+                "GPU scene ready buffer={} vs={} fs={} pipeline={}",
+                vertex_buffer, vertex_shader, fragment_shader, pipeline
+            ),
         );
         Ok(())
     }

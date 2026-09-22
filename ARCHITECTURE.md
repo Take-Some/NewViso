@@ -57,3 +57,4 @@ A replacement provider must satisfy the same runtime service/ABI contract expect
 5. The executable is not a composition root; newviso-runtime is.
 6. Backend/provider selection is configuration, not source code.
 7. New internal dependencies require an explicit architecture-rule update and must preserve acyclic dependency direction.
+8. Engine runtime code logs through the configured logging provider; direct stdout/stderr macros are prohibited.

@@ -16,7 +16,7 @@
     "renderer": "engine.render.vulkan"
   },
   "runtime": {
-    "platform_smoke_frames": 30,
-    "skip_platform_smoke": false
+    "max_frames": null,
+    "skip_platform": false
   }
 }

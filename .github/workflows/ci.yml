@@ -45,3 +45,6 @@ jobs:
 
       - name: Workspace isolation
         run: python scripts/verify_isolation.py
+
+      - name: No direct console output
+        run: python scripts/verify_no_console_output.py
