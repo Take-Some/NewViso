@@ -1,0 +1,14 @@
+{
+  "schema": "newviso.scripts.v1",
+  "enabled": false,
+  "provider": "engine.scripting.typescript",
+  "modules": [
+    {
+      "asset": "scripts/bootstrap.ysc",
+      "on_start": "on_start",
+      "on_frame": "on_frame",
+      "on_shutdown": "on_shutdown",
+      "permissions": []
+    }
+  ]
+}

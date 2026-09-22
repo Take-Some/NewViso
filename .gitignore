@@ -20,6 +20,9 @@ target/
 /runtime/
 /modules/
 
+# Project-local runtime state
+**/.newviso/
+
 # Local runtime/bootstrap configuration
 /config.json
 

@@ -1,0 +1,19 @@
+{
+  "schema": "newviso.project.v1",
+  "project": {
+    "id": "first-3d",
+    "name": "First 3D Project",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "assets": "assets",
+    "content": "content",
+    "cache": ".newviso/cache"
+  },
+  "files": {
+    "runtime": "config/runtime.json",
+    "environment": "environments/default.environment.json",
+    "scene": "scenes/main.scene.json",
+    "scripts": "config/scripts.json"
+  }
+}

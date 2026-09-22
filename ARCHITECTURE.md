@@ -31,6 +31,7 @@ Dependencies flow downward only. scripts/verify_boundaries.py enforces the allow
 - newviso-core: engine-neutral runtime state primitives.
 - newviso-host: service registry, aliases, event bus, host callbacks, and host-owned platform snapshot service.
 - newviso-provider-runtime: provider discovery, ABI probing, DLL ownership, and provider lifecycle.
+- newviso-project: project manifest schema, validation, and project-local path resolution. It has no runtime/backend dependencies.
 - newviso-platform: platform runtime bridge and event loop. It knows only the generic PlatformApplication callback interface; it does not know about Vulkan, scenes, ECS, or rendering.
 - newviso-render-client: typed client facade over the provider-neutral engine.render service protocol.
 - newviso-scene: scene/ECS extraction, camera/orbit control, scene math, and scene-to-render preparation. It does not know the raw render service wire format.
@@ -58,3 +59,4 @@ A replacement provider must satisfy the same runtime service/ABI contract expect
 6. Backend/provider selection is configuration, not source code.
 7. New internal dependencies require an explicit architecture-rule update and must preserve acyclic dependency direction.
 8. Engine runtime code logs through the configured logging provider; direct stdout/stderr macros are prohibited.
+9. Project assets are mounted through the asset service VFS; scene/runtime code does not read project asset files directly.

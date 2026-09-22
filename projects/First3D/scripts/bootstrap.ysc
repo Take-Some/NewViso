@@ -1,0 +1,19 @@
+export function on_start(payload: unknown) {
+  return {
+    runtime: {
+      exit_requested: false
+    }
+  };
+}
+
+export function on_frame(payload: { delta_seconds: number; elapsed_seconds: number }) {
+  return {
+    runtime: {
+      exit_requested: false
+    }
+  };
+}
+
+export function on_shutdown(_payload: unknown) {
+  return {};
+}

@@ -71,6 +71,30 @@ NewViso.exe --set runtime.max_frames=120
 
 Common path overrides also have short arguments such as `--provider-dir`, `--assets-dir`, `--cache-dir` and `--config`.
 
+## Projects
+
+A project is a directory with a `project.json` manifest and project-local assets.
+
+```text
+MyProject/
+├── project.json
+└── assets/
+    └── scenes/
+        └── main.scene.json
+```
+
+Load either the project directory or the manifest itself:
+
+```powershell
+NewViso.exe --project C:\Projects\MyProject
+NewViso.exe --project C:\Projects\MyProject\project.json
+```
+
+`newviso.project.v1` manifests define project identity, project-local paths, the startup scene/window and optional provider overrides. Project paths are constrained to the project root.
+
+The project's `assets` directory is mounted into AssetManager's VFS at the logical root with higher priority than engine assets. A logical path such as `scenes/main.scene.json` therefore resolves inside the active project first, while engine assets remain available as fallback.
+
+See `projects/First3D` for a minimal working project.
 ## Runtime layout
 
 Provider binaries are loaded from `runtime/providers` by default. They are not committed to this repository.

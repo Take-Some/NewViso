@@ -1,0 +1,14 @@
+{
+  "schema": "newviso.project.runtime.v1",
+  "window": {
+    "title": "NewViso - First 3D Project",
+    "width": 1280,
+    "height": 720
+  },
+  "camera": {
+    "rotate_sensitivity": 0.005,
+    "zoom_sensitivity": 0.0015,
+    "min_distance": 2.0,
+    "max_distance": 40.0
+  }
+}

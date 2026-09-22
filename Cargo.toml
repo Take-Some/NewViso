@@ -2,12 +2,16 @@
 resolver = "2"
 members = [
     "apps/newviso",
+    "crates/newviso-scripting",
+    "crates/newviso-script-client",
+    "crates/newviso-assets-client",
     "crates/newviso-compat-abi",
     "crates/newviso-config",
     "crates/newviso-core",
     "crates/newviso-host",
     "crates/newviso-platform",
     "crates/newviso-provider-runtime",
+    "crates/newviso-project",
     "crates/newviso-render-client",
     "crates/newviso-runtime",
     "crates/newviso-scene",
@@ -20,12 +24,16 @@ license = "Proprietary"
 version = "0.1.0"
 
 [workspace.dependencies]
+newviso-scripting = { path = "crates/newviso-scripting" }
+newviso-script-client = { path = "crates/newviso-script-client" }
+newviso-assets-client = { path = "crates/newviso-assets-client" }
 newviso-compat-abi = { path = "crates/newviso-compat-abi" }
 newviso-config = { path = "crates/newviso-config" }
 newviso-core = { path = "crates/newviso-core" }
 newviso-host = { path = "crates/newviso-host" }
 newviso-platform = { path = "crates/newviso-platform" }
 newviso-provider-runtime = { path = "crates/newviso-provider-runtime" }
+newviso-project = { path = "crates/newviso-project" }
 newviso-render-client = { path = "crates/newviso-render-client" }
 newviso-runtime = { path = "crates/newviso-runtime" }
 newviso-scene = { path = "crates/newviso-scene" }

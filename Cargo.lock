@@ -178,6 +178,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "newviso-assets-client"
+version = "0.1.0"
+dependencies = [
+ "newviso-host",
+ "serde_json",
+]
+
+[[package]]
 name = "newviso-compat-abi"
 version = "0.1.0"
 dependencies = [
@@ -216,6 +224,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "newviso-project"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "newviso-provider-runtime"
 version = "0.1.0"
 dependencies = [
@@ -237,13 +253,17 @@ dependencies = [
 name = "newviso-runtime"
 version = "0.1.0"
 dependencies = [
+ "newviso-assets-client",
  "newviso-compat-abi",
  "newviso-config",
  "newviso-core",
  "newviso-host",
  "newviso-platform",
+ "newviso-project",
  "newviso-provider-runtime",
  "newviso-scene",
+ "newviso-scripting",
+ "serde_json",
 ]
 
 [[package]]
@@ -252,6 +272,23 @@ version = "0.1.0"
 dependencies = [
  "newviso-host",
  "newviso-render-client",
+ "serde_json",
+]
+
+[[package]]
+name = "newviso-script-client"
+version = "0.1.0"
+dependencies = [
+ "newviso-host",
+ "serde_json",
+]
+
+[[package]]
+name = "newviso-scripting"
+version = "0.1.0"
+dependencies = [
+ "newviso-assets-client",
+ "newviso-script-client",
  "serde_json",
 ]
 

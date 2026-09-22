@@ -9,6 +9,7 @@ use newviso_render_client::{
 use serde_json::{json, Value};
 
 const SCENE_SERVICE: &str = "engine.scene";
+const ASSET_SERVICE: &str = "engine.assets";
 const INPUT_SERVICE: &str = "engine.input";
 const ECS_SERVICE: &str = "engine.ecs";
 const PRIMARY_MOUSE_BUTTON: u64 = 1;
@@ -45,6 +46,7 @@ pub struct Scene3dRuntime {
     camera: Camera,
     orbit: OrbitCamera,
     cube: Cube,
+    clear_color: [f32; 4],
     gpu: Option<GpuScene>,
     frame_index: u64,
 }
@@ -97,6 +99,27 @@ impl Scene3dRuntime {
             ]
         });
 
+        Self::load_scene_value(scene)
+    }
+
+    pub fn load_from_asset(logical_path: &str) -> Result<(Self, Scene3dLoadReport), String> {
+        let logical_path = logical_path.trim().replace('\\', "/");
+        let logical_path = logical_path.trim_start_matches('/');
+        if logical_path.is_empty() {
+            return Err("startup scene logical path is empty".to_owned());
+        }
+
+        let bytes =
+            host_runtime::call_service(ASSET_SERVICE, "asset.text_v1", logical_path.as_bytes())
+                .map_err(|error| format!("failed to load scene asset '{logical_path}': {error}"))?;
+
+        let scene: Value = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("invalid scene asset '{logical_path}': {error}"))?;
+
+        Self::load_scene_value(scene)
+    }
+
+    fn load_scene_value(scene: Value) -> Result<(Self, Scene3dLoadReport), String> {
         let load = host_runtime::call_json(
             SCENE_SERVICE,
             "scene.load_json_v1",
@@ -232,6 +255,7 @@ impl Scene3dRuntime {
                 camera,
                 orbit,
                 cube,
+                clear_color: [0.025, 0.032, 0.045, 1.0],
                 gpu: None,
                 frame_index: 0,
             },
@@ -241,6 +265,34 @@ impl Scene3dRuntime {
 
     pub fn title(&self) -> &str {
         &self.title
+    }
+
+    pub fn set_clear_color(&mut self, clear_color: [f32; 4]) {
+        self.clear_color = clear_color;
+    }
+
+    pub fn configure_orbit(
+        &mut self,
+        rotate_sensitivity: f32,
+        zoom_sensitivity: f32,
+        min_distance: f32,
+        max_distance: f32,
+    ) -> Result<(), String> {
+        if rotate_sensitivity <= 0.0
+            || zoom_sensitivity <= 0.0
+            || min_distance <= 0.0
+            || max_distance < min_distance
+        {
+            return Err("invalid orbit camera settings".to_owned());
+        }
+
+        self.orbit.rotate_sensitivity = rotate_sensitivity;
+        self.orbit.zoom_sensitivity = zoom_sensitivity;
+        self.orbit.min_distance = min_distance;
+        self.orbit.max_distance = max_distance;
+        self.orbit.distance = self.orbit.distance.clamp(min_distance, max_distance);
+        self.camera.position = self.orbit.position(self.camera.target);
+        Ok(())
     }
 
     pub fn initialize_renderer(&mut self) -> Result<(), String> {
@@ -427,7 +479,7 @@ impl Scene3dRuntime {
         height: u32,
         frame_index: u64,
     ) -> Result<(), String> {
-        render.begin_frame([0.025, 0.032, 0.045, 1.0], frame_index)?;
+        render.begin_frame(self.clear_color, frame_index)?;
         render.set_viewport(width, height)?;
         render.set_scissor(width, height)?;
         render.set_pipeline(gpu.pipeline)?;

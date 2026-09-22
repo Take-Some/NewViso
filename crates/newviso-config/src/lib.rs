@@ -111,6 +111,7 @@ pub struct ResolvedBootstrapConfig {
     pub renderer_provider: String,
     pub max_frames: Option<u64>,
     pub skip_platform: bool,
+    pub project_path: Option<PathBuf>,
     pub cli_overrides: Vec<String>,
 }
 
@@ -154,6 +155,7 @@ impl std::error::Error for BootstrapConfigError {}
 #[derive(Clone, Debug, Default)]
 struct CliOverrides {
     config_path: Option<PathBuf>,
+    project_path: Option<PathBuf>,
     values: HashMap<String, String>,
     applied: Vec<String>,
 }
@@ -237,6 +239,11 @@ impl ResolvedBootstrapConfig {
         } else {
             (BootstrapConfig::default(), false)
         };
+
+        let project_path = cli
+            .project_path
+            .clone()
+            .or_else(|| env::var_os("NEWVISO_PROJECT").map(PathBuf::from));
 
         let configured_base = cli
             .path("paths.base")
@@ -346,6 +353,7 @@ impl ResolvedBootstrapConfig {
             renderer_provider,
             max_frames,
             skip_platform,
+            project_path,
             cli_overrides: cli.applied,
         })
     }
@@ -361,6 +369,18 @@ where
 
     while let Some(raw) = args.next() {
         let arg = raw.to_string_lossy().into_owned();
+
+        if let Some(value) = arg.strip_prefix("--project=") {
+            out.project_path = Some(PathBuf::from(value));
+            out.applied.push(format!("project={value}"));
+            continue;
+        }
+        if arg == "--project" {
+            let value = next_arg(&mut args, "--project")?;
+            out.project_path = Some(PathBuf::from(&value));
+            out.applied.push(format!("project={value}"));
+            continue;
+        }
 
         if let Some(value) = arg.strip_prefix("--config=") {
             out.config_path = Some(PathBuf::from(value));

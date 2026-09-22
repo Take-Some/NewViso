@@ -304,6 +304,10 @@ extern "C" fn register_service_v1(service: ServiceV1Dyn<'static>) -> RResult<(),
             _ => {}
         }
 
+        if id.starts_with("scripting.") && id.ends_with(".api") {
+            host.aliases.insert("engine.scripting".into(), id.clone());
+        }
+
         if id == LOGGING_SERVICE_ID {
             (Some(slot.clone()), std::mem::take(&mut host.early_logs))
         } else {

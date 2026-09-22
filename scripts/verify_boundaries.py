@@ -7,12 +7,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 ALLOWED: dict[str, set[str]] = {
     "newviso": {"newviso-config", "newviso-runtime"},
+    "newviso-assets-client": {"newviso-host"},
     "newviso-compat-abi": set(),
     "newviso-config": set(),
     "newviso-core": set(),
     "newviso-host": {"newviso-compat-abi"},
     "newviso-platform": {"newviso-compat-abi", "newviso-host"},
     "newviso-provider-runtime": {"newviso-compat-abi", "newviso-host"},
+    "newviso-project": set(),
     "newviso-render-client": {"newviso-host"},
     "newviso-runtime": {
         "newviso-compat-abi",
@@ -21,9 +23,14 @@ ALLOWED: dict[str, set[str]] = {
         "newviso-host",
         "newviso-platform",
         "newviso-provider-runtime",
+        "newviso-project",
         "newviso-scene",
+        "newviso-assets-client",
+        "newviso-scripting",
     },
     "newviso-scene": {"newviso-host", "newviso-render-client"},
+    "newviso-script-client": {"newviso-host"},
+    "newviso-scripting": {"newviso-assets-client", "newviso-script-client"},
 }
 
 DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")

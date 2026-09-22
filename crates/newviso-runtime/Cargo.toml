@@ -11,4 +11,9 @@ newviso-core.workspace = true
 newviso-host.workspace = true
 newviso-platform.workspace = true
 newviso-provider-runtime.workspace = true
+newviso-project.workspace = true
 newviso-scene.workspace = true
+
+serde_json.workspace = true
+newviso-assets-client.workspace = true
+newviso-scripting.workspace = true
