@@ -6,5 +6,11 @@ license.workspace = true
 
 [dependencies]
 newviso-host.workspace = true
+newviso-input-client.workspace = true
+newviso-materials.workspace = true
+newviso-model.workspace = true
 newviso-render-client.workspace = true
+newviso-resource-runtime.workspace = true
+newviso-textures.workspace = true
+serde.workspace = true
 serde_json.workspace = true

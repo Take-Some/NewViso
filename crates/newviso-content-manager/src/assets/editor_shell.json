@@ -1,0 +1,321 @@
+{
+  "schema": "newviso.content-manager.builtin.v1",
+  "surfaces": {
+    "toolbar": {
+      "version": 1,
+      "surface_id": "newviso.content_manager.toolbar",
+      "source": "newviso.content-manager",
+      "visible": true,
+      "modal": false,
+      "z_order": 900,
+      "title": "",
+      "subtitle": "",
+      "body_lines": [],
+      "footer_lines": [],
+      "style_tags": [
+        "editor-shell",
+        "dock-top"
+      ],
+      "metrics": {
+        "dock": "top",
+        "dock_size": 38,
+        "dock_resizable": false,
+        "chrome": false
+      },
+      "components": [
+        {
+          "id": "content.toolbar",
+          "component_id": "row",
+          "children": [
+            {
+              "id": "project.name",
+              "component_id": "text",
+              "text": ""
+            },
+            {
+              "id": "project.settings",
+              "component_id": "button",
+              "text": "Project Settings",
+              "action_id": "content.select",
+              "props": {
+                "payload": {
+                  "path": ""
+                }
+              }
+            },
+            {
+              "id": "content.save",
+              "component_id": "button",
+              "text": "Save",
+              "tone": "normal",
+              "action_id": "content.save"
+            },
+            {
+              "id": "content.refresh",
+              "component_id": "button",
+              "text": "Refresh Content",
+              "action_id": "content.refresh"
+            },
+            {
+              "id": "content.selected",
+              "component_id": "text",
+              "text": ""
+            }
+          ]
+        }
+      ]
+    },
+    "project": {
+      "version": 1,
+      "surface_id": "newviso.content_manager.project",
+      "source": "newviso.content-manager",
+      "visible": true,
+      "modal": false,
+      "z_order": 910,
+      "title": "Project",
+      "subtitle": "",
+      "body_lines": [],
+      "footer_lines": [],
+      "style_tags": [
+        "editor-shell",
+        "dock-left",
+        "project"
+      ],
+      "metrics": {
+        "dock": "left",
+        "dock_size": 310,
+        "dock_min_size": 240,
+        "dock_max_size": 500,
+        "dock_resizable": true
+      },
+      "components": []
+    },
+    "details": {
+      "version": 1,
+      "surface_id": "newviso.content_manager.details",
+      "source": "newviso.content-manager",
+      "visible": true,
+      "modal": false,
+      "z_order": 920,
+      "title": "Details",
+      "subtitle": "",
+      "body_lines": [],
+      "footer_lines": [],
+      "style_tags": [
+        "editor-shell",
+        "dock-right",
+        "details"
+      ],
+      "metrics": {
+        "dock": "right",
+        "dock_size": 470,
+        "dock_min_size": 320,
+        "dock_max_size": 760,
+        "dock_resizable": true
+      },
+      "components": []
+    },
+    "content_browser": {
+      "version": 1,
+      "surface_id": "newviso.content_manager.assets",
+      "source": "newviso.content-manager",
+      "visible": true,
+      "modal": false,
+      "z_order": 930,
+      "title": "Content Browser",
+      "subtitle": "",
+      "body_lines": [],
+      "footer_lines": [],
+      "style_tags": [
+        "editor-shell",
+        "dock-bottom",
+        "content-browser"
+      ],
+      "metrics": {
+        "dock": "bottom",
+        "dock_size": 300,
+        "dock_min_size": 180,
+        "dock_max_size": 520,
+        "dock_resizable": true
+      },
+      "components": [
+        {
+          "id": "content.browser.split",
+          "component_id": "split",
+          "children": [
+            {
+              "id": "content.browser.sources",
+              "component_id": "column",
+              "text": "Sources",
+              "props": {
+                "fixed_width": 220
+              },
+              "children": [
+                {
+                  "id": "content.browser.sources.list",
+                  "component_id": "list",
+                  "props": {
+                    "max_height": 360
+                  },
+                  "children": []
+                }
+              ]
+            },
+            {
+              "id": "content.browser.main",
+              "component_id": "column",
+              "children": [
+                {
+                  "id": "content.browser.nav",
+                  "component_id": "row",
+                  "children": [
+                    {
+                      "id": "content.browser.root",
+                      "component_id": "button",
+                      "text": "Root",
+                      "action_id": "content.vfs.open_dir",
+                      "props": {
+                        "payload": {
+                          "path": ""
+                        }
+                      }
+                    },
+                    {
+                      "id": "content.browser.up",
+                      "component_id": "button",
+                      "text": "Up",
+                      "action_id": "content.vfs.up"
+                    },
+                    {
+                      "id": "content.browser.path",
+                      "component_id": "text",
+                      "text": "/",
+                      "tone": "accent"
+                    },
+                    {
+                      "id": "content.browser.search",
+                      "component_id": "input",
+                      "value": "",
+                      "props": {
+                        "state_path": "content.vfs.search",
+                        "placeholder": "Search Assets"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "id": "content.browser.grid",
+                  "component_id": "asset_grid",
+                  "props": {
+                    "card_width": 126,
+                    "card_height": 104,
+                    "max_height": 400
+                  },
+                  "children": []
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "nodes": {
+    "file_action": {
+      "id": "",
+      "component_id": "action",
+      "text": "",
+      "detail": "",
+      "tone": "normal",
+      "action_id": "content.select",
+      "props": {
+        "payload": {
+          "path": ""
+        }
+      }
+    },
+    "text": {
+      "id": "",
+      "component_id": "text",
+      "text": ""
+    },
+    "list": {
+      "id": "",
+      "component_id": "list",
+      "children": []
+    },
+    "capability": {
+      "id": "",
+      "component_id": "action",
+      "text": "",
+      "detail": "",
+      "tone": "normal",
+      "action_id": "content.select",
+      "props": {
+        "payload": {
+          "path": ""
+        }
+      }
+    },
+    "source_directory": {
+      "id": "",
+      "component_id": "action",
+      "text": "",
+      "tone": "normal",
+      "action_id": "content.vfs.open_dir",
+      "props": {
+        "payload": {
+          "path": ""
+        }
+      }
+    },
+    "folder_card": {
+      "id": "",
+      "component_id": "asset_card",
+      "text": "",
+      "detail": "Folder",
+      "action_id": "content.vfs.open_dir",
+      "props": {
+        "card_kind": "folder",
+        "type_tag": "DIR",
+        "payload": {
+          "path": ""
+        }
+      }
+    },
+    "asset_card": {
+      "id": "",
+      "component_id": "asset_card",
+      "text": "",
+      "detail": "",
+      "tone": "normal",
+      "action_id": "content.vfs.select",
+      "props": {
+        "card_kind": "asset",
+        "type_tag": "ASSET",
+        "payload": {
+          "path": ""
+        }
+      }
+    },
+    "code_editor": {
+      "id": "content.editor",
+      "component_id": "code_editor",
+      "text": "",
+      "value": "",
+      "action_id": "content.edit",
+      "props": {
+        "rows": 34,
+        "language": "text",
+        "monospace": true,
+        "state_path": "content.editor.value",
+        "save_action": "content.save"
+      }
+    },
+    "preview": {
+      "id": "content.preview",
+      "component_id": "text",
+      "text": ""
+    }
+  }
+}

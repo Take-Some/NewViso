@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<NeUiDictionary schema="newengine.neui.xmlcentral.v1" document_kind="surface">
+  <Entries>
+    <Entry name="surface" kind="ui_surface" />
+  </Entries>
+
+  <Surface
+    name="project.first3d.overlay"
+    root="runtime.telemetry"
+    visible="true"
+    modal="false"
+    z_order="100"
+    style_tags="retained runtime-overlay script-bound viewport-overlay" />
+
+  <Layout
+    name="runtime.telemetry"
+    title="Live Script Telemetry"
+    subtitle="Script → UI bindings → EGUI">
+    <Text id="camera.yaw" value="Yaw: {{camera.yaw}}" />
+    <Text id="camera.pitch" value="Pitch: {{camera.pitch}}" />
+    <Text id="camera.distance" value="Distance: {{camera.distance}}" />
+    <Text id="camera.x" value="Position X: {{camera.x}}" />
+    <Text id="camera.y" value="Position Y: {{camera.y}}" />
+    <Text id="camera.z" value="Position Z: {{camera.z}}" />
+    <Text
+      id="binding.note"
+      role="footer"
+      value="Values are produced by the project script every frame." />
+    <Text
+      id="controls"
+      role="footer"
+      value="LMB drag: orbit camera · Mouse wheel: zoom" />
+  </Layout>
+</NeUiDictionary>

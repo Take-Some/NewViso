@@ -1,0 +1,79 @@
+import { clamp, cameraVector, copy3 } from "./math.ysc";
+
+export interface Projectile {
+  position: [number, number, number];
+  velocity: [number, number, number];
+  age: number;
+}
+
+export interface GameState {
+  initialized: boolean;
+  captured: boolean;
+  position: [number, number, number];
+  spawn: [number, number, number];
+  yaw: number;
+  pitch: number;
+  targetYaw: number;
+  targetPitch: number;
+  verticalVelocity: number;
+  grounded: boolean;
+  fovOffset: number;
+  bobPhase: number;
+  bob: [number, number];
+  projectiles: Projectile[];
+}
+
+export const state: GameState = {
+  initialized: false,
+  captured: false,
+  position: [0, 1.7, 12],
+  spawn: [0, 1.7, 12],
+  yaw: 0,
+  pitch: 0,
+  targetYaw: 0,
+  targetPitch: 0,
+  verticalVelocity: 0,
+  grounded: false,
+  fovOffset: 0,
+  bobPhase: 0,
+  bob: [0, 0],
+  projectiles: [],
+};
+
+export function initializeFromRuntime(payload: any): void {
+  if (state.initialized) return;
+
+  const camera = payload?.runtime?.scene?.camera;
+  const position = cameraVector(camera?.position, state.position);
+  const target = cameraVector(camera?.target, [position[0], position[1], position[2] - 1]);
+  const d: [number, number, number] = [
+    target[0] - position[0],
+    target[1] - position[1],
+    target[2] - position[2],
+  ];
+  const len = Math.hypot(d[0], d[1], d[2]) || 1;
+  const yaw = Math.atan2(d[0], -d[2]);
+  const pitch = Math.asin(clamp(d[1] / len, -1, 1));
+
+  state.position = position;
+  state.spawn = copy3(position);
+  state.yaw = yaw;
+  state.pitch = pitch;
+  state.targetYaw = yaw;
+  state.targetPitch = pitch;
+  state.initialized = true;
+}
+
+export function resetPlayer(): void {
+  state.position = copy3(state.spawn);
+  state.yaw = 0;
+  state.pitch = 0;
+  state.targetYaw = 0;
+  state.targetPitch = 0;
+  state.verticalVelocity = 0;
+  state.grounded = false;
+  state.fovOffset = 0;
+  state.bobPhase = 0;
+  state.bob = [0, 0];
+  state.projectiles = [];
+}

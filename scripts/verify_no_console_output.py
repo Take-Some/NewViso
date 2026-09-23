@@ -10,6 +10,10 @@ for source_root in SOURCE_ROOTS:
     if not source_root.exists():
         continue
     for path in source_root.rglob("*.rs"):
+        # Cargo build scripts intentionally communicate directives to Cargo over
+        # stdout (cargo:... / cargo::...). They are not runtime console output.
+        if path.name == "build.rs":
+            continue
         text = path.read_text(encoding="utf-8")
         for line_number, line in enumerate(text.splitlines(), 1):
             if FORBIDDEN.search(line):

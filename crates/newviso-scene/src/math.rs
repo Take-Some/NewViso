@@ -14,8 +14,16 @@ impl Vec3 {
         Self { x, y, z }
     }
 
+    pub(crate) fn add(self, rhs: Self) -> Self {
+        Self::new(self.x + rhs.x, self.y + rhs.y, self.z + rhs.z)
+    }
+
     pub(crate) fn sub(self, rhs: Self) -> Self {
         Self::new(self.x - rhs.x, self.y - rhs.y, self.z - rhs.z)
+    }
+
+    pub(crate) fn mul(self, scalar: f32) -> Self {
+        Self::new(self.x * scalar, self.y * scalar, self.z * scalar)
     }
 
     pub(crate) fn dot(self, rhs: Self) -> f32 {

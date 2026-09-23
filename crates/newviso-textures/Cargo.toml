@@ -1,0 +1,8 @@
+[package]
+name = "newviso-textures"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+newviso-resource-runtime.workspace = true

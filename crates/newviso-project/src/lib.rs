@@ -17,6 +17,12 @@ pub struct ProjectManifest {
     #[serde(default)]
     pub paths: ProjectPaths,
     pub files: ProjectFiles,
+    /// Project-owned scripting graph. The manifest names one root entrypoint;
+    /// relative child imports are resolved by the selected scripting provider.
+    #[serde(default)]
+    pub scripts: Option<ProjectScriptEntrypoint>,
+    #[serde(default)]
+    pub capabilities: ProjectCapabilities,
     #[serde(default)]
     pub providers: ProjectProviders,
 }
@@ -54,6 +60,71 @@ pub struct ProjectFiles {
     pub scene: String,
     #[serde(default)]
     pub scripts: Option<String>,
+    #[serde(default)]
+    pub ui: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProjectScriptEntrypoint {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub provider: String,
+    pub entrypoint: String,
+    #[serde(default)]
+    pub lifecycle: ProjectScriptLifecycle,
+    #[serde(default)]
+    pub permissions: Vec<ProjectScriptPermission>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProjectScriptLifecycle {
+    pub start: Option<String>,
+    pub frame: Option<String>,
+    pub shutdown: Option<String>,
+}
+
+impl Default for ProjectScriptLifecycle {
+    fn default() -> Self {
+        Self {
+            start: Some("on_start".to_owned()),
+            frame: Some("on_frame".to_owned()),
+            shutdown: Some("on_shutdown".to_owned()),
+        }
+    }
+}
+
+impl ProjectScriptEntrypoint {
+    pub fn as_runtime_config(&self) -> ProjectScripts {
+        ProjectScripts {
+            schema: SCRIPTS_SCHEMA_V1.to_owned(),
+            enabled: self.enabled,
+            provider: self.provider.clone(),
+            modules: vec![ProjectScriptModule {
+                asset: self.entrypoint.clone(),
+                on_start: self.lifecycle.start.clone(),
+                on_frame: self.lifecycle.frame.clone(),
+                on_shutdown: self.lifecycle.shutdown.clone(),
+                permissions: self.permissions.clone(),
+            }],
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProjectCapabilities {
+    pub required: Vec<ProjectCapabilityRequest>,
+    pub optional: Vec<ProjectCapabilityRequest>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProjectCapabilityRequest {
+    pub id: String,
+    #[serde(default = "default_capability_version")]
+    pub min_version: u32,
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -74,6 +145,8 @@ pub struct ProjectRuntimeSettings {
     pub window: ProjectWindowSettings,
     #[serde(default)]
     pub camera: ProjectCameraSettings,
+    #[serde(default)]
+    pub streaming: ProjectStreamingSettings,
 }
 
 impl Default for ProjectRuntimeSettings {
@@ -82,6 +155,7 @@ impl Default for ProjectRuntimeSettings {
             schema: RUNTIME_SETTINGS_SCHEMA_V1.to_owned(),
             window: ProjectWindowSettings::default(),
             camera: ProjectCameraSettings::default(),
+            streaming: ProjectStreamingSettings::default(),
         }
     }
 }
@@ -109,7 +183,44 @@ impl ProjectRuntimeSettings {
                 "camera distance limits are invalid".to_owned(),
             ));
         }
+        if !settings.streaming.dependency_priority_scale.is_finite()
+            || !(0.0..=1.0).contains(&settings.streaming.dependency_priority_scale)
+        {
+            return Err(ProjectError::Asset(
+                "streaming dependency_priority_scale must be finite and in 0..=1".to_owned(),
+            ));
+        }
         Ok(settings)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProjectStreamingSettings {
+    /// Unique source-container residency budget in MiB. Zero disables the cap.
+    pub max_resident_mb: u64,
+    /// Maximum generic resources decoded by one streamer pump. Zero is unlimited.
+    pub max_loads_per_tick: usize,
+    /// Approximate source bytes decoded by one pump in MiB. Zero is unlimited.
+    pub max_source_mb_per_tick: u64,
+    /// Frames an unrequested resident resource is retained to prevent churn.
+    pub eviction_grace_frames: u64,
+    /// Frames before a requested failed resource is retried.
+    pub failed_retry_frames: u64,
+    /// Priority inherited by declared resource dependencies.
+    pub dependency_priority_scale: f32,
+}
+
+impl Default for ProjectStreamingSettings {
+    fn default() -> Self {
+        Self {
+            max_resident_mb: 512,
+            max_loads_per_tick: 8,
+            max_source_mb_per_tick: 32,
+            eviction_grace_frames: 120,
+            failed_retry_frames: 120,
+            dependency_priority_scale: 0.95,
+        }
     }
 }
 
@@ -152,10 +263,17 @@ impl Default for ProjectCameraSettings {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProjectSkyEnvironment {
+    pub model: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProjectEnvironment {
     pub schema: String,
     #[serde(default = "default_clear_color")]
     pub clear_color: [f32; 4],
+    #[serde(default)]
+    pub sky: Option<ProjectSkyEnvironment>,
 }
 
 impl Default for ProjectEnvironment {
@@ -163,6 +281,7 @@ impl Default for ProjectEnvironment {
         Self {
             schema: ENVIRONMENT_SCHEMA_V1.to_owned(),
             clear_color: default_clear_color(),
+            sky: None,
         }
     }
 }
@@ -185,6 +304,14 @@ impl ProjectEnvironment {
             return Err(ProjectError::Asset(
                 "environment clear_color contains a non-finite value".to_owned(),
             ));
+        }
+        if let Some(sky) = &environment.sky {
+            validate_logical_asset_path("environment.sky.model", &sky.model)?;
+            if !sky.model.contains('@') {
+                return Err(ProjectError::Asset(
+                    "environment.sky.model must address a specific semantic entry".to_owned(),
+                ));
+            }
         }
         Ok(environment)
     }
@@ -379,6 +506,67 @@ fn validate_manifest(manifest: &ProjectManifest) -> Result<(), ProjectError> {
     if let Some(path) = &manifest.files.scripts {
         validate_logical_asset_path("files.scripts", path)?;
     }
+    if let Some(scripts) = &manifest.scripts {
+        if manifest.files.scripts.is_some() {
+            return Err(ProjectError::Invalid(
+                "project manifest cannot define both 'scripts' and legacy 'files.scripts'"
+                    .to_owned(),
+            ));
+        }
+        if scripts.enabled && scripts.provider.trim().is_empty() {
+            return Err(ProjectError::Invalid(
+                "scripts.provider must not be empty when scripting is enabled".to_owned(),
+            ));
+        }
+        validate_logical_asset_path("scripts.entrypoint", &scripts.entrypoint)?;
+        for (name, operation) in [
+            (
+                "scripts.lifecycle.start",
+                scripts.lifecycle.start.as_deref(),
+            ),
+            (
+                "scripts.lifecycle.frame",
+                scripts.lifecycle.frame.as_deref(),
+            ),
+            (
+                "scripts.lifecycle.shutdown",
+                scripts.lifecycle.shutdown.as_deref(),
+            ),
+        ] {
+            if operation.is_some_and(|value| value.trim().is_empty()) {
+                return Err(ProjectError::Invalid(format!("{name} must not be empty")));
+            }
+        }
+        for permission in &scripts.permissions {
+            if permission.id.trim().is_empty() {
+                return Err(ProjectError::Invalid(
+                    "scripts.permissions[].id must not be empty".to_owned(),
+                ));
+            }
+        }
+    }
+    if let Some(path) = &manifest.files.ui {
+        validate_logical_asset_path("files.ui", path)?;
+    }
+
+    for request in manifest
+        .capabilities
+        .required
+        .iter()
+        .chain(manifest.capabilities.optional.iter())
+    {
+        if request.id.trim().is_empty() {
+            return Err(ProjectError::Invalid(
+                "capability id must not be empty".to_owned(),
+            ));
+        }
+        if request.min_version == 0 {
+            return Err(ProjectError::Invalid(format!(
+                "capability '{}' min_version must be greater than zero",
+                request.id
+            )));
+        }
+    }
 
     Ok(())
 }
@@ -428,6 +616,10 @@ fn default_project_version() -> String {
     "0.1.0".to_owned()
 }
 
+fn default_capability_version() -> u32 {
+    1
+}
+
 fn default_clear_color() -> [f32; 4] {
     [0.025, 0.032, 0.045, 1.0]
 }
@@ -474,6 +666,21 @@ mod tests {
         assert_eq!(project.manifest.files.scene, "scenes/main.scene.json");
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn first_fps_manifest_declares_script_entrypoint() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../projects/FirstFPS");
+        let project = ResolvedProject::load(&root)
+            .unwrap_or_else(|error| panic!("FirstFPS manifest must load: {error}"));
+        let scripts = project
+            .manifest
+            .scripts
+            .as_ref()
+            .expect("FirstFPS must declare scripts in project.json");
+        assert_eq!(scripts.provider, "engine.scripting.typescript");
+        assert_eq!(scripts.entrypoint, "scripts/main.ysc");
+        assert!(project.manifest.files.scripts.is_none());
     }
 
     #[test]

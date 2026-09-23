@@ -1,0 +1,43 @@
+{
+  "schema": "newviso.project.v1",
+  "project": {
+    "id": "first-fps",
+    "name": "First FPS — Blockout Yard",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "assets": "assets",
+    "content": "content",
+    "cache": ".newviso/cache"
+  },
+  "files": {
+    "runtime": "config/runtime.json",
+    "environment": "environments/yard.environment.json",
+    "scene": "scenes/yard.scene.json"
+  },
+  "capabilities": {
+    "required": [
+      {
+        "id": "physics.backend",
+        "min_version": 1
+      }
+    ],
+    "optional": [
+      {
+        "id": "audio.backend",
+        "min_version": 1
+      }
+    ]
+  },
+  "scripts": {
+    "enabled": true,
+    "provider": "engine.scripting.typescript",
+    "entrypoint": "scripts/main.ysc",
+    "lifecycle": {
+      "start": "on_start",
+      "frame": "on_frame",
+      "shutdown": "on_shutdown"
+    },
+    "permissions": []
+  }
+}

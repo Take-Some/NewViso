@@ -1,0 +1,202 @@
+import { CFG } from "./config.ysc";
+import { finite } from "./math.ysc";
+
+export interface Solid {
+  min: [number, number, number];
+  max: [number, number, number];
+}
+
+export interface SweepHit {
+  t: number;
+  normal: [number, number, number];
+}
+
+export function solidsFrom(payload: any): Solid[] {
+  const raw = payload?.runtime?.scene?.world?.solids;
+  if (!Array.isArray(raw)) return [];
+  const out: Solid[] = [];
+  for (const item of raw) {
+    if (!Array.isArray(item?.min) || !Array.isArray(item?.max)) continue;
+    if (item.min.length !== 3 || item.max.length !== 3) continue;
+    out.push({
+      min: [finite(item.min[0]), finite(item.min[1]), finite(item.min[2])],
+      max: [finite(item.max[0]), finite(item.max[1]), finite(item.max[2])],
+    });
+  }
+  return out;
+}
+
+function horizontalBodyOverlaps(solid: Solid, position: [number, number, number]): boolean {
+  const r = CFG.bodyRadius;
+  return (
+    position[0] > solid.min[0] - r &&
+    position[0] < solid.max[0] + r &&
+    position[2] > solid.min[2] - r &&
+    position[2] < solid.max[2] + r
+  );
+}
+
+export function moveHorizontalAxis(
+  position: [number, number, number],
+  axis: 0 | 2,
+  delta: number,
+  solids: Solid[],
+): void {
+  if (!Number.isFinite(delta) || delta === 0) return;
+
+  const other: 0 | 2 = axis === 0 ? 2 : 0;
+  const r = CFG.bodyRadius;
+  const bottom = position[1] - CFG.eyeHeight;
+  const top = bottom + CFG.bodyHeight;
+  const start = position[axis];
+  let end = start + delta;
+
+  for (const solid of solids) {
+    if (solid.max[1] <= bottom + 0.001 || solid.min[1] >= top - 0.001) continue;
+    if (
+      position[other] <= solid.min[other] - r ||
+      position[other] >= solid.max[other] + r
+    ) continue;
+
+    const near = solid.min[axis] - r;
+    const far = solid.max[axis] + r;
+    if (delta > 0 && start <= near && end > near) end = Math.min(end, near);
+    if (delta < 0 && start >= far && end < far) end = Math.max(end, far);
+  }
+
+  position[axis] = end;
+}
+
+export function probeGround(
+  position: [number, number, number],
+  solids: Solid[],
+): boolean {
+  const bottom = position[1] - CFG.eyeHeight;
+  for (const solid of solids) {
+    if (!horizontalBodyOverlaps(solid, position)) continue;
+    const gap = bottom - solid.max[1];
+    if (gap >= -0.002 && gap <= CFG.groundProbe) return true;
+  }
+  return false;
+}
+
+export function moveVertical(
+  position: [number, number, number],
+  delta: number,
+  solids: Solid[],
+): { grounded: boolean; blocked: boolean } {
+  const oldEye = position[1];
+  const oldBottom = oldEye - CFG.eyeHeight;
+  const oldTop = oldBottom + CFG.bodyHeight;
+  let newEye = oldEye + delta;
+  let grounded = false;
+  let blocked = false;
+
+  if (delta <= 0) {
+    let bestEye = newEye;
+    let collided = false;
+    const newBottom = newEye - CFG.eyeHeight;
+    for (const solid of solids) {
+      if (!horizontalBodyOverlaps(solid, position)) continue;
+      const surface = solid.max[1];
+      if (oldBottom >= surface - 0.002 && newBottom <= surface) {
+        const candidate = surface + CFG.eyeHeight;
+        if (!collided || candidate > bestEye) {
+          bestEye = candidate;
+          collided = true;
+        }
+      }
+    }
+    if (collided) {
+      newEye = bestEye;
+      grounded = true;
+      blocked = true;
+    }
+  } else {
+    const newTop = newEye - CFG.eyeHeight + CFG.bodyHeight;
+    for (const solid of solids) {
+      if (!horizontalBodyOverlaps(solid, position)) continue;
+      const ceiling = solid.min[1];
+      if (oldTop <= ceiling && newTop >= ceiling) {
+        newEye = Math.min(newEye, ceiling - (CFG.bodyHeight - CFG.eyeHeight));
+        blocked = true;
+      }
+    }
+  }
+
+  position[1] = newEye;
+  return { grounded: grounded || probeGround(position, solids), blocked };
+}
+
+function pointInsideExpandedAabb(
+  p: [number, number, number],
+  box: Solid,
+  radius: number,
+): boolean {
+  return (
+    p[0] >= box.min[0] - radius && p[0] <= box.max[0] + radius &&
+    p[1] >= box.min[1] - radius && p[1] <= box.max[1] + radius &&
+    p[2] >= box.min[2] - radius && p[2] <= box.max[2] + radius
+  );
+}
+
+export function sweepPointAabb(
+  start: [number, number, number],
+  end: [number, number, number],
+  box: Solid,
+  radius: number,
+): SweepHit | null {
+  const min: [number, number, number] = [
+    box.min[0] - radius,
+    box.min[1] - radius,
+    box.min[2] - radius,
+  ];
+  const max: [number, number, number] = [
+    box.max[0] + radius,
+    box.max[1] + radius,
+    box.max[2] + radius,
+  ];
+  const d: [number, number, number] = [
+    end[0] - start[0],
+    end[1] - start[1],
+    end[2] - start[2],
+  ];
+
+  if (pointInsideExpandedAabb(start, box, radius)) return null;
+
+  let tEnter = 0;
+  let tExit = 1;
+  let hitAxis = -1;
+  let hitSign = 0;
+
+  for (let axis = 0; axis < 3; axis++) {
+    const delta = d[axis];
+    if (Math.abs(delta) < 1e-8) {
+      if (start[axis] < min[axis] || start[axis] > max[axis]) return null;
+      continue;
+    }
+
+    let t1 = (min[axis] - start[axis]) / delta;
+    let t2 = (max[axis] - start[axis]) / delta;
+    let sign = -1;
+    if (t1 > t2) {
+      const tmp = t1;
+      t1 = t2;
+      t2 = tmp;
+      sign = 1;
+    }
+
+    if (t1 > tEnter) {
+      tEnter = t1;
+      hitAxis = axis;
+      hitSign = sign;
+    }
+    tExit = Math.min(tExit, t2);
+    if (tEnter > tExit) return null;
+  }
+
+  if (tEnter < 0 || tEnter > 1 || hitAxis < 0) return null;
+  const normal: [number, number, number] = [0, 0, 0];
+  normal[hitAxis] = hitSign;
+  return { t: tEnter, normal };
+}

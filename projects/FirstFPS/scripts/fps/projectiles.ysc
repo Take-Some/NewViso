@@ -1,0 +1,89 @@
+import { CFG } from "./config.ysc";
+import { copy3, direction } from "./math.ysc";
+import { Solid, sweepPointAabb } from "./world.ysc";
+import { Projectile } from "./state.ysc";
+
+export function simulateProjectiles(
+  projectiles: Projectile[],
+  dt: number,
+  solids: Solid[],
+): Projectile[] {
+  const next: Projectile[] = [];
+
+  for (const projectile of projectiles) {
+    projectile.age += dt;
+    if (projectile.age >= CFG.projectileLifetime) continue;
+
+    projectile.velocity[1] += CFG.projectileGravity * dt;
+    const start = copy3(projectile.position);
+    const end: [number, number, number] = [
+      start[0] + projectile.velocity[0] * dt,
+      start[1] + projectile.velocity[1] * dt,
+      start[2] + projectile.velocity[2] * dt,
+    ];
+
+    let best: ReturnType<typeof sweepPointAabb> = null;
+    for (const solid of solids) {
+      const hit = sweepPointAabb(start, end, solid, CFG.projectileRadius);
+      if (hit && (!best || hit.t < best.t)) best = hit;
+    }
+
+    if (best) {
+      const travel = Math.max(0, best.t - 0.001);
+      projectile.position = [
+        start[0] + (end[0] - start[0]) * travel,
+        start[1] + (end[1] - start[1]) * travel,
+        start[2] + (end[2] - start[2]) * travel,
+      ];
+
+      const n = best.normal;
+      const vn =
+        projectile.velocity[0] * n[0] +
+        projectile.velocity[1] * n[1] +
+        projectile.velocity[2] * n[2];
+
+      projectile.velocity = [
+        (projectile.velocity[0] - (1 + CFG.projectileRestitution) * vn * n[0]) *
+          (n[0] === 0 ? CFG.projectileTangentialDamping : 1),
+        (projectile.velocity[1] - (1 + CFG.projectileRestitution) * vn * n[1]) *
+          (n[1] === 0 ? CFG.projectileTangentialDamping : 1),
+        (projectile.velocity[2] - (1 + CFG.projectileRestitution) * vn * n[2]) *
+          (n[2] === 0 ? CFG.projectileTangentialDamping : 1),
+      ];
+    } else {
+      projectile.position = end;
+    }
+
+    if (projectile.position.every(Number.isFinite) && projectile.position[1] > -100) {
+      next.push(projectile);
+    }
+  }
+
+  return next;
+}
+
+export function spawnProjectile(
+  projectiles: Projectile[],
+  position: [number, number, number],
+  yaw: number,
+  pitch: number,
+): Projectile[] {
+  const dir = direction(yaw, pitch);
+  const projectile: Projectile = {
+    position: [
+      position[0] + dir[0] * CFG.projectileSpawnClearance,
+      position[1] + dir[1] * CFG.projectileSpawnClearance,
+      position[2] + dir[2] * CFG.projectileSpawnClearance,
+    ],
+    velocity: [
+      dir[0] * CFG.projectileSpeed,
+      dir[1] * CFG.projectileSpeed,
+      dir[2] * CFG.projectileSpeed,
+    ],
+    age: 0,
+  };
+
+  const next = projectiles.slice(-(CFG.maxProjectiles - 1));
+  next.push(projectile);
+  return next;
+}

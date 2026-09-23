@@ -15,9 +15,15 @@ pub struct ScriptModuleSpec {
     pub permissions: Vec<ScriptPermission>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+/// Generic script output collected across all project modules.
+///
+/// Commands are deliberately opaque to the scripting layer. The runtime routes
+/// them to engine capabilities; this crate does not know gameplay concepts.
+#[derive(Clone, Debug, Default)]
 pub struct ScriptControl {
     pub exit_requested: bool,
+    pub ui_bindings: BTreeMap<String, Value>,
+    pub commands: Vec<Value>,
 }
 
 #[derive(Debug)]
@@ -57,6 +63,37 @@ impl ScriptRuntime {
         })
     }
 
+    /// Rebuilds the complete script graph after any project script asset changes.
+    ///
+    /// Child imports are owned by the scripting provider, so NewViso intentionally
+    /// does not parse or track the dependency graph. Reloading the root lets the
+    /// provider resolve the new graph through engine.assets/VFS transactionally.
+    pub fn reload_graph_after_asset_change(
+        &mut self,
+        changed_reference: &str,
+    ) -> Result<(), String> {
+        let assets = AssetClient::new();
+        let scripting = ScriptClient::new();
+
+        for module in &self.modules {
+            let spec = &module.spec;
+            let module_bytes = assets.raw_bytes(&spec.asset)?;
+            scripting.load_module(&ScriptModuleLoad {
+                reference: &spec.asset,
+                module_bytes: &module_bytes,
+                permissions: &spec.permissions,
+                metadata: BTreeMap::from([
+                    ("source".to_owned(), "newviso-content-manager".to_owned()),
+                    ("logical_path".to_owned(), spec.asset.clone()),
+                    ("reload".to_owned(), "true".to_owned()),
+                    ("changed_asset".to_owned(), changed_reference.to_owned()),
+                ]),
+            })?;
+        }
+
+        Ok(())
+    }
+
     pub fn start(&mut self, project_context: &Value) -> Result<ScriptControl, String> {
         let payload = json!({
             "event": "start",
@@ -65,17 +102,22 @@ impl ScriptRuntime {
         self.invoke_lifecycle("start", &payload, false)
     }
 
+    /// Runs one project-script frame from engine-neutral snapshots.
     pub fn frame(
         &mut self,
         delta_seconds: f32,
         elapsed_seconds: f64,
         project_context: &Value,
+        runtime_state: &Value,
+        frame_context: &Value,
     ) -> Result<ScriptControl, String> {
         let payload = json!({
             "event": "frame",
             "delta_seconds": delta_seconds,
             "elapsed_seconds": elapsed_seconds,
-            "project": project_context
+            "project": project_context,
+            "runtime": runtime_state,
+            "frame": frame_context
         });
         self.invoke_lifecycle("frame", &payload, true)
     }
@@ -167,6 +209,27 @@ fn merge_control(control: &mut ScriptControl, value: &Value) {
         .unwrap_or(false);
 
     control.exit_requested |= direct || nested;
+
+    if let Some(bindings) = value
+        .get("ui")
+        .and_then(|ui| ui.get("bindings"))
+        .and_then(Value::as_object)
+    {
+        for (key, value) in bindings {
+            control.ui_bindings.insert(key.clone(), value.clone());
+        }
+    }
+
+    if let Some(commands) = value.get("commands").and_then(Value::as_array) {
+        control.commands.extend(commands.iter().cloned());
+    }
+    if let Some(commands) = value
+        .get("scene")
+        .and_then(|scene| scene.get("commands"))
+        .and_then(Value::as_array)
+    {
+        control.commands.extend(commands.iter().cloned());
+    }
 }
 
 #[cfg(test)]
@@ -178,5 +241,72 @@ mod tests {
         let mut control = ScriptControl::default();
         merge_control(&mut control, &json!({"runtime": {"exit_requested": true}}));
         assert!(control.exit_requested);
+    }
+
+    #[test]
+    fn control_collects_ui_bindings() {
+        let mut control = ScriptControl::default();
+        merge_control(
+            &mut control,
+            &json!({
+                "ui": {
+                    "bindings": {
+                        "camera.yaw": "32.10 deg",
+                        "camera.x": "4.200"
+                    }
+                }
+            }),
+        );
+        assert_eq!(
+            control
+                .ui_bindings
+                .get("camera.yaw")
+                .and_then(Value::as_str),
+            Some("32.10 deg")
+        );
+    }
+
+    #[test]
+    fn control_collects_nested_scene_commands() {
+        let mut control = ScriptControl::default();
+        merge_control(
+            &mut control,
+            &json!({
+                "scene": {
+                    "commands": [
+                        {"op": "scene.light.upsert", "id": "world.light"},
+                        {"op": "scene.entity.transform.set", "id": "world.light"}
+                    ]
+                }
+            }),
+        );
+        assert_eq!(control.commands.len(), 2);
+        assert_eq!(
+            control.commands[0].get("op").and_then(Value::as_str),
+            Some("scene.light.upsert")
+        );
+    }
+
+    #[test]
+    fn control_collects_generic_command_buffer_in_order() {
+        let mut control = ScriptControl::default();
+        merge_control(
+            &mut control,
+            &json!({
+                "commands": [
+                    {"op": "scene.camera.set", "position": [0, 1, 2]},
+                    {"op": "platform.cursor.set", "captured": true}
+                ]
+            }),
+        );
+        assert_eq!(control.commands.len(), 2);
+        assert_eq!(
+            control.commands[0].get("op").and_then(Value::as_str),
+            Some("scene.camera.set")
+        );
+        assert_eq!(
+            control.commands[1].get("op").and_then(Value::as_str),
+            Some("platform.cursor.set")
+        );
     }
 }

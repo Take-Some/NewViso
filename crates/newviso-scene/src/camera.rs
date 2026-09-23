@@ -60,28 +60,3 @@ impl OrbitCamera {
         )
     }
 }
-
-pub(crate) fn world_to_ndc(world: Vec3, camera: &Camera, aspect: f32) -> Vec3 {
-    let forward = camera.target.sub(camera.position).normalized();
-    let right = forward.cross(camera.up).normalized();
-    let up = right.cross(forward).normalized();
-    let relative = world.sub(camera.position);
-
-    let view_x = right.dot(relative);
-    let view_y = up.dot(relative);
-    let view_z = -forward.dot(relative);
-
-    let near = camera.near.max(0.001);
-    let far = camera.far.max(near + 0.001);
-    let tan_half = (camera.fov_y_degrees.to_radians() * 0.5).tan().max(0.0001);
-    let safe_aspect = aspect.max(0.0001);
-
-    // Right-handed Vulkan projection with z in [0, 1]. We pre-divide here because
-    // the bootstrap debug shader consumes NDC directly and writes w=1.
-    let w = (-view_z).max(0.0001);
-    let clip_x = view_x / (tan_half * safe_aspect);
-    let clip_y = -view_y / tan_half;
-    let clip_z = (far / (near - far)) * view_z + (far * near / (near - far));
-
-    Vec3::new(clip_x / w, clip_y / w, clip_z / w)
-}

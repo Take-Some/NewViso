@@ -1,0 +1,166 @@
+import { CFG, KEY, MOUSE_PRIMARY } from "./config.ysc";
+import { clamp, finite, has, shortestAngle } from "./math.ysc";
+import { buildPresentationCommands } from "./presentation.ysc";
+import { simulateProjectiles, spawnProjectile } from "./projectiles.ysc";
+import { initializeFromRuntime, resetPlayer, state } from "./state.ysc";
+import { moveHorizontalAxis, moveVertical, probeGround, solidsFrom } from "./world.ysc";
+
+export function startGame(): unknown {
+  return {
+    commands: [
+      { op: "platform.cursor.set", captured: false },
+      { op: "scene.transient_spheres.set", items: [] },
+      { op: "scene.overlay_quads.set", items: [] },
+    ],
+  };
+}
+
+export function frameGame(payload: any): unknown {
+  initializeFromRuntime(payload);
+
+  const raw = payload?.frame?.input?.state ?? {};
+  const keys = raw?.keys ?? {};
+  const mouse = raw?.mouse ?? {};
+  const focused = payload?.frame?.platform?.focused !== false;
+  const navigationEnabled = payload?.frame?.camera_navigation_enabled !== false;
+  const wasCaptured = payload?.frame?.platform?.cursor_captured === true;
+
+  state.captured = state.captured && wasCaptured && focused && navigationEnabled;
+
+  const keyDown = keys?.down;
+  const keyPressed = keys?.pressed;
+  const mousePressed = mouse?.pressed;
+
+  if (!focused || !navigationEnabled || has(keyPressed, KEY.Escape)) {
+    state.captured = false;
+  } else if (!state.captured && has(mousePressed, MOUSE_PRIMARY)) {
+    state.captured = true;
+  }
+
+  const dt = clamp(finite(payload?.delta_seconds, 0), 0, 0.05);
+  const solids = solidsFrom(payload);
+
+  if (state.captured && dt > 0) {
+    if (has(keyPressed, KEY.R)) resetPlayer();
+
+    const dx = finite(mouse?.delta?.x, 0);
+    const dy = finite(mouse?.delta?.y, 0);
+    state.targetYaw += dx * CFG.mouseSensitivity;
+    state.targetPitch = clamp(
+      state.targetPitch - dy * CFG.mouseSensitivity,
+      -CFG.pitchLimit,
+      CFG.pitchLimit,
+    );
+
+    const lookResponse = 1 - Math.exp(-CFG.lookResponseHz * dt);
+    const maxLookStep = CFG.lookMaxSpeed * dt;
+    state.yaw += clamp(
+      shortestAngle(state.targetYaw - state.yaw) * lookResponse,
+      -maxLookStep,
+      maxLookStep,
+    );
+    state.pitch += clamp(
+      (state.targetPitch - state.pitch) * lookResponse,
+      -maxLookStep,
+      maxLookStep,
+    );
+
+    let forward = (has(keyDown, KEY.W) ? 1 : 0) - (has(keyDown, KEY.S) ? 1 : 0);
+    let right = (has(keyDown, KEY.D) ? 1 : 0) - (has(keyDown, KEY.A) ? 1 : 0);
+    const length = Math.hypot(forward, right);
+    if (length > 1) {
+      forward /= length;
+      right /= length;
+    }
+
+    const sprint = has(keyDown, KEY.ShiftLeft) || has(keyDown, KEY.ShiftRight);
+    const moving = Math.abs(forward) + Math.abs(right) > 0.001;
+    const speed = CFG.walkSpeed * (sprint ? CFG.sprintMultiplier : 1);
+
+    const vx = (Math.sin(state.yaw) * forward + Math.cos(state.yaw) * right) * speed;
+    const vz = (-Math.cos(state.yaw) * forward + Math.sin(state.yaw) * right) * speed;
+    moveHorizontalAxis(state.position, 0, vx * dt, solids);
+    moveHorizontalAxis(state.position, 2, vz * dt, solids);
+
+    state.grounded = probeGround(state.position, solids);
+    if (has(keyPressed, KEY.Space) && state.grounded) {
+      state.verticalVelocity = CFG.jumpSpeed;
+      state.grounded = false;
+    }
+
+    state.verticalVelocity += CFG.gravity * dt;
+    const vertical = moveVertical(
+      state.position,
+      state.verticalVelocity * dt,
+      solids,
+    );
+    if (vertical.blocked) state.verticalVelocity = 0;
+    state.grounded = vertical.grounded;
+
+    const targetFov = sprint && moving ? CFG.sprintFovDelta : 0;
+    const fovResponse = 1 - Math.exp(-CFG.fovResponseHz * dt);
+    state.fovOffset += (targetFov - state.fovOffset) * fovResponse;
+
+    if (moving && state.grounded) {
+      const strideScale = sprint ? 1.28 : 1;
+      state.bobPhase =
+        (state.bobPhase + Math.PI * 2 * CFG.bobFrequencyHz * strideScale * dt) %
+        (Math.PI * 2);
+      const targetHorizontal = Math.sin(state.bobPhase) * CFG.bobHorizontal;
+      const targetVertical = Math.abs(Math.sin(state.bobPhase * 2)) * CFG.bobVertical;
+      const response = 1 - Math.exp(-12 * dt);
+      state.bob[0] += (targetHorizontal - state.bob[0]) * response;
+      state.bob[1] += (targetVertical - state.bob[1]) * response;
+    } else {
+      const response = 1 - Math.exp(-10 * dt);
+      state.bob[0] += (0 - state.bob[0]) * response;
+      state.bob[1] += (0 - state.bob[1]) * response;
+    }
+
+    if (wasCaptured && has(mousePressed, MOUSE_PRIMARY)) {
+      state.projectiles = spawnProjectile(
+        state.projectiles,
+        state.position,
+        state.yaw,
+        state.pitch,
+      );
+    }
+  } else {
+    const fallbackDt = Math.max(dt, 1 / 120);
+    const fovResponse = 1 - Math.exp(-CFG.fovResponseHz * fallbackDt);
+    state.fovOffset += (0 - state.fovOffset) * fovResponse;
+    state.bob[0] *= Math.exp(-10 * fallbackDt);
+    state.bob[1] *= Math.exp(-10 * fallbackDt);
+  }
+
+  if (dt > 0) {
+    state.projectiles = simulateProjectiles(state.projectiles, dt, solids);
+  }
+
+  const width = Math.max(1, finite(payload?.frame?.surface?.width, 1));
+  const height = Math.max(1, finite(payload?.frame?.surface?.height, 1));
+
+  return {
+    commands: buildPresentationCommands(state, width, height),
+    ui: {
+      bindings: {
+        "fps.captured": state.captured,
+        "fps.grounded": state.grounded,
+        "fps.projectiles": state.projectiles.length,
+        "fps.position": state.position.map((v) => v.toFixed(3)).join(", "),
+      },
+    },
+  };
+}
+
+export function shutdownGame(): unknown {
+  state.captured = false;
+  state.projectiles = [];
+  return {
+    commands: [
+      { op: "platform.cursor.set", captured: false },
+      { op: "scene.transient_spheres.set", items: [] },
+      { op: "scene.overlay_quads.set", items: [] },
+    ],
+  };
+}

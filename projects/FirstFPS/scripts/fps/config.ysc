@@ -1,0 +1,42 @@
+export const KEY = {
+  A: 19,
+  D: 22,
+  R: 36,
+  S: 37,
+  W: 41,
+  ShiftLeft: 60,
+  ShiftRight: 61,
+  Space: 58,
+  Escape: 114,
+} as const;
+
+export const MOUSE_PRIMARY = 1;
+
+export const CFG = {
+  walkSpeed: 4.5,
+  sprintMultiplier: 1.8,
+  mouseSensitivity: 0.0025,
+  pitchLimit: 88 * Math.PI / 180,
+  lookResponseHz: 18.0,
+  lookMaxSpeed: 1440 * Math.PI / 180,
+  baseFov: 72.0,
+  sprintFovDelta: 6.0,
+  fovResponseHz: 10.0,
+  eyeHeight: 1.7,
+  bodyHeight: 1.8,
+  bodyRadius: 0.30,
+  jumpSpeed: 5.4,
+  gravity: -18.0,
+  groundProbe: 0.035,
+  bobFrequencyHz: 1.9,
+  bobHorizontal: 0.018,
+  bobVertical: 0.028,
+  projectileRadius: 0.16,
+  projectileSpeed: 20.0,
+  projectileLifetime: 8.0,
+  projectileGravity: -9.81,
+  projectileRestitution: 0.38,
+  projectileTangentialDamping: 0.90,
+  projectileSpawnClearance: 0.62,
+  maxProjectiles: 32,
+} as const;

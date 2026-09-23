@@ -1,0 +1,15 @@
+{
+  "schema": "newviso.runtime.vfs_mount_policy.v1",
+  "shared_assets": {
+    "mount": "",
+    "priority": 100
+  },
+  "project_root": {
+    "mount": "",
+    "priority": 1000
+  },
+  "project_assets": {
+    "mount": "",
+    "priority": 1100
+  }
+}

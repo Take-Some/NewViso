@@ -14,6 +14,16 @@
     "runtime": "config/runtime.json",
     "environment": "environments/default.environment.json",
     "scene": "scenes/main.scene.json",
-    "scripts": "config/scripts.json"
+    "scripts": "config/scripts.json",
+    "ui": "ui/runtime.neui.xml"
+  },
+  "capabilities": {
+    "required": [
+      {
+        "id": "ui.backend",
+        "min_version": 1
+      }
+    ],
+    "optional": []
   }
 }

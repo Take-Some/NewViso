@@ -1,4 +1,27 @@
-export function on_start(payload: unknown) {
+type FramePayload = {
+  runtime?: {
+    scene?: {
+      camera?: {
+        orbit?: {
+          yaw_degrees?: number;
+          pitch_degrees?: number;
+          distance?: number;
+        };
+        position?: {
+          x?: number;
+          y?: number;
+          z?: number;
+        };
+      };
+    };
+  };
+};
+
+function fixed(value: unknown, digits: number): string {
+  return Number(typeof value === "number" ? value : 0).toFixed(digits);
+}
+
+export function on_start(_payload: unknown) {
   return {
     runtime: {
       exit_requested: false
@@ -6,10 +29,24 @@ export function on_start(payload: unknown) {
   };
 }
 
-export function on_frame(payload: { delta_seconds: number; elapsed_seconds: number }) {
+export function on_frame(payload: FramePayload) {
+  const camera = payload.runtime?.scene?.camera;
+  const orbit = camera?.orbit;
+  const position = camera?.position;
+
   return {
     runtime: {
       exit_requested: false
+    },
+    ui: {
+      bindings: {
+        "camera.yaw": fixed(orbit?.yaw_degrees, 2) + "°",
+        "camera.pitch": fixed(orbit?.pitch_degrees, 2) + "°",
+        "camera.distance": fixed(orbit?.distance, 3),
+        "camera.x": fixed(position?.x, 3),
+        "camera.y": fixed(position?.y, 3),
+        "camera.z": fixed(position?.z, 3)
+      }
     }
   };
 }

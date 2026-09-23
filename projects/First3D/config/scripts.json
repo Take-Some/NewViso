@@ -1,6 +1,6 @@
 {
   "schema": "newviso.scripts.v1",
-  "enabled": false,
+  "enabled": true,
   "provider": "engine.scripting.typescript",
   "modules": [
     {

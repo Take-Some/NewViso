@@ -1,0 +1,1084 @@
+{
+  "schema": "newviso.scene.v1",
+  "version": 1,
+  "title": "First FPS - Blockout Yard",
+  "entities": [
+    {
+      "kind": "camera",
+      "name": "PlayerCamera",
+      "transform": {
+        "position": [
+          0,
+          1.7,
+          12
+        ],
+        "target": [
+          0,
+          1.7,
+          0
+        ],
+        "up": [
+          0,
+          1,
+          0
+        ]
+      },
+      "camera": {
+        "projection": "perspective",
+        "fov_y_degrees": 72,
+        "near": 0.08,
+        "far": 150
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "Floor_0_0",
+      "transform": {
+        "position": [
+          -12,
+          -0.25,
+          -12
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          7.97,
+          0.5,
+          7.97
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.36,
+          0.41,
+          0.44,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "Floor_1_0",
+      "transform": {
+        "position": [
+          -4,
+          -0.25,
+          -12
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          7.97,
+          0.5,
+          7.97
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.31,
+          0.36,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "Floor_2_0",
+      "transform": {
+        "position": [
+          4,
+          -0.25,
+          -12
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          7.97,
+          0.5,
+          7.97
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.36,
+          0.41,
+          0.44,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "Floor_3_0",
+      "transform": {
+        "position": [
+          12,
+          -0.25,
+          -12
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          7.97,
+          0.5,
+          7.97
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.31,
+          0.36,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "Floor_0_1",
+      "transform": {
+        "position": [
+          -12,
+          -0.25,
+          -4
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          7.97,
+          0.5,
+          7.97
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.31,
+          0.36,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "Floor_1_1",
+      "transform": {
+        "position": [
+          -4,
+          -0.25,
+          -4
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          7.97,
+          0.5,
+          7.97
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.36,
+          0.41,
+          0.44,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "Floor_2_1",
+      "transform": {
+        "position": [
+          4,
+          -0.25,
+          -4
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          7.97,
+          0.5,
+          7.97
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.31,
+          0.36,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "Floor_3_1",
+      "transform": {
+        "position": [
+          12,
+          -0.25,
+          -4
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          7.97,
+          0.5,
+          7.97
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.36,
+          0.41,
+          0.44,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "Floor_0_2",
+      "transform": {
+        "position": [
+          -12,
+          -0.25,
+          4
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          7.97,
+          0.5,
+          7.97
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.36,
+          0.41,
+          0.44,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "Floor_1_2",
+      "transform": {
+        "position": [
+          -4,
+          -0.25,
+          4
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          7.97,
+          0.5,
+          7.97
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.31,
+          0.36,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "Floor_2_2",
+      "transform": {
+        "position": [
+          4,
+          -0.25,
+          4
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          7.97,
+          0.5,
+          7.97
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.36,
+          0.41,
+          0.44,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "Floor_3_2",
+      "transform": {
+        "position": [
+          12,
+          -0.25,
+          4
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          7.97,
+          0.5,
+          7.97
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.31,
+          0.36,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "Floor_0_3",
+      "transform": {
+        "position": [
+          -12,
+          -0.25,
+          12
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          7.97,
+          0.5,
+          7.97
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.31,
+          0.36,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "Floor_1_3",
+      "transform": {
+        "position": [
+          -4,
+          -0.25,
+          12
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          7.97,
+          0.5,
+          7.97
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.36,
+          0.41,
+          0.44,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "Floor_2_3",
+      "transform": {
+        "position": [
+          4,
+          -0.25,
+          12
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          7.97,
+          0.5,
+          7.97
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.31,
+          0.36,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "Floor_3_3",
+      "transform": {
+        "position": [
+          12,
+          -0.25,
+          12
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          7.97,
+          0.5,
+          7.97
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.36,
+          0.41,
+          0.44,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "NorthWall",
+      "transform": {
+        "position": [
+          0,
+          1.5,
+          -16.25
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          33,
+          3,
+          0.5
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.43,
+          0.48,
+          0.51,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "SouthWall",
+      "transform": {
+        "position": [
+          0,
+          1.5,
+          16.25
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          33,
+          3,
+          0.5
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.43,
+          0.48,
+          0.51,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "WestWall",
+      "transform": {
+        "position": [
+          -16.25,
+          1.5,
+          0
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.5,
+          3,
+          32
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.43,
+          0.48,
+          0.51,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "EastWall",
+      "transform": {
+        "position": [
+          16.25,
+          1.5,
+          0
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.5,
+          3,
+          32
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.43,
+          0.48,
+          0.51,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "CentralColumn",
+      "transform": {
+        "position": [
+          0,
+          2,
+          -4
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2,
+          4,
+          2
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.87,
+          0.44,
+          0.16,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "BlueCoverLeft",
+      "transform": {
+        "position": [
+          -6,
+          0.7,
+          3
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          3,
+          1.4,
+          2
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.18,
+          0.48,
+          0.64,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "BlueStackLeft",
+      "transform": {
+        "position": [
+          -8,
+          1.5,
+          -4
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2,
+          3,
+          2
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.57,
+          0.71,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "OrangeCoverRight",
+      "transform": {
+        "position": [
+          6,
+          0.75,
+          1
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4,
+          1.5,
+          2
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.81,
+          0.39,
+          0.16,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "RightDivider",
+      "transform": {
+        "position": [
+          9,
+          1.25,
+          -6
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          2.5,
+          6
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.55,
+          0.59,
+          0.6,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "GateLeft",
+      "transform": {
+        "position": [
+          -3,
+          2,
+          -11
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          4,
+          1
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.18,
+          0.54,
+          0.59,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "GateRight",
+      "transform": {
+        "position": [
+          3,
+          2,
+          -11
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          4,
+          1
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.18,
+          0.54,
+          0.59,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "GateLintel",
+      "transform": {
+        "position": [
+          0,
+          3.6,
+          -11
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          7,
+          0.8,
+          1
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.2,
+          0.61,
+          0.66,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "SpawnMarker",
+      "transform": {
+        "position": [
+          0,
+          0.012,
+          12
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          0.024,
+          2.8
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.6,
+          0.66,
+          0.69,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      }
+    },
+    {
+      "kind": "mesh",
+      "name": "ForwardMarker",
+      "transform": {
+        "position": [
+          0,
+          0.015,
+          8
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.18,
+          0.03,
+          2
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.9,
+          0.61,
+          0.25,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      }
+    }
+  ]
+}

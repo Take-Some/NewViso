@@ -1,0 +1,16 @@
+{
+  "schema": "newviso.project.runtime.v1",
+  "window": {
+    "title": "NewViso | First FPS | Click: play / WASD: walk / Mouse: look / Shift: sprint / Esc: cursor / R: reset",
+    "width": 1440,
+    "height": 900
+  },
+  "streaming": {
+    "max_resident_mb": 512,
+    "max_loads_per_tick": 8,
+    "max_source_mb_per_tick": 32,
+    "eviction_grace_frames": 120,
+    "failed_retry_frames": 120,
+    "dependency_priority_scale": 0.95
+  }
+}

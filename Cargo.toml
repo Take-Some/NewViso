@@ -1,19 +1,31 @@
 [workspace]
 resolver = "2"
 members = [
+    "modules/newviso-audio-native",
+    "crates/newviso-audio-client",
+    "crates/newviso-audio-api",
     "apps/newviso",
     "crates/newviso-scripting",
+    "crates/newviso-ui-client",
     "crates/newviso-script-client",
     "crates/newviso-assets-client",
+    "crates/newviso-capabilities",
     "crates/newviso-compat-abi",
     "crates/newviso-config",
+    "crates/newviso-content-manager",
     "crates/newviso-core",
     "crates/newviso-host",
+    "crates/newviso-input-client",
     "crates/newviso-platform",
+    "crates/newviso-physics-client",
     "crates/newviso-provider-runtime",
     "crates/newviso-project",
     "crates/newviso-render-client",
     "crates/newviso-runtime",
+    "crates/newviso-resource-runtime",
+    "crates/newviso-textures",
+    "crates/newviso-materials",
+    "crates/newviso-model",
     "crates/newviso-scene",
 ]
 default-members = ["apps/newviso"]
@@ -24,24 +36,38 @@ license = "Proprietary"
 version = "0.1.0"
 
 [workspace.dependencies]
+newviso-audio-api = { path = "crates/newviso-audio-api" }
+newviso-audio-client = { path = "crates/newviso-audio-client" }
 newviso-scripting = { path = "crates/newviso-scripting" }
+newviso-ui-client = { path = "crates/newviso-ui-client" }
 newviso-script-client = { path = "crates/newviso-script-client" }
 newviso-assets-client = { path = "crates/newviso-assets-client" }
+newviso-capabilities = { path = "crates/newviso-capabilities" }
 newviso-compat-abi = { path = "crates/newviso-compat-abi" }
 newviso-config = { path = "crates/newviso-config" }
+newviso-content-manager = { path = "crates/newviso-content-manager" }
 newviso-core = { path = "crates/newviso-core" }
 newviso-host = { path = "crates/newviso-host" }
+newviso-input-client = { path = "crates/newviso-input-client" }
 newviso-platform = { path = "crates/newviso-platform" }
+newviso-physics-client = { path = "crates/newviso-physics-client" }
 newviso-provider-runtime = { path = "crates/newviso-provider-runtime" }
 newviso-project = { path = "crates/newviso-project" }
 newviso-render-client = { path = "crates/newviso-render-client" }
 newviso-runtime = { path = "crates/newviso-runtime" }
+newviso-resource-runtime = { path = "crates/newviso-resource-runtime" }
+newviso-textures = { path = "crates/newviso-textures" }
+newviso-materials = { path = "crates/newviso-materials" }
+newviso-model = { path = "crates/newviso-model" }
 newviso-scene = { path = "crates/newviso-scene" }
 
 abi_stable = "0.11"
-libloading = "0.8"
+blake3 = "1"
+flate2 = "1"
+libloading = "0.9.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+quick-xml = "0.42.0"
 
 [profile.dev]
 opt-level = 1

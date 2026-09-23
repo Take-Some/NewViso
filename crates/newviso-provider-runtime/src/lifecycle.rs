@@ -1,11 +1,23 @@
 use libloading::{Library, Symbol};
 use newviso_compat_abi::{
-    provider::{ConfigBlobV1, PluginDescriptor, PluginModuleDyn, PluginRootV1Ref},
+    provider::{
+        CapabilityKind, CapabilityRole, ConfigBlobV1, PluginDescriptor, PluginModuleDyn,
+        PluginRootV1Ref,
+    },
     signature::{LEGACY_ROOT_SYMBOL, ROOT_SYMBOL},
 };
 use std::path::{Path, PathBuf};
 
 type RootFn = extern "C" fn() -> PluginRootV1Ref;
+
+#[derive(Clone, Debug)]
+pub struct CapabilityProbe {
+    pub id: String,
+    pub role: CapabilityRole,
+    pub kind: CapabilityKind,
+    pub version: u32,
+    pub describe_json: String,
+}
 
 #[derive(Debug)]
 pub struct LifecycleProbe {
@@ -14,6 +26,7 @@ pub struct LifecycleProbe {
     pub descriptor_name: String,
     pub descriptor_version: String,
     pub capability_count: usize,
+    pub capabilities: Vec<CapabilityProbe>,
     pub default_content_type: String,
     pub default_bytes: usize,
     pub default_format_version: u32,
@@ -47,6 +60,17 @@ pub fn probe_lifecycle(path: impl AsRef<Path>) -> Result<LifecycleProbe, String>
         descriptor_name: descriptor.name.to_string(),
         descriptor_version: descriptor.version.to_string(),
         capability_count: descriptor.capabilities.len(),
+        capabilities: descriptor
+            .capabilities
+            .iter()
+            .map(|capability| CapabilityProbe {
+                id: capability.id.to_string(),
+                role: capability.role,
+                kind: capability.kind,
+                version: capability.version,
+                describe_json: capability.describe_json.to_string(),
+            })
+            .collect(),
         default_content_type: defaults.content_type.to_string(),
         default_bytes: defaults.bytes.len(),
         default_format_version: defaults.format_version,

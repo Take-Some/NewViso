@@ -6,34 +6,87 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 
 ALLOWED: dict[str, set[str]] = {
-    "newviso": {"newviso-config", "newviso-runtime"},
+    "newviso": {"newviso-config", "newviso-host", "newviso-runtime"},
     "newviso-assets-client": {"newviso-host"},
+    "newviso-audio-api": set(),
+    "newviso-audio-client": {"newviso-audio-api", "newviso-host"},
+    "newviso-capabilities": {"newviso-provider-runtime"},
     "newviso-compat-abi": set(),
     "newviso-config": set(),
+    "newviso-content-manager": {"newviso-assets-client"},
     "newviso-core": set(),
     "newviso-host": {"newviso-compat-abi"},
+    "newviso-input-client": {"newviso-host"},
     "newviso-platform": {"newviso-compat-abi", "newviso-host"},
+    "newviso-physics-client": {"newviso-host"},
     "newviso-provider-runtime": {"newviso-compat-abi", "newviso-host"},
     "newviso-project": set(),
     "newviso-render-client": {"newviso-host"},
+    "newviso-resource-runtime": {"newviso-assets-client"},
+    "newviso-textures": {"newviso-resource-runtime"},
+    "newviso-materials": {"newviso-resource-runtime", "newviso-textures"},
+    "newviso-model": {"newviso-materials", "newviso-resource-runtime"},
     "newviso-runtime": {
         "newviso-compat-abi",
         "newviso-config",
+        "newviso-content-manager",
         "newviso-core",
         "newviso-host",
+        "newviso-input-client",
         "newviso-platform",
         "newviso-provider-runtime",
         "newviso-project",
         "newviso-scene",
+        "newviso-materials",
+        "newviso-model",
+        "newviso-resource-runtime",
+        "newviso-textures",
         "newviso-assets-client",
+        "newviso-capabilities",
+        "newviso-render-client",
         "newviso-scripting",
+        "newviso-ui-client",
     },
-    "newviso-scene": {"newviso-host", "newviso-render-client"},
+    "newviso-scene": {
+        "newviso-host",
+        "newviso-render-client",
+        "newviso-input-client",
+        "newviso-materials",
+        "newviso-model",
+        "newviso-resource-runtime",
+        "newviso-textures",
+    },
     "newviso-script-client": {"newviso-host"},
     "newviso-scripting": {"newviso-assets-client", "newviso-script-client"},
+    "newviso-ui-client": {"newviso-host"},
 }
 
 DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
+
+FORBIDDEN_FORMAT_CRATES = {
+    "newviso-audio-xvag",
+    "newviso-nef8",
+    "newviso-neui",
+    "newviso-ydd",
+    "newviso-ytd",
+    "newviso-ymt",
+}
+
+FORBIDDEN_ENGINE_FORMAT_MARKERS = (
+    "CodecRegistry",
+    "newviso_nef8",
+    "newviso_ydd",
+    "newviso_ytd",
+    "newviso_ymt",
+    "newviso_audio_xvag",
+    "NEF8",
+    ".ydd",
+    ".ytd",
+    ".ymt",
+    ".xvag",
+    ".neui.xml",
+)
+
 
 def load_manifest(path: Path) -> dict:
     return tomllib.loads(path.read_text(encoding="utf-8"))
@@ -54,6 +107,23 @@ def manifests() -> list[Path]:
 
 def main() -> int:
     errors: list[str] = []
+    workspace_text = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
+    for forbidden in sorted(FORBIDDEN_FORMAT_CRATES):
+        if forbidden in workspace_text:
+            errors.append(f"workspace must not declare file-format crate {forbidden}")
+
+    for source_root in (ROOT / "crates", ROOT / "apps", ROOT / "modules"):
+        if not source_root.exists():
+            continue
+        for source in source_root.rglob("*"):
+            if not source.is_file() or source.suffix.lower() not in {".rs", ".toml"}:
+                continue
+            text = source.read_text(encoding="utf-8", errors="ignore")
+            for marker in FORBIDDEN_ENGINE_FORMAT_MARKERS:
+                if marker.lower() in text.lower():
+                    errors.append(
+                        f"{source.relative_to(ROOT)}: concrete asset format marker is forbidden in engine source: {marker}"
+                    )
     seen: set[str] = set()
     for manifest in manifests():
         data = load_manifest(manifest)

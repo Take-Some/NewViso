@@ -1,0 +1,74 @@
+import { CFG } from "./config.ysc";
+import { clamp, direction } from "./math.ysc";
+import { GameState } from "./state.ysc";
+
+export function buildPresentationCommands(
+  state: GameState,
+  width: number,
+  height: number,
+): unknown[] {
+  const dir = direction(state.yaw, state.pitch);
+  const rightVec: [number, number, number] = [
+    Math.cos(state.yaw),
+    0,
+    Math.sin(state.yaw),
+  ];
+  const cameraPosition: [number, number, number] = [
+    state.position[0] + rightVec[0] * state.bob[0],
+    state.position[1] + state.bob[1],
+    state.position[2] + rightVec[2] * state.bob[0],
+  ];
+  const cameraTarget: [number, number, number] = [
+    cameraPosition[0] + dir[0],
+    cameraPosition[1] + dir[1],
+    cameraPosition[2] + dir[2],
+  ];
+
+  return [
+    { op: "platform.cursor.set", captured: state.captured },
+    {
+      op: "scene.camera.set",
+      position: cameraPosition,
+      target: cameraTarget,
+      up: [0, 1, 0],
+      fov_y_degrees: clamp(CFG.baseFov + state.fovOffset, 30, 110),
+    },
+    {
+      op: "scene.transient_spheres.set",
+      items: state.projectiles.map((p) => ({
+        position: p.position,
+        radius: CFG.projectileRadius,
+        color: [0.95, 0.42, 0.10, 1.0],
+      })),
+    },
+    {
+      op: "scene.overlay_quads.set",
+      items: crosshairQuads(state.captured, width, height),
+    },
+  ];
+}
+
+function crosshairQuads(
+  captured: boolean,
+  width: number,
+  height: number,
+): Array<{ rect: [number, number, number, number]; color: [number, number, number, number] }> {
+  if (!captured) return [];
+
+  const halfLengthX = 8 / Math.max(width, 1);
+  const halfLengthY = 8 / Math.max(height, 1);
+  const halfThicknessX = 1.25 / Math.max(width, 1);
+  const halfThicknessY = 1.25 / Math.max(height, 1);
+  const color: [number, number, number, number] = [0.95, 0.97, 1.0, 0.92];
+
+  return [
+    {
+      rect: [-halfLengthX, -halfThicknessY, halfLengthX, halfThicknessY],
+      color,
+    },
+    {
+      rect: [-halfThicknessX, -halfLengthY, halfThicknessX, halfLengthY],
+      color,
+    },
+  ];
+}
