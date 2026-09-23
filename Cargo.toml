@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "modules/newviso-audio-native",
     "crates/newviso-audio-client",
     "crates/newviso-audio-api",
     "apps/newviso",
