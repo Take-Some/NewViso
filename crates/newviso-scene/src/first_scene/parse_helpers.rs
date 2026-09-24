@@ -62,32 +62,19 @@ pub(super) fn read_color4(
     }
     Ok(result)
 }
-pub(super) fn visibility_module_from_name(name: &str) -> Option<VisibilityModule> {
-    match name.trim().to_ascii_lowercase().as_str() {
-        "debug" => Some(VisibilityModule::Debug),
-        "camera" => Some(VisibilityModule::Camera),
-        "script" => Some(VisibilityModule::Script),
-        "gameplay" => Some(VisibilityModule::Gameplay),
-        "frontend" => Some(VisibilityModule::Frontend),
-        "vfx" => Some(VisibilityModule::Vfx),
-        "world" => Some(VisibilityModule::World),
-        "player" => Some(VisibilityModule::Player),
-        _ => None,
-    }
-}
 pub(super) fn read_visibility_mask(record: &Value) -> VisibilityMask {
     let mut mask = VisibilityMask::default();
     let Some(visibility) = record.get("visibility").and_then(Value::as_object) else {
         return mask;
     };
-    for (name, value) in visibility {
-        if let (Some(module), Some(visible)) = (visibility_module_from_name(name), value.as_bool())
-        {
-            mask.set(module, visible);
+    for (channel, value) in visibility {
+        if let Some(visible) = value.as_bool() {
+            mask.set(channel, visible);
         }
     }
     mask
 }
+
 pub(super) fn read_lod_policy(record: &Value) -> Result<SceneLodPolicy, String> {
     let Some(lod) = record.get("lod") else {
         return Ok(SceneLodPolicy::default());

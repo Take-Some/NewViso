@@ -1,10 +1,46 @@
 use super::*;
 
 const STATIC_COLLIDER_ID_BASE: u64 = 1_u64 << 63;
-const PHYSICS_FIXED_DT: f32 = 1.0 / 120.0;
-const MAX_PHYSICS_STEPS_PER_FRAME: usize = 8;
-const DEFAULT_GRAVITY: f32 = 9.81;
-const DEFAULT_CONTACT_SKIN: f32 = 0.002;
+const MIN_PHYSICS_HZ: f32 = 10.0;
+const MAX_PHYSICS_HZ: f32 = 1000.0;
+const MAX_PHYSICS_STEPS_LIMIT: usize = 64;
+
+#[derive(Clone, Copy, Debug)]
+struct PhysicsWorldSettings {
+    fixed_hz: f32,
+    max_steps_per_frame: usize,
+    gravity: f32,
+    contact_skin: f32,
+    scene_colliders_enabled: bool,
+    scene_material: PhysicsMaterial,
+    scene_participates_in_queries: bool,
+    scene_casts_contacts: bool,
+}
+
+impl Default for PhysicsWorldSettings {
+    fn default() -> Self {
+        Self {
+            fixed_hz: 60.0,
+            max_steps_per_frame: 8,
+            gravity: 0.0,
+            contact_skin: 0.002,
+            scene_colliders_enabled: false,
+            scene_material: PhysicsMaterial {
+                friction: 0.5,
+                restitution: 0.0,
+                density: 1.0,
+            },
+            scene_participates_in_queries: true,
+            scene_casts_contacts: true,
+        }
+    }
+}
+
+impl PhysicsWorldSettings {
+    fn fixed_dt(self) -> f32 {
+        1.0 / self.fixed_hz
+    }
+}
 
 #[derive(Debug)]
 pub(super) struct PhysicsRuntime {
@@ -15,6 +51,7 @@ pub(super) struct PhysicsRuntime {
     fixed_tick: u64,
     next_command_seq: u64,
     accumulator: f32,
+    settings: PhysicsWorldSettings,
     last_output: PhysicsFrameOutput,
 }
 
@@ -52,6 +89,7 @@ impl PhysicsRuntime {
             fixed_tick: 0,
             next_command_seq: 1,
             accumulator: 0.0,
+            settings: PhysicsWorldSettings::default(),
             last_output: PhysicsFrameOutput::default(),
         })
     }
@@ -68,11 +106,17 @@ impl PhysicsRuntime {
         self.frame_index = self.frame_index.wrapping_add(1);
         self.accumulator += dt.min(0.05);
 
+        let fixed_dt = self.settings.fixed_dt();
+        let max_steps = self.settings.max_steps_per_frame;
         let mut steps = 0usize;
-        while self.accumulator + 1.0e-7 >= PHYSICS_FIXED_DT && steps < MAX_PHYSICS_STEPS_PER_FRAME {
+        while self.accumulator + 1.0e-7 >= fixed_dt && steps < max_steps {
             self.fixed_tick = self.fixed_tick.wrapping_add(1);
 
-            let mut bodies = static_scene_bodies(scene_solids);
+            let mut bodies = if self.settings.scene_colliders_enabled {
+                static_scene_bodies(scene_solids, self.settings)
+            } else {
+                Vec::new()
+            };
             bodies.extend(self.bodies.values().cloned());
 
             let commands = if steps == 0 {
@@ -84,9 +128,9 @@ impl PhysicsRuntime {
             let output = self.client.step_frame(PhysicsFrameInput {
                 frame_index: self.frame_index,
                 fixed_tick: self.fixed_tick,
-                dt: PHYSICS_FIXED_DT,
-                gravity: DEFAULT_GRAVITY,
-                contact_skin: DEFAULT_CONTACT_SKIN,
+                dt: fixed_dt,
+                gravity: self.settings.gravity,
+                contact_skin: self.settings.contact_skin,
                 bodies,
                 colliders: Vec::new(),
                 commands,
@@ -95,14 +139,12 @@ impl PhysicsRuntime {
 
             self.apply_output(&output);
             self.last_output = output;
-            self.accumulator -= PHYSICS_FIXED_DT;
+            self.accumulator -= fixed_dt;
             steps += 1;
         }
 
-        if steps == MAX_PHYSICS_STEPS_PER_FRAME && self.accumulator >= PHYSICS_FIXED_DT {
-            // Do not allow a long hitch to create an unbounded catch-up spiral.
-            // Bodies stay alive and continue from the most recent simulated state.
-            self.accumulator = self.accumulator.min(PHYSICS_FIXED_DT);
+        if steps == max_steps && self.accumulator >= fixed_dt {
+            self.accumulator = self.accumulator.min(fixed_dt);
         }
 
         Ok(())
@@ -127,6 +169,35 @@ impl PhysicsRuntime {
         }
     }
 
+    pub(super) fn scene_activity_updates(&self) -> Vec<PhysicsBodyActivityUpdate> {
+        self.last_output
+            .activity_updates
+            .iter()
+            .copied()
+            .filter(|update| {
+                self.bodies.get(&update.entity).is_some_and(|body| {
+                    matches!(
+                        body.kind,
+                        PhysicsBodyKind::Dynamic | PhysicsBodyKind::Kinematic
+                    )
+                })
+            })
+            .collect()
+    }
+
+    pub(super) fn scene_pose_updates(&self) -> Vec<PhysicsBodyPoseUpdate> {
+        self.last_output
+            .pose_updates
+            .iter()
+            .copied()
+            .filter(|pose| {
+                self.bodies
+                    .get(&pose.entity)
+                    .is_some_and(|body| body.kind == PhysicsBodyKind::Dynamic)
+            })
+            .collect()
+    }
+
     pub(super) fn runtime_state(&self) -> Value {
         let bodies = self
             .bodies
@@ -149,12 +220,123 @@ impl PhysicsRuntime {
 
         json!({
             "enabled": true,
-            "fixed_hz": 120,
+            "fixed_hz": self.settings.fixed_hz,
+            "max_steps_per_frame": self.settings.max_steps_per_frame,
+            "gravity": self.settings.gravity,
+            "contact_skin": self.settings.contact_skin,
+            "scene_colliders_enabled": self.settings.scene_colliders_enabled,
             "fixed_tick": self.fixed_tick,
             "bodies": bodies,
             "events": self.last_output.events,
             "report": self.last_output.report,
         })
+    }
+
+    pub(super) fn configure_from_script(
+        &mut self,
+        command: &Value,
+        command_index: usize,
+    ) -> Result<(), String> {
+        let mut next = self.settings;
+
+        if command.get("fixed_hz").is_some() {
+            next.fixed_hz = command_number(command, "fixed_hz", command_index)?;
+        }
+        if !(MIN_PHYSICS_HZ..=MAX_PHYSICS_HZ).contains(&next.fixed_hz) {
+            return Err(format!(
+                "script command[{command_index}] physics.world.configure fixed_hz must be in {MIN_PHYSICS_HZ}..={MAX_PHYSICS_HZ}"
+            ));
+        }
+
+        if let Some(value) = command.get("max_steps_per_frame") {
+            let value = value.as_u64().ok_or_else(|| {
+                format!(
+                    "script command[{command_index}] physics.world.configure max_steps_per_frame must be unsigned integer"
+                )
+            })?;
+            let value = usize::try_from(value).map_err(|_| {
+                format!(
+                    "script command[{command_index}] physics.world.configure max_steps_per_frame out of range"
+                )
+            })?;
+            if value == 0 || value > MAX_PHYSICS_STEPS_LIMIT {
+                return Err(format!(
+                    "script command[{command_index}] physics.world.configure max_steps_per_frame must be in 1..={MAX_PHYSICS_STEPS_LIMIT}"
+                ));
+            }
+            next.max_steps_per_frame = value;
+        }
+
+        if command.get("gravity").is_some() {
+            next.gravity = command_number(command, "gravity", command_index)?;
+        }
+        if !next.gravity.is_finite() || next.gravity.abs() > 1000.0 {
+            return Err(format!(
+                "script command[{command_index}] physics.world.configure gravity is invalid"
+            ));
+        }
+
+        if command.get("contact_skin").is_some() {
+            next.contact_skin = command_number(command, "contact_skin", command_index)?;
+        }
+        if !next.contact_skin.is_finite() || !(0.0..=1.0).contains(&next.contact_skin) {
+            return Err(format!(
+                "script command[{command_index}] physics.world.configure contact_skin must be in 0..=1"
+            ));
+        }
+
+        if let Some(scene) = command.get("scene_colliders") {
+            let scene = scene.as_object().ok_or_else(|| {
+                format!(
+                    "script command[{command_index}] physics.world.configure scene_colliders must be an object"
+                )
+            })?;
+            if let Some(enabled) = scene.get("enabled") {
+                next.scene_colliders_enabled = enabled.as_bool().ok_or_else(|| {
+                    format!(
+                        "script command[{command_index}] physics.world.configure scene_colliders.enabled must be boolean"
+                    )
+                })?;
+            }
+            if let Some(value) = scene.get("friction") {
+                next.scene_material.friction = value.as_f64().map(|v| v as f32).filter(|v| v.is_finite()).ok_or_else(|| {
+                    format!("script command[{command_index}] physics.world.configure scene_colliders.friction must be finite numeric")
+                })?;
+            }
+            if let Some(value) = scene.get("restitution") {
+                next.scene_material.restitution = value.as_f64().map(|v| v as f32).filter(|v| v.is_finite()).ok_or_else(|| {
+                    format!("script command[{command_index}] physics.world.configure scene_colliders.restitution must be finite numeric")
+                })?;
+            }
+            if let Some(value) = scene.get("density") {
+                next.scene_material.density = value.as_f64().map(|v| v as f32).filter(|v| v.is_finite()).ok_or_else(|| {
+                    format!("script command[{command_index}] physics.world.configure scene_colliders.density must be finite numeric")
+                })?;
+            }
+            if let Some(value) = scene.get("participates_in_queries") {
+                next.scene_participates_in_queries = value.as_bool().ok_or_else(|| {
+                    format!("script command[{command_index}] physics.world.configure scene_colliders.participates_in_queries must be boolean")
+                })?;
+            }
+            if let Some(value) = scene.get("casts_contacts") {
+                next.scene_casts_contacts = value.as_bool().ok_or_else(|| {
+                    format!("script command[{command_index}] physics.world.configure scene_colliders.casts_contacts must be boolean")
+                })?;
+            }
+        }
+
+        if next.scene_material.friction < 0.0
+            || next.scene_material.restitution < 0.0
+            || next.scene_material.density <= 0.0
+        {
+            return Err(format!(
+                "script command[{command_index}] physics.world.configure scene collider material is invalid"
+            ));
+        }
+
+        self.settings = next;
+        self.accumulator = self.accumulator.min(next.fixed_dt());
+        Ok(())
     }
 
     pub(super) fn upsert_body_from_script(
@@ -320,7 +502,10 @@ impl PhysicsRuntime {
     }
 }
 
-fn static_scene_bodies(solids: &[([f32; 3], [f32; 3])]) -> Vec<PhysicsBodySnapshot> {
+fn static_scene_bodies(
+    solids: &[([f32; 3], [f32; 3])],
+    settings: PhysicsWorldSettings,
+) -> Vec<PhysicsBodySnapshot> {
     solids
         .iter()
         .enumerate()
@@ -341,15 +526,11 @@ fn static_scene_bodies(solids: &[([f32; 3], [f32; 3])]) -> Vec<PhysicsBodySnapsh
                 shape: CollisionShape::Box { half_extents },
                 flags: PhysicsBodyFlags {
                     is_trigger: false,
-                    participates_in_queries: true,
-                    casts_contacts: true,
+                    participates_in_queries: settings.scene_participates_in_queries,
+                    casts_contacts: settings.scene_casts_contacts,
                     continuous_collision: false,
                 },
-                material: PhysicsMaterial {
-                    friction: 0.72,
-                    restitution: 0.04,
-                    density: 1.0,
-                },
+                material: settings.scene_material,
                 position: center,
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 linear_velocity: [0.0; 3],
@@ -441,7 +622,9 @@ mod tests {
 
     #[test]
     fn static_scene_body_uses_reserved_id_and_box_bounds() {
-        let bodies = static_scene_bodies(&[([-2.0, 0.0, -3.0], [2.0, 1.0, 3.0])]);
+        let mut settings = PhysicsWorldSettings::default();
+        settings.scene_colliders_enabled = true;
+        let bodies = static_scene_bodies(&[([-2.0, 0.0, -3.0], [2.0, 1.0, 3.0])], settings);
         assert_eq!(bodies.len(), 1);
         assert_eq!(bodies[0].entity, STATIC_COLLIDER_ID_BASE);
         assert_eq!(bodies[0].position, [0.0, 0.5, 0.0]);

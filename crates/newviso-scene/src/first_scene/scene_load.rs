@@ -1,11 +1,6 @@
 use super::*;
 
 impl Scene3dRuntime {
-    pub fn load_first_scene() -> Result<(Self, Scene3dLoadReport), String> {
-        let scene: Value = serde_json::from_str(BUILTIN_FIRST_SCENE_JSON)
-            .map_err(|error| format!("invalid built-in first_scene.json: {error}"))?;
-        Self::load_scene_value(scene)
-    }
     pub fn load_from_asset(logical_path: &str) -> Result<(Self, Scene3dLoadReport), String> {
         let logical_path = logical_path.trim().replace('\\', "/");
         let logical_path = logical_path.trim_start_matches('/');
@@ -89,21 +84,31 @@ impl Scene3dRuntime {
             .first()
             .map(|(_, record)| *record)
             .ok_or_else(|| "NewViso scene snapshot has no mesh".to_owned())?;
-        let camera_entity_id = camera_entity_id
-            .ok_or_else(|| "MainCamera Flecs entity has no stable id".to_owned())?;
+        let camera_entity_id =
+            camera_entity_id.ok_or_else(|| "scene camera entity has no stable id".to_owned())?;
 
         let camera_transform = camera_record
             .get("transform")
-            .ok_or_else(|| "MainCamera has no transform".to_owned())?;
+            .ok_or_else(|| "scene camera has no transform".to_owned())?;
         let camera_desc = camera_record
             .get("camera")
-            .ok_or_else(|| "MainCamera has no camera component".to_owned())?;
+            .ok_or_else(|| "scene camera has no camera component".to_owned())?;
 
+        for key in ["position", "target", "up"] {
+            if camera_transform.get(key).is_none() {
+                return Err(format!("project camera transform requires '{key}'"));
+            }
+        }
+        for key in ["fov_y_degrees", "near", "far"] {
+            if camera_desc.get(key).is_none() {
+                return Err(format!("project camera component requires '{key}'"));
+            }
+        }
         let camera = Camera {
-            position: read_vec3(camera_transform, "position", Vec3::new(4.2, 3.0, 6.0))?,
+            position: read_vec3(camera_transform, "position", Vec3::ZERO)?,
             target: read_vec3(camera_transform, "target", Vec3::ZERO)?,
             up: read_vec3(camera_transform, "up", Vec3::Y)?,
-            fov_y_degrees: read_f32(camera_desc, "fov_y_degrees", 58.0)?,
+            fov_y_degrees: read_f32(camera_desc, "fov_y_degrees", 60.0)?,
             near: read_f32(camera_desc, "near", 0.1)?,
             far: read_f32(camera_desc, "far", 100.0)?,
         };
@@ -116,7 +121,7 @@ impl Scene3dRuntime {
             name: camera_record
                 .get("name")
                 .and_then(Value::as_str)
-                .unwrap_or("MainCamera")
+                .unwrap_or("Camera")
                 .to_owned(),
             kind: SceneEntityKind::Camera,
             mobility: SceneMobility::Dynamic,
@@ -142,6 +147,10 @@ impl Scene3dRuntime {
             priority_score: 0.0,
             lod_alpha: 1.0,
             last_visible_frame: None,
+            revision: 0,
+            last_mutation_frame: 0,
+            process_claims: SceneProcessClaims::default(),
+            last_process_frame: None,
         })?;
 
         let mut cubes = Vec::with_capacity(mesh_records.len());
@@ -182,7 +191,7 @@ impl Scene3dRuntime {
                     name: record
                         .get("name")
                         .and_then(Value::as_str)
-                        .unwrap_or("AssetMesh")
+                        .unwrap_or("Mesh")
                         .to_owned(),
                     kind: match mobility {
                         SceneMobility::Static => SceneEntityKind::StaticMesh,
@@ -208,6 +217,10 @@ impl Scene3dRuntime {
                     priority_score: 0.0,
                     lod_alpha: 1.0,
                     last_visible_frame: None,
+                    revision: 0,
+                    last_mutation_frame: 0,
+                    process_claims: SceneProcessClaims::default(),
+                    last_process_frame: None,
                 })?;
                 if let Some(parent_id) = read_parent_id(record) {
                     parent_links.push((SceneEntityId(stable_id), SceneEntityId(parent_id)));
@@ -216,11 +229,14 @@ impl Scene3dRuntime {
             }
 
             let material = record.get("material").ok_or("cube mesh has no material")?;
+            if material.get("base_color").is_none() {
+                return Err("cube mesh material requires project-authored 'base_color'".to_owned());
+            }
             let cube = Cube {
                 position: read_vec3(transform, "position", Vec3::ZERO)?,
                 rotation_degrees: read_vec3(transform, "rotation_degrees", Vec3::ZERO)?,
                 scale: read_vec3(transform, "scale", Vec3::ONE)?,
-                base_color: read_color4(material, "base_color", [0.95, 0.42, 0.12, 1.0])?,
+                base_color: read_color4(material, "base_color", [1.0, 1.0, 1.0, 1.0])?,
             };
             let bounds = cube.bounds();
             let render_slot = cubes.len();
@@ -267,6 +283,10 @@ impl Scene3dRuntime {
                 priority_score: 0.0,
                 lod_alpha: 1.0,
                 last_visible_frame: None,
+                revision: 0,
+                last_mutation_frame: 0,
+                process_claims: SceneProcessClaims::default(),
+                last_process_frame: None,
             })?;
             if let Some(parent_id) = read_parent_id(record) {
                 parent_links.push((SceneEntityId(stable_id), SceneEntityId(parent_id)));
@@ -331,6 +351,10 @@ impl Scene3dRuntime {
                 priority_score: 0.0,
                 lod_alpha: 1.0,
                 last_visible_frame: None,
+                revision: 0,
+                last_mutation_frame: 0,
+                process_claims: SceneProcessClaims::default(),
+                last_process_frame: None,
             })?;
             if let Some(parent_id) = read_parent_id(record) {
                 parent_links.push((SceneEntityId(stable_id), SceneEntityId(parent_id)));
@@ -341,22 +365,25 @@ impl Scene3dRuntime {
             world.set_parent(child, Some(parent))?;
         }
         world.activate_all();
+        // Map/scene data establishes revision zero.  Runtime mutation events
+        // begin only after the initial graph has been fully assembled.
+        world.seal_initial_state();
         let frame_plan = SceneFramePlan::default();
 
         let title = snapshot
             .get("title")
             .and_then(Value::as_str)
-            .unwrap_or("NewViso 3D Scene")
+            .unwrap_or("Scene")
             .to_owned();
         let camera_name = camera_record
             .get("name")
             .and_then(Value::as_str)
-            .unwrap_or("MainCamera")
+            .unwrap_or("Camera")
             .to_owned();
         let mesh_name = mesh_record
             .get("name")
             .and_then(Value::as_str)
-            .unwrap_or("Cube")
+            .unwrap_or("Mesh")
             .to_owned();
 
         let report = Scene3dLoadReport {
@@ -377,11 +404,18 @@ impl Scene3dRuntime {
                 overlay_quads: Vec::new(),
                 sky_visuals: BTreeMap::new(),
                 lens_flares: BTreeMap::new(),
+                sky_clouds: SkyCloudDesc::default(),
+                sky_atmosphere: SkyAtmosphereDesc::default(),
+                scene_environment: SceneEnvironmentDesc::default(),
+                timecycle_backend: TimeCycleBackendState::default(),
+                weather_backend: WeatherBackendState::default(),
+                sky_time_seconds: 0.0,
+                sky_time_scale: 1.0,
                 runtime_entity_ids: BTreeMap::new(),
                 next_runtime_entity_id: 0x4e56_5343_0000_0000,
                 world,
                 frame_plan,
-                clear_color: [0.025, 0.032, 0.045, 1.0],
+                clear_color: [0.0, 0.0, 0.0, 1.0],
                 gpu: None,
                 sky: None,
                 gpu_sky: None,

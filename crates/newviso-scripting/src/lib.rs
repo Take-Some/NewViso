@@ -150,6 +150,10 @@ impl ScriptRuntime {
     }
 
     pub fn start(&mut self, project_context: &Value) -> Result<ScriptControl, String> {
+        self.start_with_runtime(project_context, &Value::Null)
+    }
+
+    pub fn start_with_runtime(&mut self, project_context: &Value, runtime_state: &Value) -> Result<ScriptControl, String> {
         let mut control = ScriptControl::default();
         for event in self.drain_events() {
             let event_control = self.invoke_event(&event)?;
@@ -158,7 +162,8 @@ impl ScriptRuntime {
 
         let payload = json!({
             "event": "start",
-            "project": project_context
+            "project": project_context,
+            "runtime": runtime_state
         });
         let start_control = self.invoke_lifecycle("start", &payload, false)?;
         absorb_control(&mut control, start_control);
@@ -277,8 +282,16 @@ impl ScriptRuntime {
                 ScriptResponseStatus::Ok | ScriptResponseStatus::Empty => {}
                 other => {
                     return Err(format!(
-                        "script '{}' event operation '{}' topic='{}' returned status {:?}",
-                        spec.asset, operation, event.topic, other
+                        "script '{}' event operation '{}' topic='{}' returned status {:?}: {}",
+                        spec.asset,
+                        operation,
+                        event.topic,
+                        other,
+                        if response.diagnostics.is_empty() {
+                            "no provider diagnostics".to_owned()
+                        } else {
+                            response.diagnostics.join(" | ")
+                        }
                     ))
                 }
             }
@@ -343,8 +356,15 @@ impl ScriptRuntime {
                 ScriptResponseStatus::Ok | ScriptResponseStatus::Empty => {}
                 other => {
                     return Err(format!(
-                        "script '{}' operation '{}' returned status {:?}",
-                        spec.asset, operation, other
+                        "script '{}' operation '{}' returned status {:?}: {}",
+                        spec.asset,
+                        operation,
+                        other,
+                        if response.diagnostics.is_empty() {
+                            "no provider diagnostics".to_owned()
+                        } else {
+                            response.diagnostics.join(" | ")
+                        }
                     ))
                 }
             }

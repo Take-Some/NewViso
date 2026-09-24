@@ -1,0 +1,407 @@
+import { mix, mix3, smootherstep, type Vec3 } from "./celestial.ysc";
+import { Perlin } from "../perlin.ysc";
+
+type Vec2 = [number, number];
+
+const resolvedVariantCache = new Map<string, any>();
+
+function finiteNumber(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function vec2(value: unknown, fallback: Vec2): Vec2 {
+  if (!Array.isArray(value) || value.length < 2) return fallback;
+  return [
+    finiteNumber(value[0], fallback[0]),
+    finiteNumber(value[1], fallback[1]),
+  ];
+}
+
+function profileDuration(profile: any): number {
+  return Math.max(0.0, Number(profile.holdSeconds) || 0.0)
+    + Math.max(0.0, Number(profile.transitionSeconds) || 0.0);
+}
+
+function cycleDuration(profiles: any[]): number {
+  let total = 0.0;
+  for (const profile of profiles) total += profileDuration(profile);
+  return Math.max(total, 0.0001);
+}
+
+function normalizedSeed(value: unknown): number {
+  const seed = Math.floor(finiteNumber(value, 0));
+  return Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, seed));
+}
+
+function mergeCloudVariant(base: any, override: any): any {
+  const result = Object.assign({}, base ?? {}, override ?? {});
+  result.speed = vec2(override?.speed, vec2(base?.speed, [0.0, 0.0]));
+  result.shearSpeed = vec2(
+    override?.shearSpeed,
+    vec2(base?.shearSpeed, [0.0, 0.0]),
+  );
+  result.seedOffset = vec2(
+    override?.seedOffset,
+    vec2(base?.seedOffset, [0.0, 0.0]),
+  );
+  return result;
+}
+
+function resolveCloudVariant(
+  profile: any,
+  profileIndex: number,
+  cycleIndex: number,
+  variationSeed: number,
+): any {
+  const variants = Array.isArray(profile.cloudVariants)
+    ? profile.cloudVariants
+    : [];
+  if (variants.length === 0) return profile;
+
+  const seed = normalizedSeed(variationSeed);
+  const cacheKey = [
+    seed,
+    cycleIndex,
+    profileIndex,
+    String(profile.id ?? ""),
+  ].join(":");
+  const cached = resolvedVariantCache.get(cacheKey);
+  if (cached) return cached;
+
+  // One backend batch provides the weighted-selector sample and two independent
+  // spatial phase values.  The latter make repeated visits to the same weather
+  // archetype produce a fresh cloud field without changing every frame.
+  const samples = Perlin.batch(
+    [
+      [profileIndex * 1.731 + 0.271, cycleIndex * 0.619 + 0.113],
+      [profileIndex * 0.417 + 3.173, cycleIndex * 1.137 - 2.219],
+      [profileIndex * 1.913 - 4.271, cycleIndex * 0.347 + 5.631],
+    ],
+    { normalized01: true },
+    seed,
+  );
+
+  let totalWeight = 0.0;
+  for (const variant of variants) {
+    totalWeight += Math.max(0.0, finiteNumber(variant?.weight, 1.0));
+  }
+
+  let selected = variants[0];
+  if (totalWeight > 0.0001) {
+    let selector = samples[0] * totalWeight;
+    for (const variant of variants) {
+      selector -= Math.max(0.0, finiteNumber(variant?.weight, 1.0));
+      if (selector <= 0.0) {
+        selected = variant;
+        break;
+      }
+    }
+  }
+
+  const clouds = mergeCloudVariant(profile.clouds, selected?.clouds);
+  const authoredSeedOffset = vec2(clouds.seedOffset, [0.0, 0.0]);
+  clouds.seedOffset = [
+    authoredSeedOffset[0] + (samples[1] - 0.5) * 37.0,
+    authoredSeedOffset[1] + (samples[2] - 0.5) * 37.0,
+  ];
+
+  const resolved = Object.assign({}, profile, {
+    clouds,
+    cloudVariant: String(selected?.id ?? "default"),
+  });
+  resolvedVariantCache.set(cacheKey, resolved);
+
+  // Keep the cache bounded for long-running worlds with accelerated weather.
+  if (resolvedVariantCache.size > 128) {
+    const oldest = resolvedVariantCache.keys().next();
+    if (!oldest.done) resolvedVariantCache.delete(oldest.value);
+  }
+
+  return resolved;
+}
+
+function cloudNumber(clouds: any, key: string, fallback: number): number {
+  return finiteNumber(clouds?.[key], fallback);
+}
+
+function blendClouds(a: any, b: any, t: number): any {
+  const speedA = vec2(a?.speed, [0.0, 0.0]);
+  const speedB = vec2(b?.speed, speedA);
+  const shearA = vec2(a?.shearSpeed, [0.0, 0.0]);
+  const shearB = vec2(b?.shearSpeed, shearA);
+  const seedA = vec2(a?.seedOffset, [0.0, 0.0]);
+  const seedB = vec2(b?.seedOffset, seedA);
+
+  return {
+    enabled: a?.enabled === true || b?.enabled === true,
+    coverage: mix(
+      cloudNumber(a, "coverage", 0.0),
+      cloudNumber(b, "coverage", 0.0),
+      t,
+    ),
+    density: mix(
+      cloudNumber(a, "density", 0.0),
+      cloudNumber(b, "density", 0.0),
+      t,
+    ),
+    softness: mix(
+      cloudNumber(a, "softness", 0.2),
+      cloudNumber(b, "softness", 0.2),
+      t,
+    ),
+    scale: mix(
+      cloudNumber(a, "scale", 1.0),
+      cloudNumber(b, "scale", 1.0),
+      t,
+    ),
+    detailScale: mix(
+      cloudNumber(a, "detailScale", 1.0),
+      cloudNumber(b, "detailScale", 1.0),
+      t,
+    ),
+    speed: [
+      mix(speedA[0], speedB[0], t),
+      mix(speedA[1], speedB[1], t),
+    ],
+    horizonFade: mix(
+      cloudNumber(a, "horizonFade", 0.0),
+      cloudNumber(b, "horizonFade", 0.0),
+      t,
+    ),
+    macroScale: mix(
+      cloudNumber(a, "macroScale", 0.35),
+      cloudNumber(b, "macroScale", 0.35),
+      t,
+    ),
+    macroStrength: mix(
+      cloudNumber(a, "macroStrength", 0.55),
+      cloudNumber(b, "macroStrength", 0.55),
+      t,
+    ),
+    detailStrength: mix(
+      cloudNumber(a, "detailStrength", 0.28),
+      cloudNumber(b, "detailStrength", 0.28),
+      t,
+    ),
+    microStrength: mix(
+      cloudNumber(a, "microStrength", 0.12),
+      cloudNumber(b, "microStrength", 0.12),
+      t,
+    ),
+    erosionStrength: mix(
+      cloudNumber(a, "erosionStrength", 0.72),
+      cloudNumber(b, "erosionStrength", 0.72),
+      t,
+    ),
+    warpStrength: mix(
+      cloudNumber(a, "warpStrength", 0.10),
+      cloudNumber(b, "warpStrength", 0.10),
+      t,
+    ),
+    shapeContrast: mix(
+      cloudNumber(a, "shapeContrast", 1.0),
+      cloudNumber(b, "shapeContrast", 1.0),
+      t,
+    ),
+    shearSpeed: [
+      mix(shearA[0], shearB[0], t),
+      mix(shearA[1], shearB[1], t),
+    ],
+    seedOffset: [
+      mix(seedA[0], seedB[0], t),
+      mix(seedA[1], seedB[1], t),
+    ],
+  };
+}
+
+function blendEnvironment(a: any, b: any, t: number): any {
+  return {
+    ambientColor: mix3(a.ambientColor as Vec3, b.ambientColor as Vec3, t),
+    ambientIntensity: mix(a.ambientIntensity, b.ambientIntensity, t),
+    fogEnabled: a.fogEnabled === true || b.fogEnabled === true,
+    fogColor: mix3(a.fogColor as Vec3, b.fogColor as Vec3, t),
+    fogDensity: mix(a.fogDensity, b.fogDensity, t),
+    fogStartDistance: mix(a.fogStartDistance, b.fogStartDistance, t),
+    fogHeightFalloff: mix(a.fogHeightFalloff, b.fogHeightFalloff, t),
+    fogBaseHeight: mix(a.fogBaseHeight, b.fogBaseHeight, t),
+    fogMaxOpacity: mix(a.fogMaxOpacity, b.fogMaxOpacity, t),
+    hazeColor: mix3(a.hazeColor as Vec3, b.hazeColor as Vec3, t),
+    hazeDensity: mix(a.hazeDensity, b.hazeDensity, t),
+    hazeStartDistance: mix(a.hazeStartDistance, b.hazeStartDistance, t),
+  };
+}
+
+function blendProfiles(a: any, b: any, t: number): any {
+  return {
+    current: a.id,
+    next: b.id,
+    currentCloudVariant: a.cloudVariant ?? "default",
+    nextCloudVariant: b.cloudVariant ?? "default",
+    blend: t,
+    sunScale: mix(a.sunScale, b.sunScale, t),
+    moonScale: mix(a.moonScale, b.moonScale, t),
+    skyTint: mix3(a.skyTint as Vec3, b.skyTint as Vec3, t),
+    skyExposure: mix(a.skyExposure, b.skyExposure, t),
+    clouds: blendClouds(a.clouds, b.clouds, t),
+    environment: blendEnvironment(a.environment, b.environment, t),
+  };
+}
+
+export function weatherFrame(
+  profiles: any[],
+  elapsedSeconds: number,
+  cycleOffsetSeconds: number,
+  variationSeed = 0,
+): any {
+  if (profiles.length === 0) {
+    throw new Error("weather profiles must contain at least one profile");
+  }
+
+  const total = cycleDuration(profiles);
+  const absoluteCursor = elapsedSeconds + cycleOffsetSeconds;
+  const cycleIndex = Math.floor(absoluteCursor / total);
+  let cursor = ((absoluteCursor % total) + total) % total;
+
+  if (profiles.length === 1) {
+    const only = resolveCloudVariant(profiles[0], 0, cycleIndex, variationSeed);
+    return blendProfiles(only, only, 0.0);
+  }
+
+  for (let i = 0; i < profiles.length; ++i) {
+    const currentBase = profiles[i];
+    const nextIndex = (i + 1) % profiles.length;
+    const nextBase = profiles[nextIndex];
+    const nextCycleIndex = nextIndex === 0 ? cycleIndex + 1 : cycleIndex;
+
+    const current = resolveCloudVariant(
+      currentBase,
+      i,
+      cycleIndex,
+      variationSeed,
+    );
+    const next = resolveCloudVariant(
+      nextBase,
+      nextIndex,
+      nextCycleIndex,
+      variationSeed,
+    );
+
+    const hold = Math.max(0.0, currentBase.holdSeconds);
+    const transition = Math.max(0.0, currentBase.transitionSeconds);
+
+    if (cursor <= hold || transition <= 0.0001) {
+      return blendProfiles(current, current, 0.0);
+    }
+
+    cursor -= hold;
+    if (cursor <= transition) {
+      const blend = smootherstep(0.0, 1.0, cursor / transition);
+      return blendProfiles(current, next, blend);
+    }
+
+    cursor -= transition;
+  }
+
+  const fallback = resolveCloudVariant(
+    profiles[0],
+    0,
+    cycleIndex,
+    variationSeed,
+  );
+  return blendProfiles(fallback, fallback, 0.0);
+}
+
+function tinted(base: Vec3, tint: Vec3, exposure: number): Vec3 {
+  return [
+    base[0] * tint[0] * exposure,
+    base[1] * tint[1] * exposure,
+    base[2] * tint[2] * exposure,
+  ];
+}
+
+export function weatherCommands(frame: any, atmosphere: any): unknown[] {
+  const tint = frame.skyTint as Vec3;
+  const exposure = frame.skyExposure;
+
+  return [
+    {
+      op: "scene.weather.state.set",
+      current: frame.current,
+      next: frame.next,
+      blend: frame.blend,
+      current_cloud_variant: frame.currentCloudVariant,
+      next_cloud_variant: frame.nextCloudVariant,
+    },
+    {
+      op: "scene.sky.atmosphere.set",
+      twilight_altitudes: atmosphere.twilightAltitudes,
+      daylight_altitudes: atmosphere.daylightAltitudes,
+      horizon_power: atmosphere.horizonPower,
+      tonemap_shoulder: atmosphere.tonemapShoulder,
+      night_zenith: tinted(atmosphere.nightZenith as Vec3, tint, exposure),
+      night_horizon: tinted(atmosphere.nightHorizon as Vec3, tint, exposure),
+      astronomical_zenith: tinted(atmosphere.astronomicalZenith as Vec3, tint, exposure),
+      astronomical_horizon: tinted(atmosphere.astronomicalHorizon as Vec3, tint, exposure),
+      nautical_zenith: tinted(atmosphere.nauticalZenith as Vec3, tint, exposure),
+      nautical_horizon: tinted(atmosphere.nauticalHorizon as Vec3, tint, exposure),
+      civil_zenith: tinted(atmosphere.civilZenith as Vec3, tint, exposure),
+      civil_horizon: tinted(atmosphere.civilHorizon as Vec3, tint, exposure),
+      day_zenith: tinted(atmosphere.dayZenith as Vec3, tint, exposure),
+      day_horizon: tinted(atmosphere.dayHorizon as Vec3, tint, exposure),
+      sunset_tint: tinted(atmosphere.sunsetTint as Vec3, tint, exposure),
+      sunset_strength: atmosphere.sunsetStrength,
+      cloud_night: tinted(atmosphere.cloudNight as Vec3, tint, exposure),
+      cloud_twilight_shadow: tinted(atmosphere.cloudTwilightShadow as Vec3, tint, exposure),
+      cloud_twilight_light: tinted(atmosphere.cloudTwilightLight as Vec3, tint, exposure),
+      cloud_day_shadow: tinted(atmosphere.cloudDayShadow as Vec3, tint, exposure),
+      cloud_day_light: tinted(atmosphere.cloudDayLight as Vec3, tint, exposure),
+      star_tint: atmosphere.starTint,
+      star_intensity: atmosphere.starIntensity,
+      star_visibility_altitudes: atmosphere.starVisibilityAltitudes,
+      cloud_occlusion: atmosphere.cloudOcclusion,
+      silver_lining_tint: tinted(atmosphere.silverLiningTint as Vec3, tint, exposure),
+      silver_lining_strength: atmosphere.silverLiningStrength,
+      cloud_alpha_range: atmosphere.cloudAlphaRange,
+    },
+    {
+      op: "scene.sky_clouds.set",
+      enabled: frame.clouds.enabled,
+      coverage: frame.clouds.coverage,
+      density: frame.clouds.density,
+      softness: frame.clouds.softness,
+      scale: frame.clouds.scale,
+      detail_scale: frame.clouds.detailScale,
+      speed: frame.clouds.speed,
+      horizon_fade: frame.clouds.horizonFade,
+      macro_scale: frame.clouds.macroScale,
+      macro_strength: frame.clouds.macroStrength,
+      detail_strength: frame.clouds.detailStrength,
+      micro_strength: frame.clouds.microStrength,
+      erosion_strength: frame.clouds.erosionStrength,
+      warp_strength: frame.clouds.warpStrength,
+      shape_contrast: frame.clouds.shapeContrast,
+      shear_speed: frame.clouds.shearSpeed,
+      seed_offset: frame.clouds.seedOffset,
+    },
+    {
+      op: "scene.environment.set",
+      ambient_color: frame.environment.ambientColor,
+      ambient_intensity: frame.environment.ambientIntensity,
+      fog: {
+        enabled: frame.environment.fogEnabled,
+        color: frame.environment.fogColor,
+        density: frame.environment.fogDensity,
+        start_distance: frame.environment.fogStartDistance,
+        height_falloff: frame.environment.fogHeightFalloff,
+        base_height: frame.environment.fogBaseHeight,
+        max_opacity: frame.environment.fogMaxOpacity,
+      },
+      haze: {
+        color: frame.environment.hazeColor,
+        density: frame.environment.hazeDensity,
+        start_distance: frame.environment.hazeStartDistance,
+      },
+    },
+  ];
+}

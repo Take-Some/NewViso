@@ -12,9 +12,9 @@ use newviso_events::{topic as event_topic, EventPhase};
 use newviso_host as host;
 use newviso_input_client::InputSnapshot;
 use newviso_physics_client::{
-    CollisionShape, PhysicsBodyFlags, PhysicsBodyKind, PhysicsBodySnapshot, PhysicsClient,
-    PhysicsCommand, PhysicsCommandKind, PhysicsFeature, PhysicsFrameInput, PhysicsFrameOutput,
-    PhysicsMaterial,
+    CollisionShape, PhysicsBodyActivityUpdate, PhysicsBodyFlags, PhysicsBodyKind,
+    PhysicsBodyPoseUpdate, PhysicsBodySnapshot, PhysicsClient, PhysicsCommand, PhysicsCommandKind,
+    PhysicsFeature, PhysicsFrameInput, PhysicsFrameOutput, PhysicsMaterial,
 };
 use newviso_platform::{run_platform, PlatformApplication, PlatformRunConfig, PlatformRunReport};
 use newviso_project::{
@@ -31,11 +31,20 @@ use newviso_resource_runtime::{
 };
 use newviso_scene::{
     LensFlareDesc, LensFlareElementDesc, LensFlareElementKind, Scene3dLoadReport, Scene3dRuntime,
-    SceneLightDesc, SceneLightType, SceneOverlayQuad, SceneTransientSphere, SkyDomeResources,
-    SkyIndexFormat, SkyMeshResources, SkyTextureResources, SkyVertex, SkyVisualDesc, SkyVisualKind,
+    SceneLightDesc, SceneLightType, SceneOverlayQuad, SceneRuntimeEntityDesc,
+    SceneRuntimeVisualKind, SceneTransientSphere, SkyAtmosphereDesc, SkyCloudDesc,
+    SkyDomeResources, SkyIndexFormat, SkyMeshResources, SkyTextureResources, SkyVertex,
+    SkyVisualDesc, SkyVisualKind,
 };
 use newviso_scripting::{ScriptModuleSpec, ScriptPermission, ScriptRuntime};
 use newviso_ui_client::UiClient;
+use newviso_world::{
+    AmbientModelSetDesc, LivingWorldRuntime, LivingWorldZoneDesc, PopulationChannelDesc,
+    PopulationStreamingPolicyDesc, RelationshipRuleDesc, ScenarioPointDesc, WorldActorDesc,
+    WorldClockPolicyDesc, WorldNavEdgeDesc, WorldNavNodeDesc, WorldObserverDesc, WorldProcessDesc,
+    WorldRealityEventDesc, WorldScenarioReservationDesc, WorldScheduledEventDesc,
+    WorldSimulationPolicyDesc, WorldStimulusDesc, WorldTravelRequestDesc,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
@@ -51,6 +60,9 @@ use application_physics::PhysicsRuntime;
 mod application_platform;
 mod application_script_commands;
 mod application_streaming;
+mod application_world;
+mod world_persistence;
+use world_persistence::{WorldPersistence, WorldStartup};
 mod bootstrap;
 mod bootstrap_support;
 pub use bootstrap::run;
@@ -239,6 +251,25 @@ fn load_environment_sky(config: &ProjectSkyEnvironment) -> Result<SkyDomeResourc
         starfield,
         detail_noise,
         billboard_texture,
+        clouds: SkyCloudDesc {
+            enabled: config.clouds.enabled,
+            coverage: config.clouds.coverage,
+            density: config.clouds.density,
+            softness: config.clouds.softness,
+            scale: config.clouds.scale,
+            detail_scale: config.clouds.detail_scale,
+            speed: config.clouds.speed,
+            horizon_fade: config.clouds.horizon_fade,
+            macro_scale: config.clouds.macro_scale,
+            macro_strength: config.clouds.macro_strength,
+            detail_strength: config.clouds.detail_strength,
+            micro_strength: config.clouds.micro_strength,
+            erosion_strength: config.clouds.erosion_strength,
+            warp_strength: config.clouds.warp_strength,
+            shape_contrast: config.clouds.shape_contrast,
+            shear_speed: config.clouds.shear_speed,
+            seed_offset: config.clouds.seed_offset,
+        },
     })
 }
 
@@ -315,6 +346,19 @@ fn command_number(value: &Value, key: &str, index: usize) -> Result<f32, String>
     Ok(number)
 }
 
+fn command_f64(value: &Value, key: &str, index: usize) -> Result<f64, String> {
+    let number = value
+        .get(key)
+        .and_then(Value::as_f64)
+        .ok_or_else(|| format!("script command item[{index}] '{key}' must be numeric"))?;
+    if !number.is_finite() {
+        return Err(format!(
+            "script command item[{index}] '{key}' must be finite"
+        ));
+    }
+    Ok(number)
+}
+
 fn command_vector<const N: usize>(
     value: &Value,
     key: &str,
@@ -348,8 +392,78 @@ fn command_vec3(value: &Value, key: &str, index: usize) -> Result<[f32; 3], Stri
     command_vector(value, key, index)
 }
 
+fn command_optional_vec3(
+    value: &Value,
+    key: &str,
+    index: usize,
+) -> Result<Option<[f32; 3]>, String> {
+    if value.get(key).is_none() || value.get(key).is_some_and(Value::is_null) {
+        return Ok(None);
+    }
+    command_vec3(value, key, index).map(Some)
+}
+
 fn command_vec4(value: &Value, key: &str, index: usize) -> Result<[f32; 4], String> {
     command_vector(value, key, index)
+}
+
+fn command_u32(value: &Value, key: &str, index: usize) -> Result<u32, String> {
+    let number = value.get(key).and_then(Value::as_u64).ok_or_else(|| {
+        format!("script command item[{index}] '{key}' must be an unsigned integer")
+    })?;
+    u32::try_from(number)
+        .map_err(|_| format!("script command item[{index}] '{key}' is out of u32 range"))
+}
+
+fn command_i32(value: &Value, key: &str, index: usize) -> Result<i32, String> {
+    let number = value
+        .get(key)
+        .and_then(Value::as_i64)
+        .ok_or_else(|| format!("script command item[{index}] '{key}' must be an integer"))?;
+    i32::try_from(number)
+        .map_err(|_| format!("script command item[{index}] '{key}' is out of i32 range"))
+}
+
+fn command_strings(value: &Value, key: &str, index: usize) -> Result<Vec<String>, String> {
+    let values = value.get(key).and_then(Value::as_array).ok_or_else(|| {
+        format!("script command item[{index}] '{key}' must be an array of strings")
+    })?;
+    values
+        .iter()
+        .enumerate()
+        .map(|(item_index, item)| {
+            item.as_str().map(str::to_owned).ok_or_else(|| {
+                format!("script command item[{index}] '{key}[{item_index}]' must be a string")
+            })
+        })
+        .collect()
+}
+
+fn command_float_map(
+    value: &Value,
+    key: &str,
+    index: usize,
+) -> Result<BTreeMap<String, f32>, String> {
+    let Some(map) = value.get(key) else {
+        return Ok(BTreeMap::new());
+    };
+    let map = map.as_object().ok_or_else(|| {
+        format!("script command item[{index}] '{key}' must be an object of numeric values")
+    })?;
+    let mut out = BTreeMap::new();
+    for (name, value) in map {
+        let number = value
+            .as_f64()
+            .ok_or_else(|| format!("script command item[{index}] '{key}.{name}' must be numeric"))?
+            as f32;
+        if !number.is_finite() {
+            return Err(format!(
+                "script command item[{index}] '{key}.{name}' must be finite"
+            ));
+        }
+        out.insert(name.clone(), number);
+    }
+    Ok(out)
 }
 
 fn required_string(value: &Value, key: &str, context: &str) -> Result<String, String> {
@@ -461,10 +575,34 @@ struct LoadedProjectFiles {
     context: Value,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct WorldActorPresentationBinding {
+    scene_key: String,
+    visual: SceneRuntimeVisualKind,
+    asset_ref: Option<String>,
+    position_offset: [f32; 3],
+    rotation_degrees: [f32; 3],
+    scale: [f32; 3],
+    bounds_half_extent: [f32; 3],
+    base_color: [f32; 4],
+    solid: bool,
+    #[serde(with = "application_world::distance_serde")]
+    visible_distance: f32,
+    #[serde(with = "application_world::distance_serde")]
+    stream_distance: f32,
+    fade_range: f32,
+    materialized_representations: Vec<String>,
+}
+
 struct EngineApplication {
     renderer_path: PathBuf,
     renderer: Option<RunningProvider>,
     scene: Scene3dRuntime,
+    living_world: LivingWorldRuntime,
+    world_actor_presentations: BTreeMap<String, WorldActorPresentationBinding>,
+    world_presentation_states: BTreeMap<String, application_world::PresentationState>,
+    world_persistence: Option<WorldPersistence>,
+    world_save_allowed: bool,
     physics: Option<PhysicsRuntime>,
     scripts: Option<ScriptRuntime>,
     project_context: Value,
@@ -493,11 +631,17 @@ impl EngineApplication {
         ui_template: Option<Value>,
         content_manager: Option<ContentManager>,
         streaming_policy: StreamingPolicy,
+        world_startup: WorldStartup,
     ) -> Result<Self, String> {
         Ok(Self {
             renderer_path,
             renderer: None,
             scene,
+            living_world: world_startup.world,
+            world_actor_presentations: world_startup.presentations,
+            world_presentation_states: BTreeMap::new(),
+            world_persistence: world_startup.persistence,
+            world_save_allowed: false,
             physics,
             scripts,
             project_context,
@@ -515,6 +659,44 @@ impl EngineApplication {
             cursor_captured: false,
             window_focused: true,
         })
+    }
+
+    fn runtime_state(&self) -> Value {
+        let actor_views = self.living_world.actor_runtime_views();
+        let presentations = self
+            .world_actor_presentations
+            .iter()
+            .map(|(actor_id, binding)| {
+                let actor = actor_views.iter().find(|actor| actor.id == *actor_id);
+                json!({
+                    "actor_id": actor_id,
+                    "scene_key": binding.scene_key,
+                    "logical_position": actor.map(|actor| actor.position),
+                    "representation": actor.map(|actor| actor.representation),
+                    "enabled": actor.map(|actor| actor.enabled),
+                    "materialized_representations": binding.materialized_representations,
+                    "scene_entity": self.scene.runtime_entity_state(&binding.scene_key),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let mut living_world_state = self.living_world.runtime_state();
+        living_world_state
+            .as_object_mut()
+            .expect("living world runtime state must be a JSON object")
+            .insert("presentations".to_owned(), Value::Array(presentations));
+
+        let mut runtime_state = self.scene.runtime_state();
+        let root = runtime_state
+            .as_object_mut()
+            .expect("scene runtime state must be a JSON object");
+        living_world_state["persistence"] = self.world_persistence.as_ref().map(WorldPersistence::runtime_state).unwrap_or_else(|| json!({"enabled": false, "restored": false}));
+        living_world_state["presentation_transitions"] = self.world_presentations_state();
+        root.insert("living_world".to_owned(), living_world_state);
+        if let Some(physics) = self.physics.as_ref() {
+            root.insert("physics".to_owned(), physics.runtime_state());
+        }
+        runtime_state
     }
 }
 

@@ -52,6 +52,7 @@ pub struct ScriptResponse {
     pub request_id: String,
     pub status: ScriptResponseStatus,
     pub payload_bytes: Vec<u8>,
+    pub diagnostics: Vec<String>,
     pub trace_id: String,
     pub metadata: BTreeMap<String, String>,
 }
@@ -127,10 +128,25 @@ fn encode_request(request: &ScriptInvocation<'_>) -> Result<Vec<u8>, String> {
 fn decode_module_load_ok(bytes: &[u8]) -> Result<(), String> {
     let mut reader = Reader::new(bytes, MODULE_LOAD_RESPONSE_MAGIC)?;
     let ok = reader.read_u8()?;
-    match ok {
-        1 => Ok(()),
-        0 => Err("scripting provider rejected module load".to_owned()),
-        other => Err(format!("invalid module-load response bool {other}")),
+    if ok > 1 {
+        return Err(format!("invalid module-load response bool {ok}"));
+    }
+
+    let mut diagnostics = reader.skip_module_record_collect_diagnostics()?;
+    diagnostics.extend(reader.read_diagnostic_messages()?);
+    reader.finish()?;
+
+    if ok == 1 {
+        return Ok(());
+    }
+
+    if diagnostics.is_empty() {
+        Err("scripting provider rejected module load".to_owned())
+    } else {
+        Err(format!(
+            "scripting provider rejected module load: {}",
+            diagnostics.join(" | ")
+        ))
     }
 }
 
@@ -146,7 +162,7 @@ fn decode_response(bytes: &[u8]) -> Result<ScriptResponse, String> {
         other => return Err(format!("invalid scripting response status {other}")),
     };
     let payload_bytes = reader.read_bytes()?;
-    reader.skip_diagnostics()?;
+    let diagnostics = reader.read_diagnostic_messages()?;
     let trace_id = reader.read_string()?;
     let metadata = reader.read_string_map()?;
     reader.finish()?;
@@ -155,6 +171,7 @@ fn decode_response(bytes: &[u8]) -> Result<ScriptResponse, String> {
         request_id,
         status,
         payload_bytes,
+        diagnostics,
         trace_id,
         metadata,
     })
@@ -255,6 +272,11 @@ impl<'a> Reader<'a> {
         Ok(u32::from_le_bytes(value.try_into().expect("4-byte slice")))
     }
 
+    fn read_u64(&mut self) -> Result<u64, String> {
+        let value = self.read_exact(8)?;
+        Ok(u64::from_le_bytes(value.try_into().expect("8-byte slice")))
+    }
+
     fn read_bytes(&mut self) -> Result<Vec<u8>, String> {
         let len = self.read_u32()? as usize;
         Ok(self.read_exact(len)?.to_vec())
@@ -274,16 +296,45 @@ impl<'a> Reader<'a> {
         Ok(values)
     }
 
-    fn skip_diagnostics(&mut self) -> Result<(), String> {
+    fn skip_permissions(&mut self) -> Result<(), String> {
         let count = self.read_u32()? as usize;
         for _ in 0..count {
-            self.read_u8()?;
             self.read_string()?;
             self.read_string()?;
-            self.read_string()?;
-            self.read_bytes()?;
         }
         Ok(())
+    }
+
+    fn read_diagnostic_messages(&mut self) -> Result<Vec<String>, String> {
+        let count = self.read_u32()? as usize;
+        let mut messages = Vec::with_capacity(count);
+        for _ in 0..count {
+            let severity = self.read_u8()?;
+            let code = self.read_string()?;
+            let message = self.read_string()?;
+            let script_ref = self.read_string()?;
+            self.read_bytes()?;
+            messages.push(format!(
+                "severity={severity} code='{code}' script='{}' message={message}",
+                if script_ref.is_empty() {
+                    "<unknown>"
+                } else {
+                    &script_ref
+                }
+            ));
+        }
+        Ok(messages)
+    }
+
+    fn skip_module_record_collect_diagnostics(&mut self) -> Result<Vec<String>, String> {
+        self.read_string()?; // schema
+        self.read_string()?; // module reference
+        self.read_string()?; // module id
+        self.read_u8()?; // module state
+        self.skip_permissions()?;
+        self.read_u64()?; // module bytes len
+        self.read_string_map()?;
+        self.read_diagnostic_messages()
     }
 }
 

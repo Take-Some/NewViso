@@ -1,11 +1,11 @@
 use crate::math::Vec3;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 mod lifecycle;
 mod mutation;
 mod visibility;
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct SceneEntityId(pub(crate) u64);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,53 +95,42 @@ pub(crate) enum SceneResidency {
     Resident,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub(crate) enum VisibilityModule {
-    Debug = 0,
-    Camera = 1,
-    Script = 2,
-    Gameplay = 3,
-    Frontend = 4,
-    Vfx = 5,
-    World = 6,
-    Player = 7,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct VisibilityMask(u32);
-
-impl Default for VisibilityMask {
-    fn default() -> Self {
-        Self(u32::MAX)
-    }
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct VisibilityMask {
+    channels: BTreeMap<String, bool>,
 }
 
 impl VisibilityMask {
-    pub(crate) fn set(&mut self, module: VisibilityModule, visible: bool) {
-        let bit = 1_u32 << module as u8;
+    pub(crate) fn set(&mut self, channel: &str, visible: bool) {
+        let channel = channel.trim().to_ascii_lowercase();
+        if channel.is_empty() {
+            return;
+        }
         if visible {
-            self.0 |= bit;
+            self.channels.remove(&channel);
         } else {
-            self.0 &= !bit;
+            self.channels.insert(channel, false);
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn visible_for(self, module: VisibilityModule) -> bool {
-        self.0 & (1_u32 << module as u8) != 0
+    pub(crate) fn visible_for(&self, channel: &str) -> bool {
+        self.channels
+            .get(&channel.trim().to_ascii_lowercase())
+            .copied()
+            .unwrap_or(true)
     }
 
-    pub(crate) fn all_visible(self) -> bool {
-        self.0 == u32::MAX
+    pub(crate) fn all_visible(&self) -> bool {
+        self.channels.values().all(|visible| *visible)
     }
 
-    pub(crate) fn raw(self) -> u32 {
-        self.0
+    pub(crate) fn raw(&self) -> &BTreeMap<String, bool> {
+        &self.channels
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SceneBounds {
     pub(crate) min: Vec3,
     pub(crate) max: Vec3,
@@ -185,11 +174,132 @@ impl Default for SceneLodPolicy {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SceneTransform {
     pub(crate) position: Vec3,
     pub(crate) rotation_degrees: Vec3,
     pub(crate) scale: Vec3,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SceneMutationSource {
+    Engine,
+    Script,
+    Physics,
+    Animation,
+    Parent,
+    Streaming,
+}
+
+impl SceneMutationSource {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Engine => "engine",
+            Self::Script => "script",
+            Self::Physics => "physics",
+            Self::Animation => "animation",
+            Self::Parent => "parent",
+            Self::Streaming => "streaming",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SceneDirtyFlags(u16);
+
+impl SceneDirtyFlags {
+    pub(crate) const EMPTY: Self = Self(0);
+    pub(crate) const TRANSFORM: Self = Self(1 << 0);
+    pub(crate) const BOUNDS: Self = Self(1 << 1);
+    pub(crate) const VISIBILITY: Self = Self(1 << 2);
+    pub(crate) const HIERARCHY: Self = Self(1 << 3);
+    pub(crate) const LIFECYCLE: Self = Self(1 << 4);
+    pub(crate) const RESIDENCY: Self = Self(1 << 5);
+    pub(crate) const LIGHT: Self = Self(1 << 6);
+    pub(crate) const PROCESS_CONTROL: Self = Self(1 << 7);
+
+    pub(crate) const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    pub(crate) const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    pub(crate) fn labels(self) -> Vec<&'static str> {
+        [
+            (Self::TRANSFORM, "transform"),
+            (Self::BOUNDS, "bounds"),
+            (Self::VISIBILITY, "visibility"),
+            (Self::HIERARCHY, "hierarchy"),
+            (Self::LIFECYCLE, "lifecycle"),
+            (Self::RESIDENCY, "residency"),
+            (Self::LIGHT, "light"),
+            (Self::PROCESS_CONTROL, "process_control"),
+        ]
+        .into_iter()
+        .filter_map(|(flag, label)| self.contains(flag).then_some(label))
+        .collect()
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SceneProcessClaims {
+    claims: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl SceneProcessClaims {
+    pub(crate) fn set(&mut self, owner: String, reason: String, active: bool) -> bool {
+        if active {
+            self.claims.entry(reason).or_default().insert(owner)
+        } else {
+            let Some(owners) = self.claims.get_mut(&reason) else {
+                return false;
+            };
+            let changed = owners.remove(&owner);
+            if owners.is_empty() {
+                self.claims.remove(&reason);
+            }
+            changed
+        }
+    }
+
+    pub(crate) fn active(&self) -> bool {
+        !self.claims.is_empty()
+    }
+
+    pub(crate) fn clear(&mut self) -> bool {
+        if self.claims.is_empty() {
+            false
+        } else {
+            self.claims.clear();
+            true
+        }
+    }
+
+    pub(crate) fn reasons(&self) -> Vec<String> {
+        self.claims.keys().cloned().collect()
+    }
+
+    pub(crate) fn snapshot(&self) -> BTreeMap<String, Vec<String>> {
+        self.claims
+            .iter()
+            .map(|(reason, owners)| (reason.clone(), owners.iter().cloned().collect()))
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SceneMutation {
+    pub(crate) entity: SceneEntityId,
+    pub(crate) revision: u64,
+    pub(crate) frame: u64,
+    pub(crate) source: SceneMutationSource,
+    pub(crate) dirty: SceneDirtyFlags,
+    pub(crate) transform: SceneTransform,
+    pub(crate) bounds: SceneBounds,
+    pub(crate) process_active: bool,
+    pub(crate) process_claims: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -213,6 +323,10 @@ pub(crate) struct SceneEntity {
     pub(crate) priority_score: f32,
     pub(crate) lod_alpha: f32,
     pub(crate) last_visible_frame: Option<u64>,
+    pub(crate) revision: u64,
+    pub(crate) last_mutation_frame: u64,
+    pub(crate) process_claims: SceneProcessClaims,
+    pub(crate) last_process_frame: Option<u64>,
 }
 
 impl SceneEntity {
@@ -269,6 +383,8 @@ pub(crate) struct SceneWorld {
     focus: SceneFocus,
     last_focus_position: Vec3,
     last_dt: f32,
+    mutations: Vec<SceneMutation>,
+    process_active: BTreeSet<SceneEntityId>,
 }
 
 impl SceneWorld {
@@ -284,6 +400,8 @@ impl SceneWorld {
             },
             last_focus_position: initial_focus,
             last_dt: 0.0,
+            mutations: Vec::new(),
+            process_active: BTreeSet::new(),
         }
     }
 }
@@ -329,6 +447,10 @@ mod tests {
             priority_score: 0.0,
             lod_alpha: 1.0,
             last_visible_frame: None,
+            revision: 0,
+            last_mutation_frame: 0,
+            process_claims: SceneProcessClaims::default(),
+            last_process_frame: None,
         }
     }
 
@@ -365,15 +487,15 @@ mod tests {
         world.add_entity(entity(1, -8.0, 0)).unwrap();
         world.activate_all();
         world
-            .set_visibility(SceneEntityId(1), VisibilityModule::Script, false)
+            .set_visibility(SceneEntityId(1), "script", false)
             .unwrap();
         assert!(!world
             .entity(SceneEntityId(1))
             .unwrap()
             .visibility
-            .visible_for(VisibilityModule::Script));
+            .visible_for("script"));
         world
-            .set_visibility(SceneEntityId(1), VisibilityModule::Camera, false)
+            .set_visibility(SceneEntityId(1), "camera", false)
             .unwrap();
         world.pre_update(Vec3::ZERO, 1.0 / 60.0);
         let plan = world.scan_visibility(view());
@@ -450,7 +572,7 @@ mod tests {
             .is_err());
 
         world
-            .set_visibility(SceneEntityId(1), VisibilityModule::World, false)
+            .set_visibility(SceneEntityId(1), "world", false)
             .unwrap();
         world.pre_update(Vec3::ZERO, 1.0 / 60.0);
         let plan = world.scan_visibility(view());
@@ -476,6 +598,234 @@ mod tests {
         world.pre_update(Vec3::new(2.0, 0.0, 0.0), 1.0 / 60.0);
         assert_eq!(world.focus().source, SceneFocusSource::Camera);
         assert!((world.focus().position.x - 2.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn spatial_mutation_tracks_revision_source_and_dirty_state() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        let mut moving = entity(41, -8.0, 0);
+        moving.mobility = SceneMobility::Dynamic;
+        world.add_entity(moving).unwrap();
+        world.activate_all();
+
+        let next_transform = SceneTransform {
+            position: Vec3::new(3.0, 2.0, -9.0),
+            rotation_degrees: Vec3::new(0.0, 45.0, 0.0),
+            scale: Vec3::ONE,
+        };
+        let next_bounds =
+            SceneBounds::from_center_half_extent(next_transform.position, Vec3::new(1.0, 2.0, 1.0));
+        world
+            .update_spatial_from(
+                SceneEntityId(41),
+                next_transform,
+                next_bounds,
+                SceneMutationSource::Physics,
+            )
+            .unwrap();
+
+        let mutations = world.drain_mutations();
+        assert_eq!(mutations.len(), 1);
+        assert_eq!(mutations[0].entity, SceneEntityId(41));
+        assert_eq!(mutations[0].revision, 1);
+        assert_eq!(mutations[0].source, SceneMutationSource::Physics);
+        assert!(mutations[0].dirty.contains(SceneDirtyFlags::TRANSFORM));
+        assert!(mutations[0].dirty.contains(SceneDirtyFlags::BOUNDS));
+
+        world
+            .update_spatial_from(
+                SceneEntityId(41),
+                next_transform,
+                next_bounds,
+                SceneMutationSource::Physics,
+            )
+            .unwrap();
+        assert!(world.drain_mutations().is_empty());
+        assert_eq!(world.entity(SceneEntityId(41)).unwrap().revision, 1);
+    }
+
+    #[test]
+    fn process_claims_are_multi_owner_and_do_not_affect_render_lifecycle() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        world.add_entity(entity(50, -8.0, 0)).unwrap();
+        world.activate_all();
+
+        assert_eq!(world.process_active_count(), 0);
+        assert_eq!(
+            world.entity(SceneEntityId(50)).unwrap().lifecycle,
+            SceneLifecycle::Active
+        );
+
+        world
+            .set_process_claim(
+                SceneEntityId(50),
+                "engine.physics",
+                "physics",
+                true,
+                SceneMutationSource::Physics,
+            )
+            .unwrap();
+        world
+            .set_process_claim(
+                SceneEntityId(50),
+                "project.script",
+                "gameplay",
+                true,
+                SceneMutationSource::Script,
+            )
+            .unwrap();
+
+        assert_eq!(world.process_active_count(), 1);
+        assert!(world
+            .entity(SceneEntityId(50))
+            .unwrap()
+            .process_claims
+            .active());
+
+        world
+            .set_process_claim(
+                SceneEntityId(50),
+                "engine.physics",
+                "physics",
+                false,
+                SceneMutationSource::Physics,
+            )
+            .unwrap();
+        assert_eq!(world.process_active_count(), 1);
+        assert!(world
+            .entity(SceneEntityId(50))
+            .unwrap()
+            .process_claims
+            .active());
+
+        world
+            .set_process_claim(
+                SceneEntityId(50),
+                "project.script",
+                "gameplay",
+                false,
+                SceneMutationSource::Script,
+            )
+            .unwrap();
+        assert_eq!(world.process_active_count(), 0);
+        assert!(!world
+            .entity(SceneEntityId(50))
+            .unwrap()
+            .process_claims
+            .active());
+        assert_eq!(
+            world.entity(SceneEntityId(50)).unwrap().lifecycle,
+            SceneLifecycle::Active
+        );
+    }
+
+    #[test]
+    fn dormant_entity_suspends_process_membership_but_preserves_claims() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        world.add_entity(entity(55, -8.0, 0)).unwrap();
+        world.activate_all();
+        world
+            .set_process_claim(
+                SceneEntityId(55),
+                "project.script",
+                "gameplay",
+                true,
+                SceneMutationSource::Script,
+            )
+            .unwrap();
+        assert!(world.process_is_active(SceneEntityId(55)));
+
+        world.set_dormant(SceneEntityId(55), true).unwrap();
+        assert!(!world.process_is_active(SceneEntityId(55)));
+        assert!(world
+            .entity(SceneEntityId(55))
+            .unwrap()
+            .process_claims
+            .active());
+
+        world.activate_entity(SceneEntityId(55)).unwrap();
+        assert!(world.process_is_active(SceneEntityId(55)));
+    }
+
+    #[test]
+    fn removal_clears_process_claims_atomically() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        world.add_entity(entity(56, -8.0, 0)).unwrap();
+        world.activate_all();
+        world
+            .set_process_claim(
+                SceneEntityId(56),
+                "engine.physics",
+                "physics",
+                true,
+                SceneMutationSource::Physics,
+            )
+            .unwrap();
+        world.drain_mutations();
+
+        world.request_remove(SceneEntityId(56)).unwrap();
+        assert!(!world.process_is_active(SceneEntityId(56)));
+        assert!(!world
+            .entity(SceneEntityId(56))
+            .unwrap()
+            .process_claims
+            .active());
+        let mutation = world.drain_mutations().pop().expect("removal mutation");
+        assert!(mutation.dirty.contains(SceneDirtyFlags::LIFECYCLE));
+        assert!(mutation.dirty.contains(SceneDirtyFlags::PROCESS_CONTROL));
+        assert!(!mutation.process_active);
+        assert!(mutation.process_claims.is_empty());
+    }
+
+    #[test]
+    fn process_update_marks_only_claimed_entities() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        world.add_entity(entity(60, -8.0, 0)).unwrap();
+        world.add_entity(entity(61, -8.0, 1)).unwrap();
+        world.activate_all();
+        world
+            .set_process_claim(
+                SceneEntityId(61),
+                "project.script",
+                "animation",
+                true,
+                SceneMutationSource::Script,
+            )
+            .unwrap();
+
+        world.pre_update(Vec3::ZERO, 1.0 / 60.0);
+        world.update();
+
+        assert_eq!(
+            world.entity(SceneEntityId(60)).unwrap().last_process_frame,
+            None
+        );
+        assert_eq!(
+            world.entity(SceneEntityId(61)).unwrap().last_process_frame,
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn transform_only_mutation_does_not_fake_bounds_change() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        world.add_entity(entity(42, -8.0, 0)).unwrap();
+        world.activate_all();
+
+        let transform = SceneTransform {
+            position: Vec3::new(0.0, 0.0, -7.0),
+            rotation_degrees: Vec3::ZERO,
+            scale: Vec3::ONE,
+        };
+        world
+            .update_transform_from(SceneEntityId(42), transform, SceneMutationSource::Animation)
+            .unwrap();
+
+        let mutations = world.drain_mutations();
+        assert_eq!(mutations.len(), 1);
+        assert_eq!(mutations[0].source, SceneMutationSource::Animation);
+        assert!(mutations[0].dirty.contains(SceneDirtyFlags::TRANSFORM));
+        assert!(!mutations[0].dirty.contains(SceneDirtyFlags::BOUNDS));
     }
 
     #[test]

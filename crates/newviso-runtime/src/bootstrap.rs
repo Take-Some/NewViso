@@ -221,12 +221,12 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
             .map(|files| files.environment.clone())
             .unwrap_or_default();
 
-        let (mut scene, scene_report) = match &project {
-            Some(project) => Scene3dRuntime::load_from_asset(&project.manifest.files.scene)
-                .map_err(|error| format!("startup scene load failed: {error}"))?,
-            None => Scene3dRuntime::load_first_scene()
-                .map_err(|error| format!("3D scene load failed: {error}"))?,
-        };
+        let project_ref = project.as_ref().ok_or_else(|| {
+            "NewViso runtime is project-driven; launch with --project <project-root>".to_owned()
+        })?;
+        let (mut scene, scene_report) =
+            Scene3dRuntime::load_from_asset(&project_ref.manifest.files.scene)
+                .map_err(|error| format!("startup scene load failed: {error}"))?;
 
         scene.set_clear_color(environment.clear_color);
         if let Some(sky_config) = environment.sky.as_ref() {
@@ -275,6 +275,8 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
                 ui_template,
                 content_manager,
                 streaming_policy_from_project(&runtime_settings.streaming),
+                WorldStartup::open(&project_ref.root, &project_ref.manifest.project.id,
+                    &runtime_settings.world_persistence)?,
             )?);
             state.set_phase(RuntimePhase::Running);
 

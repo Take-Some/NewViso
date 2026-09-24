@@ -10,6 +10,12 @@ layout(set = 0, binding = 0, std140) uniform SceneFrame {
     vec4 light_dir[4];
     vec4 light_color[4];
     vec4 light_cone[4];
+    vec4 camera_position;
+    vec4 environment_ambient;
+    vec4 environment_fog_color_density;
+    vec4 environment_fog_params;
+    vec4 environment_haze_color_density;
+    vec4 environment_haze_params;
 } frame;
 
 layout(location = 0) in vec4 in_position_mode;

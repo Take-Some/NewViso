@@ -10,6 +10,12 @@ layout(set = 0, binding = 0, std140) uniform SceneFrame {
     vec4 light_dir[4];
     vec4 light_color[4];
     vec4 light_cone[4];
+    vec4 camera_position;
+    vec4 environment_ambient;
+    vec4 environment_fog_color_density;
+    vec4 environment_fog_params;
+    vec4 environment_haze_color_density;
+    vec4 environment_haze_params;
 } frame;
 
 layout(set = 0, binding = 1) uniform texture2D t_shadow;
@@ -27,10 +33,6 @@ float sample_shadow(vec3 normal, float n_dot_l) {
         return 0.0;
     }
 
-    // shadow_params.x is normalized depth bias.
-    // shadow_params.y is a world-space receiver normal offset.
-    // Keeping those units separate avoids peter-panning: a value such as
-    // 0.02 world units must never be treated as 0.02 of the entire depth map.
     float normal_scale = frame.shadow_params.y * (1.0 - n_dot_l);
     vec3 receiver_position = v_world_position + normalize(normal) * normal_scale;
     vec4 shadow_coord = frame.shadow_view_proj * vec4(receiver_position, 1.0);
@@ -68,7 +70,9 @@ void main() {
     }
 
     vec3 n = normalize(v_normal);
-    vec3 lighting = vec3(max(frame.globals.y, 0.0));
+    vec3 lighting =
+        max(frame.environment_ambient.rgb, vec3(0.0))
+        * max(frame.environment_ambient.a, 0.0);
     int light_count = clamp(int(frame.globals.x + 0.5), 0, 4);
     int shadow_light_index = int(frame.globals.z + 0.5);
 
@@ -116,5 +120,47 @@ void main() {
         lighting += color * intensity * attenuation * n_dot_l * (1.0 - shadow);
     }
 
-    out_color = vec4(v_color.rgb * lighting, v_color.a);
+    vec3 surface_color = v_color.rgb * lighting;
+    float camera_distance = length(v_world_position - frame.camera_position.xyz);
+
+    float haze_distance = max(
+        camera_distance - max(frame.environment_haze_params.x, 0.0),
+        0.0
+    );
+    float haze = 1.0 - exp(
+        -max(frame.environment_haze_color_density.a, 0.0) * haze_distance
+    );
+    surface_color = mix(
+        surface_color,
+        max(frame.environment_haze_color_density.rgb, vec3(0.0)),
+        clamp(haze, 0.0, 1.0)
+    );
+
+    float fog_distance = max(
+        camera_distance - max(frame.environment_fog_params.x, 0.0),
+        0.0
+    );
+    float height_above_base = max(
+        v_world_position.y - frame.environment_fog_params.z,
+        0.0
+    );
+    float height_factor = exp(
+        -height_above_base * max(frame.environment_fog_params.y, 0.0)
+    );
+    float fog = 1.0 - exp(
+        -max(frame.environment_fog_color_density.a, 0.0)
+        * fog_distance
+        * height_factor
+    );
+    fog = min(
+        clamp(fog, 0.0, 1.0),
+        clamp(frame.environment_fog_params.w, 0.0, 1.0)
+    );
+    surface_color = mix(
+        surface_color,
+        max(frame.environment_fog_color_density.rgb, vec3(0.0)),
+        fog
+    );
+
+    out_color = vec4(surface_color, v_color.a);
 }

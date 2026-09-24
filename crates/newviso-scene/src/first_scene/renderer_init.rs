@@ -200,6 +200,7 @@ impl Scene3dRuntime {
 
         self.gpu = Some(GpuScene {
             vertex_buffer,
+            cube_capacity: self.cubes.len() + MAX_RUNTIME_CUBES,
             shadow_vertex_buffer,
             frame_uniform,
             bind_group_layout,

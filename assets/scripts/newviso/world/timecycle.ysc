@@ -1,0 +1,42 @@
+import { orbitPhaseDegrees } from "./celestial.ysc";
+
+export type TimeCycleFrame = {
+  cycleSeconds: number;
+  phase: number;
+  phaseDegrees: number;
+  rate: number;
+  durationSeconds: number;
+};
+
+export function timeCycleFrame(
+  elapsedSeconds: number,
+  durationSeconds: number,
+  phaseOffsetDegrees: number,
+  rate: number,
+): TimeCycleFrame {
+  const duration = Math.max(0.0001, Math.abs(durationSeconds));
+  const scaled = elapsedSeconds * rate;
+  const cycleSeconds = ((scaled % duration) + duration) % duration;
+  const phaseDegrees = orbitPhaseDegrees(
+    scaled,
+    duration,
+    phaseOffsetDegrees,
+  );
+  return {
+    cycleSeconds,
+    phase: phaseDegrees / 360.0,
+    phaseDegrees,
+    rate,
+    durationSeconds: duration,
+  };
+}
+
+export function timeCycleBackendCommand(frame: TimeCycleFrame): unknown {
+  return {
+    op: "scene.timecycle.state.set",
+    cycle_seconds: frame.cycleSeconds,
+    phase: frame.phase,
+    rate: frame.rate,
+    duration_seconds: frame.durationSeconds,
+  };
+}

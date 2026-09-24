@@ -4,7 +4,8 @@ use crate::{
     world::{
         LightComponent, LightType, SceneBounds, SceneEntity, SceneEntityId, SceneEntityKind,
         SceneFocusSource, SceneFramePlan, SceneLifecycle, SceneLodPolicy, SceneMobility,
-        SceneResidency, SceneTransform, SceneView, SceneWorld, VisibilityMask, VisibilityModule,
+        SceneMutationSource, SceneProcessClaims, SceneResidency, SceneTransform, SceneView,
+        SceneWorld, VisibilityMask,
     },
 };
 use newviso_host as host_runtime;
@@ -39,7 +40,6 @@ const SCENE_SERVICE: &str = "engine.scene";
 const ASSET_SERVICE: &str = "engine.assets";
 const ECS_SERVICE: &str = "engine.ecs";
 const PRIMARY_MOUSE_BUTTON: u64 = 1;
-const BUILTIN_FIRST_SCENE_JSON: &str = include_str!("assets/first_scene.json");
 
 const VERTEX_SHADER: &[u8] = include_bytes!("assets/scene.vert.spv");
 const FRAGMENT_SHADER: &[u8] = include_bytes!("assets/scene.frag.spv");
@@ -51,16 +51,17 @@ const FLARE_VERTEX_SHADER: &[u8] = include_bytes!("assets/flare.vert.spv");
 const FLARE_FRAGMENT_SHADER: &[u8] = include_bytes!("assets/flare.frag.spv");
 const SKY_FLOATS_PER_VERTEX: usize = 5;
 const SKY_VERTEX_STRIDE: u64 = (SKY_FLOATS_PER_VERTEX * std::mem::size_of::<f32>()) as u64;
-const SKY_UNIFORM_FLOATS: usize = 68;
+const SKY_UNIFORM_FLOATS: usize = 176;
 const MAX_SKY_VISUALS: usize = 4;
 const FLARE_FLOATS_PER_VERTEX: usize = 12;
 const FLARE_VERTEX_STRIDE: u64 = (FLARE_FLOATS_PER_VERTEX * std::mem::size_of::<f32>()) as u64;
 const MAX_LENS_FLARES: usize = 16;
 const MAX_FLARE_ELEMENTS: usize = 16;
 const CUBE_VERTEX_COUNT: u32 = 36;
+const MAX_RUNTIME_CUBES: usize = 4096;
 const FLOATS_PER_VERTEX: usize = 11;
 const MAX_LIGHTS: usize = 4;
-const SCENE_FRAME_UNIFORM_FLOATS: usize = 120;
+const SCENE_FRAME_UNIFORM_FLOATS: usize = 144;
 const DEFAULT_SHADOW_RESOLUTION: u32 = 2048;
 const MAX_TRANSIENT_SPHERES: usize = 256;
 const MAX_OVERLAY_QUADS: usize = 256;
@@ -87,12 +88,53 @@ pub struct SceneTransientSphere {
     pub radius: f32,
     pub color: [f32; 4],
     pub marker_color: Option<[f32; 4]>,
+    pub marker_direction: [f32; 3],
+    pub marker_threshold: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct SceneOverlayQuad {
     pub rect: [f32; 4],
     pub color: [f32; 4],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SceneRuntimeVisualKind {
+    None,
+    Cube,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneRuntimeEntityDesc {
+    pub visual: SceneRuntimeVisualKind,
+    pub asset_ref: Option<String>,
+    pub position: [f32; 3],
+    pub rotation_degrees: [f32; 3],
+    pub scale: [f32; 3],
+    pub bounds_half_extent: [f32; 3],
+    pub base_color: [f32; 4],
+    pub solid: bool,
+    pub visible_distance: f32,
+    pub stream_distance: f32,
+    pub fade_range: f32,
+}
+
+impl Default for SceneRuntimeEntityDesc {
+    fn default() -> Self {
+        Self {
+            visual: SceneRuntimeVisualKind::None,
+            asset_ref: None,
+            position: [0.0; 3],
+            rotation_degrees: [0.0; 3],
+            scale: [1.0; 3],
+            bounds_half_extent: [0.5; 3],
+            base_color: [1.0; 4],
+            solid: false,
+            visible_distance: f32::INFINITY,
+            stream_distance: f32::INFINITY,
+            fade_range: 0.0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -123,8 +165,8 @@ impl Default for SceneLightDesc {
         Self {
             light_type: SceneLightType::Point,
             color: [1.0, 1.0, 1.0],
-            intensity: 1.0,
-            range: 10.0,
+            intensity: 0.0,
+            range: 0.0,
             cone_inner_degrees: 25.0,
             cone_outer_degrees: 35.0,
             casts_shadows: false,
@@ -150,6 +192,7 @@ pub struct SkyVisualDesc {
     pub angular_size_degrees: f32,
     pub halo_size_degrees: f32,
     pub halo_intensity: f32,
+    pub atmosphere_driver: bool,
 }
 
 impl Default for SkyVisualDesc {
@@ -157,10 +200,11 @@ impl Default for SkyVisualDesc {
         Self {
             kind: SkyVisualKind::Disc,
             color: [1.0, 1.0, 1.0],
-            intensity: 8.0,
-            angular_size_degrees: 0.8,
-            halo_size_degrees: 5.0,
-            halo_intensity: 0.35,
+            intensity: 0.0,
+            angular_size_degrees: 1.0,
+            halo_size_degrees: 1.0,
+            halo_intensity: 0.0,
+            atmosphere_driver: false,
         }
     }
 }
@@ -191,9 +235,157 @@ pub struct LensFlareDesc {
     pub elements: Vec<LensFlareElementDesc>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SkyCloudDesc {
+    pub enabled: bool,
+    pub coverage: f32,
+    pub density: f32,
+    pub softness: f32,
+    pub scale: f32,
+    pub detail_scale: f32,
+    pub speed: [f32; 2],
+    pub horizon_fade: f32,
+    pub macro_scale: f32,
+    pub macro_strength: f32,
+    pub detail_strength: f32,
+    pub micro_strength: f32,
+    pub erosion_strength: f32,
+    pub warp_strength: f32,
+    pub shape_contrast: f32,
+    pub shear_speed: [f32; 2],
+    pub seed_offset: [f32; 2],
+}
+
+impl Default for SkyCloudDesc {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            coverage: 0.0,
+            density: 0.0,
+            softness: 0.2,
+            scale: 1.0,
+            detail_scale: 1.0,
+            speed: [0.0, 0.0],
+            horizon_fade: 0.0,
+            macro_scale: 0.35,
+            macro_strength: 0.55,
+            detail_strength: 0.28,
+            micro_strength: 0.12,
+            erosion_strength: 0.72,
+            warp_strength: 0.10,
+            shape_contrast: 1.0,
+            shear_speed: [0.0, 0.0],
+            seed_offset: [0.0, 0.0],
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SkyAtmosphereDesc {
+    pub twilight_altitudes: [f32; 4],
+    pub daylight_altitudes: [f32; 2],
+    pub horizon_power: f32,
+    pub tonemap_shoulder: f32,
+    pub night_zenith: [f32; 3],
+    pub night_horizon: [f32; 3],
+    pub astronomical_zenith: [f32; 3],
+    pub astronomical_horizon: [f32; 3],
+    pub nautical_zenith: [f32; 3],
+    pub nautical_horizon: [f32; 3],
+    pub civil_zenith: [f32; 3],
+    pub civil_horizon: [f32; 3],
+    pub day_zenith: [f32; 3],
+    pub day_horizon: [f32; 3],
+    pub sunset_tint: [f32; 3],
+    pub sunset_strength: f32,
+    pub cloud_night: [f32; 3],
+    pub cloud_twilight_shadow: [f32; 3],
+    pub cloud_twilight_light: [f32; 3],
+    pub cloud_day_shadow: [f32; 3],
+    pub cloud_day_light: [f32; 3],
+    pub star_tint: [f32; 3],
+    pub star_intensity: f32,
+    pub star_visibility_altitudes: [f32; 2],
+    pub cloud_occlusion: f32,
+    pub silver_lining_tint: [f32; 3],
+    pub silver_lining_strength: f32,
+    pub cloud_alpha_range: [f32; 2],
+}
+
+impl Default for SkyAtmosphereDesc {
+    fn default() -> Self {
+        Self {
+            twilight_altitudes: [-18.0, -12.0, -6.0, 4.0],
+            daylight_altitudes: [-2.0, 12.0],
+            horizon_power: 2.0,
+            tonemap_shoulder: 0.0,
+            night_zenith: [0.0; 3],
+            night_horizon: [0.0; 3],
+            astronomical_zenith: [0.0; 3],
+            astronomical_horizon: [0.0; 3],
+            nautical_zenith: [0.0; 3],
+            nautical_horizon: [0.0; 3],
+            civil_zenith: [0.0; 3],
+            civil_horizon: [0.0; 3],
+            day_zenith: [0.0; 3],
+            day_horizon: [0.0; 3],
+            sunset_tint: [0.0; 3],
+            sunset_strength: 0.0,
+            cloud_night: [0.0; 3],
+            cloud_twilight_shadow: [0.0; 3],
+            cloud_twilight_light: [0.0; 3],
+            cloud_day_shadow: [0.0; 3],
+            cloud_day_light: [0.0; 3],
+            star_tint: [0.0; 3],
+            star_intensity: 0.0,
+            star_visibility_altitudes: [-16.0, -2.0],
+            cloud_occlusion: 1.0,
+            silver_lining_tint: [0.0; 3],
+            silver_lining_strength: 0.0,
+            cloud_alpha_range: [0.0, 0.0],
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SceneEnvironmentDesc {
+    pub ambient_color: [f32; 3],
+    pub ambient_intensity: f32,
+    pub fog_enabled: bool,
+    pub fog_color: [f32; 3],
+    pub fog_density: f32,
+    pub fog_start_distance: f32,
+    pub fog_height_falloff: f32,
+    pub fog_base_height: f32,
+    pub fog_max_opacity: f32,
+    pub haze_color: [f32; 3],
+    pub haze_density: f32,
+    pub haze_start_distance: f32,
+}
+
+impl Default for SceneEnvironmentDesc {
+    fn default() -> Self {
+        Self {
+            ambient_color: [1.0, 1.0, 1.0],
+            ambient_intensity: 0.0,
+            fog_enabled: false,
+            fog_color: [0.0, 0.0, 0.0],
+            fog_density: 0.0,
+            fog_start_distance: 0.0,
+            fog_height_falloff: 0.0,
+            fog_base_height: 0.0,
+            fog_max_opacity: 0.0,
+            haze_color: [0.0, 0.0, 0.0],
+            haze_density: 0.0,
+            haze_start_distance: 0.0,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct GpuScene {
     vertex_buffer: u32,
+    cube_capacity: usize,
     shadow_vertex_buffer: u32,
     frame_uniform: u32,
     bind_group_layout: u32,
@@ -255,6 +447,7 @@ pub struct SkyDomeResources {
     pub starfield: SkyTextureResources,
     pub detail_noise: SkyTextureResources,
     pub billboard_texture: Option<SkyTextureResources>,
+    pub clouds: SkyCloudDesc,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -276,6 +469,42 @@ struct GpuSky {
     index_format: &'static str,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct TimeCycleBackendState {
+    pub cycle_seconds: f32,
+    pub phase: f32,
+    pub rate: f32,
+    pub duration_seconds: f32,
+}
+
+impl Default for TimeCycleBackendState {
+    fn default() -> Self {
+        Self {
+            cycle_seconds: 0.0,
+            phase: 0.0,
+            rate: 1.0,
+            duration_seconds: 86_400.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WeatherBackendState {
+    pub current: String,
+    pub next: String,
+    pub blend: f32,
+}
+
+impl Default for WeatherBackendState {
+    fn default() -> Self {
+        Self {
+            current: String::new(),
+            next: String::new(),
+            blend: 0.0,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Scene3dRuntime {
     title: String,
@@ -287,6 +516,13 @@ pub struct Scene3dRuntime {
     overlay_quads: Vec<SceneOverlayQuad>,
     sky_visuals: BTreeMap<String, SkyVisualDesc>,
     lens_flares: BTreeMap<String, LensFlareDesc>,
+    sky_clouds: SkyCloudDesc,
+    sky_atmosphere: SkyAtmosphereDesc,
+    scene_environment: SceneEnvironmentDesc,
+    timecycle_backend: TimeCycleBackendState,
+    weather_backend: WeatherBackendState,
+    sky_time_seconds: f32,
+    sky_time_scale: f32,
     runtime_entity_ids: BTreeMap<String, u64>,
     next_runtime_entity_id: u64,
     world: SceneWorld,

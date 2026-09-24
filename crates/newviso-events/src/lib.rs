@@ -25,6 +25,8 @@ pub mod topic {
     pub const GAMEPAD_BUTTON_RELEASED: &str = "engine.input.gamepad.button.released";
 
     pub const SCRIPT_QUEUE_DROPPED: &str = "engine.scripting.events.dropped";
+
+    pub const SCENE_ENTITY_MUTATED: &str = "engine.scene.entity.mutated";
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -162,24 +164,28 @@ mod tests {
     #[test]
     fn topic_is_canonicalized() {
         assert_eq!(
-            normalize_topic(" Game.Player.Jump ").unwrap(),
-            "game.player.jump"
+            normalize_topic(" Project.Scene.Ready ").unwrap(),
+            "project.scene.ready"
         );
     }
 
     #[test]
     fn invalid_topic_is_rejected() {
-        assert!(normalize_topic("game..jump").is_err());
-        assert!(normalize_topic("game player jump").is_err());
+        assert!(normalize_topic("project..ready").is_err());
+        assert!(normalize_topic("project scene ready").is_err());
     }
 
     #[test]
     fn event_wire_round_trips() {
-        let event =
-            EventEnvelope::new(42, "game.player.jump", "game.script", json!({"speed": 6.0}))
-                .unwrap()
-                .cancelable(true)
-                .with_phase(EventPhase::Before);
+        let event = EventEnvelope::new(
+            42,
+            "project.scene.ready",
+            "project.script",
+            json!({"ready": true}),
+        )
+        .unwrap()
+        .cancelable(true)
+        .with_phase(EventPhase::Before);
         let bytes = serde_json::to_vec(&event).unwrap();
         assert_eq!(decode_host_event("ignored", &bytes), event);
     }

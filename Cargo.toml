@@ -18,6 +18,7 @@ members = [
     "crates/newviso-events",
     "crates/newviso-host",
     "crates/newviso-input-client",
+    "crates/newviso-noise-api",
     "crates/newviso-platform",
     "crates/newviso-physics-client",
     "crates/newviso-provider-runtime",
@@ -29,6 +30,7 @@ members = [
     "crates/newviso-materials",
     "crates/newviso-model",
     "crates/newviso-scene",
+    "crates/newviso-world",
 ]
 default-members = ["apps/newviso"]
 
@@ -53,6 +55,7 @@ newviso-core = { path = "crates/newviso-core" }
 newviso-events = { path = "crates/newviso-events" }
 newviso-host = { path = "crates/newviso-host" }
 newviso-input-client = { path = "crates/newviso-input-client" }
+newviso-noise-api = { path = "crates/newviso-noise-api" }
 newviso-platform = { path = "crates/newviso-platform" }
 newviso-physics-client = { path = "crates/newviso-physics-client" }
 newviso-provider-runtime = { path = "crates/newviso-provider-runtime" }
@@ -64,6 +67,7 @@ newviso-textures = { path = "crates/newviso-textures" }
 newviso-materials = { path = "crates/newviso-materials" }
 newviso-model = { path = "crates/newviso-model" }
 newviso-scene = { path = "crates/newviso-scene" }
+newviso-world = { path = "crates/newviso-world" }
 
 abi_stable = "0.11"
 blake3 = "1"

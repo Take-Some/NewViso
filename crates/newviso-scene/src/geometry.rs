@@ -63,6 +63,8 @@ pub(super) fn append_sphere_vertices(
     rotation_degrees: Vec3,
     color: [f32; 4],
     marker_color: Option<[f32; 4]>,
+    marker_direction: Vec3,
+    marker_threshold: f32,
     out: &mut Vec<f32>,
 ) {
     let tau = std::f32::consts::TAU;
@@ -94,14 +96,11 @@ pub(super) fn append_sphere_vertices(
                     center.z + normal.z * radius,
                 );
 
-                // A perfect solid-color sphere is rotationally symmetric and
-                // cannot visually communicate spin. The optional marker is
-                // defined in local space, so it rotates with the body.
+                // The project defines the local-space marker mask. The renderer
+                // only evaluates a generic directional threshold.
+                let marker_direction = marker_direction.normalized();
                 let vertex_color = marker_color
-                    .filter(|_| {
-                        local_normal.y.abs() < 0.22
-                            || (local_normal.z > 0.72 && local_normal.x > -0.2)
-                    })
+                    .filter(|_| local_normal.dot(marker_direction) >= marker_threshold)
                     .unwrap_or(color);
                 append_world_vertex(out, world, normal, vertex_color);
             }

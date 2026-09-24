@@ -1,0 +1,570 @@
+export type Vec3 = readonly [number, number, number];
+export type Vec4 = readonly [number, number, number, number];
+
+export interface EngineCommand {
+  op: string;
+  [key: string]: unknown;
+}
+
+export interface PopulationChannel {
+  id: string;
+  density: number;
+  maxActive: number;
+  spawnRadius: number;
+  despawnRadius: number;
+  creationBudgetPerTick?: number;
+  removalBudgetPerTick?: number;
+  updateIntervalSeconds?: number;
+  modelSet?: string;
+  tags?: string[];
+  parameters?: Record<string, number>;
+}
+
+export interface PopulationStreamingPolicy {
+  maxResidentSets: number;
+  requestBudgetPerTick: number;
+  evictionBudgetPerTick: number;
+  fallbackSet?: string;
+}
+
+export interface LivingWorldZone {
+  id: string;
+  min: Vec3;
+  max: Vec3;
+  priority?: number;
+  tags?: string[];
+  parameters?: Record<string, number>;
+}
+
+export interface AmbientModelSet {
+  id: string;
+  category: string;
+  assets: string[];
+  weights?: number[];
+  tags?: string[];
+}
+
+export interface ScenarioPoint {
+  id: string;
+  kind: string;
+  group?: string;
+  position: Vec3;
+  headingDegrees?: number;
+  radius?: number;
+  probability?: number;
+  modelSet?: string;
+  enabled?: boolean;
+  tags?: string[];
+  parameters?: Record<string, number>;
+}
+
+export interface RelationshipRule {
+  sourceGroup: string;
+  targetGroup: string;
+  relation: string;
+  weight?: number;
+  reciprocal?: boolean;
+  tags?: string[];
+}
+
+export interface WorldStimulus<TPayload = unknown> {
+  id?: string;
+  kind: string;
+  source?: string;
+  position: Vec3;
+  radius: number;
+  intensity: number;
+  lifetimeSeconds: number;
+  tags?: string[];
+  payload?: TPayload;
+}
+
+export interface WorldClockPolicy {
+  fixedHz: number;
+  timeScale: number;
+  maxStepsPerFrame: number;
+}
+
+export interface WorldSimulationPolicy {
+  transientFullRadius: number;
+  transientReducedRadius: number;
+  fullIntervalSeconds: number;
+  reducedIntervalSeconds: number;
+  backgroundIntervalSeconds: number;
+  maxActorUpdatesPerStep: number;
+}
+
+export interface WorldObserver {
+  id: string;
+  position: Vec3;
+  fullRadius: number;
+  reducedRadius: number;
+  importance?: number;
+  tags?: string[];
+}
+
+export interface WorldActor<TState = unknown> {
+  id: string;
+  kind: string;
+  position: Vec3;
+  group?: string;
+  channel?: string;
+  enabled?: boolean;
+  tags?: string[];
+  parameters?: Record<string, number>;
+  state?: TState;
+}
+
+export interface WorldProcess<TPayload = unknown> {
+  id: string;
+  intervalSeconds: number;
+  phaseSeconds?: number;
+  enabled?: boolean;
+  priority?: number;
+  tags?: string[];
+  payload?: TPayload;
+}
+
+export interface WorldScheduledEvent<TPayload = unknown> {
+  id?: string;
+  kind: string;
+  source?: string;
+  cause?: string;
+  delaySeconds: number;
+  ttlSeconds: number;
+  priority?: number;
+  position?: Vec3;
+  tags?: string[];
+  payload?: TPayload;
+}
+
+export interface WorldRealityEvent<TPayload = unknown> {
+  id?: string;
+  kind: string;
+  source?: string;
+  cause?: string;
+  participants?: string[];
+  position?: Vec3;
+  importance?: number;
+  tags?: string[];
+  payload?: TPayload;
+}
+
+export interface WorldScenarioReservation<TPayload = unknown> {
+  id?: string;
+  scenarioPointId: string;
+  actorId: string;
+  delaySeconds?: number;
+  durationSeconds: number;
+  priority?: number;
+  exclusive?: boolean;
+  payload?: TPayload;
+}
+
+export interface WorldNavNode {
+  id: string;
+  position: Vec3;
+  tags?: string[];
+  parameters?: Record<string, number>;
+}
+
+export interface WorldNavEdge {
+  id: string;
+  from: string;
+  to: string;
+  bidirectional?: boolean;
+  distance?: number;
+  costScale?: number;
+  enabled?: boolean;
+  tags?: string[];
+  parameters?: Record<string, number>;
+}
+
+export interface WorldTravelRequest<TPayload = unknown> {
+  actorId: string;
+  startNode?: string;
+  destinationNode: string;
+  speed: number;
+  mode?: string;
+  payload?: TPayload;
+}
+
+export interface WorldActorPresentation {
+  actorId: string;
+  sceneKey?: string;
+  visual?: "none" | "cube";
+  assetRef?: string;
+  positionOffset?: Vec3;
+  rotationDegrees?: Vec3;
+  scale?: Vec3;
+  boundsHalfExtent?: Vec3;
+  baseColor?: Vec4;
+  solid?: boolean;
+  visibleDistance?: number;
+  streamDistance?: number;
+  fadeRange?: number;
+  materializedRepresentations?: Array<"physical" | "proxy" | "abstract">;
+}
+
+export class LivingWorldCommands {
+  static configureClock(policy: WorldClockPolicy): EngineCommand {
+    return {
+      op: "world.clock.configure",
+      fixed_hz: policy.fixedHz,
+      time_scale: policy.timeScale,
+      max_steps_per_frame: policy.maxStepsPerFrame,
+    };
+  }
+
+  static setWorldSeconds(worldSeconds: number): EngineCommand {
+    return {
+      op: "world.clock.set",
+      world_seconds: worldSeconds,
+    };
+  }
+
+  static configureSimulation(policy: WorldSimulationPolicy): EngineCommand {
+    return {
+      op: "world.simulation.configure",
+      transient_full_radius: policy.transientFullRadius,
+      transient_reduced_radius: policy.transientReducedRadius,
+      full_interval_seconds: policy.fullIntervalSeconds,
+      reduced_interval_seconds: policy.reducedIntervalSeconds,
+      background_interval_seconds: policy.backgroundIntervalSeconds,
+      max_actor_updates_per_step: policy.maxActorUpdatesPerStep,
+    };
+  }
+
+  static upsertObserver(observer: WorldObserver): EngineCommand {
+    return {
+      op: "world.observer.upsert",
+      id: observer.id,
+      position: observer.position,
+      full_radius: observer.fullRadius,
+      reduced_radius: observer.reducedRadius,
+      importance: observer.importance ?? 1.0,
+      tags: observer.tags ?? [],
+    };
+  }
+
+  static removeObserver(id: string): EngineCommand {
+    return { op: "world.observer.remove", id };
+  }
+
+  static upsertActor<TState>(actor: WorldActor<TState>): EngineCommand {
+    return {
+      op: "world.actor.upsert",
+      id: actor.id,
+      kind: actor.kind,
+      position: actor.position,
+      group: actor.group,
+      channel: actor.channel,
+      enabled: actor.enabled ?? true,
+      tags: actor.tags ?? [],
+      parameters: actor.parameters ?? {},
+      state: actor.state ?? null,
+    };
+  }
+
+  static removeActor(id: string): EngineCommand {
+    return { op: "world.actor.remove", id };
+  }
+
+  static upsertProcess<TPayload>(process: WorldProcess<TPayload>): EngineCommand {
+    return {
+      op: "world.process.upsert",
+      id: process.id,
+      interval_seconds: process.intervalSeconds,
+      phase_seconds: process.phaseSeconds ?? 0.0,
+      enabled: process.enabled ?? true,
+      priority: process.priority ?? 0,
+      tags: process.tags ?? [],
+      payload: process.payload ?? null,
+    };
+  }
+
+  static removeProcess(id: string): EngineCommand {
+    return { op: "world.process.remove", id };
+  }
+
+  static setFact<TValue>(key: string, value: TValue, cause?: string): EngineCommand {
+    return {
+      op: "world.fact.set",
+      key,
+      value,
+      cause,
+    };
+  }
+
+  static removeFact(key: string): EngineCommand {
+    return { op: "world.fact.remove", key };
+  }
+
+  static scheduleEvent<TPayload>(
+    event: WorldScheduledEvent<TPayload>,
+  ): EngineCommand {
+    return {
+      op: "world.event.schedule",
+      id: event.id,
+      kind: event.kind,
+      source: event.source ?? "project.script",
+      cause: event.cause,
+      delay_seconds: event.delaySeconds,
+      ttl_seconds: event.ttlSeconds,
+      priority: event.priority ?? 0,
+      position: event.position,
+      tags: event.tags ?? [],
+      payload: event.payload ?? null,
+    };
+  }
+
+  static cancelEvent(id: string): EngineCommand {
+    return { op: "world.event.cancel", id };
+  }
+
+  static recordReality<TPayload>(
+    event: WorldRealityEvent<TPayload>,
+  ): EngineCommand {
+    return {
+      op: "world.reality.record",
+      id: event.id,
+      kind: event.kind,
+      source: event.source ?? "project.script",
+      cause: event.cause,
+      participants: event.participants ?? [],
+      position: event.position,
+      importance: event.importance ?? 1.0,
+      tags: event.tags ?? [],
+      payload: event.payload ?? null,
+    };
+  }
+
+  static reserveScenario<TPayload>(
+    reservation: WorldScenarioReservation<TPayload>,
+  ): EngineCommand {
+    return {
+      op: "world.scenario.reserve",
+      id: reservation.id,
+      scenario_point_id: reservation.scenarioPointId,
+      actor_id: reservation.actorId,
+      delay_seconds: reservation.delaySeconds ?? 0.0,
+      duration_seconds: reservation.durationSeconds,
+      priority: reservation.priority ?? 0,
+      exclusive: reservation.exclusive ?? true,
+      payload: reservation.payload ?? null,
+    };
+  }
+
+  static releaseScenario(id: string): EngineCommand {
+    return { op: "world.scenario.release", id };
+  }
+
+  static upsertNavNode(node: WorldNavNode): EngineCommand {
+    return {
+      op: "world.navigation.node.upsert",
+      id: node.id,
+      position: node.position,
+      tags: node.tags ?? [],
+      parameters: node.parameters ?? {},
+    };
+  }
+
+  static removeNavNode(id: string): EngineCommand {
+    return { op: "world.navigation.node.remove", id };
+  }
+
+  static upsertNavEdge(edge: WorldNavEdge): EngineCommand {
+    return {
+      op: "world.navigation.edge.upsert",
+      id: edge.id,
+      from: edge.from,
+      to: edge.to,
+      bidirectional: edge.bidirectional ?? true,
+      distance: edge.distance,
+      cost_scale: edge.costScale ?? 1.0,
+      enabled: edge.enabled ?? true,
+      tags: edge.tags ?? [],
+      parameters: edge.parameters ?? {},
+    };
+  }
+
+  static removeNavEdge(id: string): EngineCommand {
+    return { op: "world.navigation.edge.remove", id };
+  }
+
+  static startTravel<TPayload>(
+    request: WorldTravelRequest<TPayload>,
+  ): EngineCommand {
+    return {
+      op: "world.travel.start",
+      actor_id: request.actorId,
+      start_node: request.startNode,
+      destination_node: request.destinationNode,
+      speed: request.speed,
+      mode: request.mode ?? "generic",
+      payload: request.payload ?? null,
+    };
+  }
+
+  static cancelTravel(actorId: string): EngineCommand {
+    return { op: "world.travel.cancel", actor_id: actorId };
+  }
+
+  static bindActorPresentation(
+    presentation: WorldActorPresentation,
+  ): EngineCommand {
+    return {
+      op: "world.actor.presentation.bind",
+      actor_id: presentation.actorId,
+      scene_key: presentation.sceneKey,
+      visual: presentation.visual ?? "none",
+      asset_ref: presentation.assetRef,
+      position_offset: presentation.positionOffset ?? [0.0, 0.0, 0.0],
+      rotation_degrees: presentation.rotationDegrees ?? [0.0, 0.0, 0.0],
+      scale: presentation.scale ?? [1.0, 1.0, 1.0],
+      bounds_half_extent: presentation.boundsHalfExtent ?? [0.5, 0.5, 0.5],
+      base_color: presentation.baseColor ?? [1.0, 1.0, 1.0, 1.0],
+      solid: presentation.solid ?? false,
+      visible_distance: presentation.visibleDistance,
+      stream_distance: presentation.streamDistance,
+      fade_range: presentation.fadeRange ?? 0.0,
+      materialized_representations:
+        presentation.materializedRepresentations ?? ["physical"],
+    };
+  }
+
+  static unbindActorPresentation(actorId: string): EngineCommand {
+    return { op: "world.actor.presentation.unbind", actor_id: actorId };
+  }
+
+  static upsertPopulationChannel(channel: PopulationChannel): EngineCommand {
+    return {
+      op: "world.population.channel.upsert",
+      id: channel.id,
+      density: channel.density,
+      max_active: channel.maxActive,
+      spawn_radius: channel.spawnRadius,
+      despawn_radius: channel.despawnRadius,
+      creation_budget_per_tick: channel.creationBudgetPerTick ?? 1,
+      removal_budget_per_tick: channel.removalBudgetPerTick ?? 4,
+      update_interval_seconds: channel.updateIntervalSeconds ?? 0.0,
+      model_set: channel.modelSet,
+      tags: channel.tags ?? [],
+      parameters: channel.parameters ?? {},
+    };
+  }
+
+  static configurePopulationStreaming(
+    policy: PopulationStreamingPolicy,
+  ): EngineCommand {
+    return {
+      op: "world.population.streaming.configure",
+      max_resident_sets: policy.maxResidentSets,
+      request_budget_per_tick: policy.requestBudgetPerTick,
+      eviction_budget_per_tick: policy.evictionBudgetPerTick,
+      fallback_set: policy.fallbackSet,
+    };
+  }
+
+  static upsertZone(zone: LivingWorldZone): EngineCommand {
+    return {
+      op: "world.zone.upsert",
+      id: zone.id,
+      min: zone.min,
+      max: zone.max,
+      priority: zone.priority ?? 0,
+      tags: zone.tags ?? [],
+      parameters: zone.parameters ?? {},
+    };
+  }
+
+  static upsertModelSet(set: AmbientModelSet): EngineCommand {
+    return {
+      op: "world.model_set.upsert",
+      id: set.id,
+      category: set.category,
+      assets: set.assets,
+      weights: set.weights ?? [],
+      tags: set.tags ?? [],
+    };
+  }
+
+  static upsertScenarioPoint(point: ScenarioPoint): EngineCommand {
+    return {
+      op: "world.scenario_point.upsert",
+      id: point.id,
+      kind: point.kind,
+      group: point.group,
+      position: point.position,
+      heading_degrees: point.headingDegrees ?? 0.0,
+      radius: point.radius ?? 1.0,
+      probability: point.probability ?? 1.0,
+      model_set: point.modelSet,
+      enabled: point.enabled ?? true,
+      tags: point.tags ?? [],
+      parameters: point.parameters ?? {},
+    };
+  }
+
+  static setRelationship(rule: RelationshipRule): EngineCommand {
+    return {
+      op: "world.relationship.set",
+      source_group: rule.sourceGroup,
+      target_group: rule.targetGroup,
+      relation: rule.relation,
+      weight: rule.weight ?? 1.0,
+      reciprocal: rule.reciprocal ?? false,
+      tags: rule.tags ?? [],
+    };
+  }
+
+  static emitStimulus<TPayload>(
+    stimulus: WorldStimulus<TPayload>,
+  ): EngineCommand {
+    return {
+      op: "world.stimulus.emit",
+      id: stimulus.id,
+      kind: stimulus.kind,
+      source: stimulus.source ?? "project.script",
+      position: stimulus.position,
+      radius: stimulus.radius,
+      intensity: stimulus.intensity,
+      lifetime_seconds: stimulus.lifetimeSeconds,
+      tags: stimulus.tags ?? [],
+      payload: stimulus.payload ?? null,
+    };
+  }
+
+  static removePopulationChannel(id: string): EngineCommand {
+    return { op: "world.population.channel.remove", id };
+  }
+
+  static removeZone(id: string): EngineCommand {
+    return { op: "world.zone.remove", id };
+  }
+
+  static removeModelSet(id: string): EngineCommand {
+    return { op: "world.model_set.remove", id };
+  }
+
+  static removeScenarioPoint(id: string): EngineCommand {
+    return { op: "world.scenario_point.remove", id };
+  }
+
+  static removeRelationship(
+    sourceGroup: string,
+    targetGroup: string,
+    reciprocal = false,
+  ): EngineCommand {
+    return {
+      op: "world.relationship.remove",
+      source_group: sourceGroup,
+      target_group: targetGroup,
+      reciprocal,
+    };
+  }
+
+  static clearStimulus(id: string): EngineCommand {
+    return { op: "world.stimulus.clear", id };
+  }
+}

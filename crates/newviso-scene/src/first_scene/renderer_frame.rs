@@ -20,6 +20,10 @@ impl Scene3dRuntime {
         self.tick(dt)
     }
     pub fn tick(&mut self, dt: f32) -> Result<(), String> {
+        if dt.is_finite() && dt > 0.0 {
+            self.sky_time_seconds =
+                (self.sky_time_seconds + dt * self.sky_time_scale).rem_euclid(86_400.0);
+        }
         self.update_scene_world(dt)
     }
     pub fn render_frame(&mut self, width: u32, height: u32) -> Result<(), String> {
@@ -53,14 +57,18 @@ impl Scene3dRuntime {
         });
         let vertex_data = self.build_cube_vertices(aspect);
         let shadow_vertex_data = self.build_shadow_vertices();
-        // Optical flare is currently integrated into the sky shader so it works
-        // across render providers without requiring a transparent pipeline.
+        let flare_vertex_data = self.build_lens_flare_vertices(aspect);
+        let flare_vertex_count =
+            u32::try_from(flare_vertex_data.len() / FLARE_FLOATS_PER_VERTEX).unwrap_or(0);
         let (frame_uniform, shadow_enabled) =
             self.scene_frame_uniform(aspect, gpu.shadow_resolution);
         let render = RenderClient::new();
 
         render.write_buffer_f32(gpu.vertex_buffer, 0, &vertex_data)?;
         render.write_buffer_f32(gpu.shadow_vertex_buffer, 0, &shadow_vertex_data)?;
+        if flare_vertex_count > 0 {
+            render.write_buffer_f32(gpu.flare_vertex_buffer, 0, &flare_vertex_data)?;
+        }
         render.write_buffer_f32(gpu.frame_uniform, 0, &frame_uniform)?;
         if let Some(gpu_sky) = self.gpu_sky {
             let sky_frame = self.sky_frame_uniform(width as f32 / height as f32);
@@ -75,6 +83,7 @@ impl Scene3dRuntime {
             height,
             frame_index,
             shadow_enabled,
+            flare_vertex_count,
             overlay,
         ) {
             render.abort_frame();
@@ -92,6 +101,7 @@ impl Scene3dRuntime {
         height: u32,
         frame_index: u64,
         shadow_enabled: bool,
+        flare_vertex_count: u32,
         overlay: F,
     ) -> Result<(), String>
     where
@@ -129,6 +139,12 @@ impl Scene3dRuntime {
         render.set_bind_group(0, gpu.bind_group)?;
         render.set_vertex_buffer(0, gpu.vertex_buffer, 0)?;
         render.draw(self.vertex_count())?;
+
+        if flare_vertex_count > 0 {
+            render.set_pipeline(gpu.flare_pipeline)?;
+            render.set_vertex_buffer(0, gpu.flare_vertex_buffer, 0)?;
+            render.draw(flare_vertex_count)?;
+        }
 
         overlay()?;
         render.end_frame()

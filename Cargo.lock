@@ -372,6 +372,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "newviso-noise-api"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "newviso-physics-client"
 version = "0.1.0"
 dependencies = [
@@ -429,6 +437,7 @@ dependencies = [
 name = "newviso-runtime"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "newviso-assets-client",
  "newviso-bugtrap",
  "newviso-capabilities",
@@ -451,6 +460,7 @@ dependencies = [
  "newviso-scripting",
  "newviso-textures",
  "newviso-ui-client",
+ "newviso-world",
  "serde",
  "serde_json",
 ]
@@ -503,6 +513,14 @@ name = "newviso-ui-client"
 version = "0.1.0"
 dependencies = [
  "newviso-host",
+ "serde_json",
+]
+
+[[package]]
+name = "newviso-world"
+version = "0.1.0"
+dependencies = [
+ "serde",
  "serde_json",
 ]
 

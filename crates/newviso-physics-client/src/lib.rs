@@ -66,6 +66,10 @@ pub enum PhysicsCommandKind {
         entity: u64,
         velocity: [f32; 3],
     },
+    SetAngularVelocity {
+        entity: u64,
+        velocity: [f32; 3],
+    },
     ApplyImpulse {
         entity: u64,
         impulse: [f32; 3],
@@ -146,6 +150,12 @@ pub struct PhysicsBodyVelocityUpdate {
     pub angular_velocity: [f32; 3],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhysicsBodyActivityUpdate {
+    pub entity: u64,
+    pub active: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PhysicsQueryHit {
     pub seq: u64,
@@ -210,6 +220,8 @@ pub struct PhysicsFrameOutput {
     pub pose_updates: Vec<PhysicsBodyPoseUpdate>,
     #[serde(default)]
     pub velocity_updates: Vec<PhysicsBodyVelocityUpdate>,
+    #[serde(default)]
+    pub activity_updates: Vec<PhysicsBodyActivityUpdate>,
     #[serde(default)]
     pub events: Vec<PhysicsEvent>,
     #[serde(default)]

@@ -5,6 +5,8 @@ use std::{
 };
 
 mod validation;
+mod world_persistence;
+pub use world_persistence::ProjectWorldPersistence;
 use validation::*;
 
 pub const PROJECT_MANIFEST_NAME: &str = "project.json";
@@ -153,6 +155,8 @@ pub struct ProjectRuntimeSettings {
     pub camera: ProjectCameraSettings,
     #[serde(default)]
     pub streaming: ProjectStreamingSettings,
+    #[serde(default)]
+    pub world_persistence: ProjectWorldPersistence,
 }
 
 impl Default for ProjectRuntimeSettings {
@@ -162,6 +166,7 @@ impl Default for ProjectRuntimeSettings {
             window: ProjectWindowSettings::default(),
             camera: ProjectCameraSettings::default(),
             streaming: ProjectStreamingSettings::default(),
+            world_persistence: ProjectWorldPersistence::default(),
         }
     }
 }
@@ -196,6 +201,7 @@ impl ProjectRuntimeSettings {
                 "streaming dependency_priority_scale must be finite and in 0..=1".to_owned(),
             ));
         }
+        settings.world_persistence.validate().map_err(ProjectError::Asset)?;
         Ok(settings)
     }
 }
@@ -269,10 +275,58 @@ impl Default for ProjectCameraSettings {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProjectSkyClouds {
+    pub enabled: bool,
+    pub coverage: f32,
+    pub density: f32,
+    pub softness: f32,
+    pub scale: f32,
+    pub detail_scale: f32,
+    pub speed: [f32; 2],
+    pub horizon_fade: f32,
+    pub macro_scale: f32,
+    pub macro_strength: f32,
+    pub detail_strength: f32,
+    pub micro_strength: f32,
+    pub erosion_strength: f32,
+    pub warp_strength: f32,
+    pub shape_contrast: f32,
+    pub shear_speed: [f32; 2],
+    pub seed_offset: [f32; 2],
+}
+
+impl Default for ProjectSkyClouds {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            coverage: 0.0,
+            density: 0.0,
+            softness: 0.2,
+            scale: 1.0,
+            detail_scale: 1.0,
+            speed: [0.0, 0.0],
+            horizon_fade: 0.0,
+            macro_scale: 0.35,
+            macro_strength: 0.55,
+            detail_strength: 0.28,
+            micro_strength: 0.12,
+            erosion_strength: 0.72,
+            warp_strength: 0.10,
+            shape_contrast: 1.0,
+            shear_speed: [0.0, 0.0],
+            seed_offset: [0.0, 0.0],
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProjectSkyEnvironment {
     pub model: String,
     #[serde(default)]
     pub billboard_texture: Option<String>,
+    #[serde(default)]
+    pub clouds: ProjectSkyClouds,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -328,6 +382,50 @@ impl ProjectEnvironment {
                             .to_owned(),
                     ));
                 }
+            }
+            let clouds = &sky.clouds;
+            if !clouds.coverage.is_finite()
+                || !(0.0..=1.0).contains(&clouds.coverage)
+                || !clouds.density.is_finite()
+                || !(0.0..=2.0).contains(&clouds.density)
+                || !clouds.softness.is_finite()
+                || !(0.01..=1.0).contains(&clouds.softness)
+                || !clouds.scale.is_finite()
+                || !(0.05..=32.0).contains(&clouds.scale)
+                || !clouds.detail_scale.is_finite()
+                || !(0.1..=64.0).contains(&clouds.detail_scale)
+                || clouds
+                    .speed
+                    .iter()
+                    .any(|value| !value.is_finite() || value.abs() > 4.0)
+                || !clouds.horizon_fade.is_finite()
+                || !(0.0..=1.0).contains(&clouds.horizon_fade)
+                || !clouds.macro_scale.is_finite()
+                || !(0.02..=8.0).contains(&clouds.macro_scale)
+                || !clouds.macro_strength.is_finite()
+                || !(0.0..=2.0).contains(&clouds.macro_strength)
+                || !clouds.detail_strength.is_finite()
+                || !(0.0..=2.0).contains(&clouds.detail_strength)
+                || !clouds.micro_strength.is_finite()
+                || !(0.0..=2.0).contains(&clouds.micro_strength)
+                || !clouds.erosion_strength.is_finite()
+                || !(0.0..=2.0).contains(&clouds.erosion_strength)
+                || !clouds.warp_strength.is_finite()
+                || !(0.0..=1.0).contains(&clouds.warp_strength)
+                || !clouds.shape_contrast.is_finite()
+                || !(0.25..=4.0).contains(&clouds.shape_contrast)
+                || clouds
+                    .shear_speed
+                    .iter()
+                    .any(|value| !value.is_finite() || value.abs() > 4.0)
+                || clouds
+                    .seed_offset
+                    .iter()
+                    .any(|value| !value.is_finite() || value.abs() > 4096.0)
+            {
+                return Err(ProjectError::Asset(
+                    "environment.sky.clouds contains invalid parameters".to_owned(),
+                ));
             }
         }
         Ok(environment)
@@ -506,7 +604,7 @@ fn default_capability_version() -> u32 {
 }
 
 fn default_clear_color() -> [f32; 4] {
-    [0.025, 0.032, 0.045, 1.0]
+    [0.0, 0.0, 0.0, 1.0]
 }
 
 fn default_true() -> bool {
@@ -554,18 +652,66 @@ mod tests {
     }
 
     #[test]
-    fn first_fps_manifest_declares_script_entrypoint() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../projects/FirstFPS");
-        let project = ResolvedProject::load(&root)
-            .unwrap_or_else(|error| panic!("FirstFPS manifest must load: {error}"));
+    fn manifest_declares_project_owned_script_entrypoint() {
+        let root = temp_dir("script-entrypoint");
+        fs::write(
+            root.join(PROJECT_MANIFEST_NAME),
+            r#"{
+              "schema": "newviso.project.v1",
+              "project": {"id": "scripted-demo", "name": "Scripted Demo"},
+              "files": {
+                "runtime": "config/runtime.json",
+                "environment": "environments/default.environment.json",
+                "scene": "scenes/main.scene.json"
+              },
+              "scripts": {
+                "enabled": true,
+                "provider": "engine.scripting.typescript",
+                "entrypoint": "scripts/main.ysc"
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let project = ResolvedProject::load(&root).unwrap();
         let scripts = project
             .manifest
             .scripts
             .as_ref()
-            .expect("FirstFPS must declare scripts in project.json");
+            .expect("scripted manifest must declare scripts");
         assert_eq!(scripts.provider, "engine.scripting.typescript");
         assert_eq!(scripts.entrypoint, "scripts/main.ysc");
         assert!(project.manifest.files.scripts.is_none());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn environment_cloud_profile_is_valid_project_data() {
+        let value = serde_json::json!({
+            "schema": "newviso.environment.v1",
+            "clear_color": [0.0, 0.0, 0.0, 1.0],
+            "sky": {
+                "model": "models/sky.asset@main",
+                "clouds": {
+                    "enabled": true,
+                    "coverage": 0.45,
+                    "density": 0.8,
+                    "softness": 0.2,
+                    "scale": 1.5,
+                    "detail_scale": 3.0,
+                    "speed": [0.01, 0.0],
+                    "horizon_fade": 0.2
+                }
+            }
+        });
+        let environment = ProjectEnvironment::from_value(value).unwrap();
+        let sky = environment
+            .sky
+            .expect("project environment must preserve sky config");
+        assert!(sky.clouds.enabled);
+        assert_eq!(sky.clouds.coverage, 0.45);
+        assert_eq!(sky.clouds.speed, [0.01, 0.0]);
     }
 
     #[test]

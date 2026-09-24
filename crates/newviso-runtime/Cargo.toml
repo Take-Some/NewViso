@@ -27,5 +27,7 @@ newviso-scene.workspace = true
 newviso-scripting.workspace = true
 newviso-textures.workspace = true
 newviso-ui-client.workspace = true
+newviso-world.workspace = true
+blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true

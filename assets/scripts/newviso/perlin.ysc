@@ -1,0 +1,365 @@
+interface NewVisoHostBridge {
+  callServiceJson(service: string, method: string, payloadJson: string): string;
+}
+
+declare const NewViso: NewVisoHostBridge;
+
+export type NoisePoint =
+  | [number]
+  | [number, number]
+  | [number, number, number];
+
+export interface PerlinFbmOptions {
+  octaves?: number;
+  frequency?: number;
+  lacunarity?: number;
+  gain?: number;
+}
+
+export interface PerlinBatchOptions extends PerlinFbmOptions {
+  fbm?: boolean;
+  normalized01?: boolean;
+}
+
+interface NormalizedFbmOptions {
+  octaves: number;
+  frequency: number;
+  lacunarity: number;
+  gain: number;
+}
+
+interface HostCallEnvelope {
+  ok: boolean;
+  payload_json?: string;
+  error?: string;
+}
+
+interface NoiseValueResponse {
+  value: number;
+}
+
+interface NoiseBatchResponse {
+  values: number[];
+}
+
+class NoiseValidation {
+  static finite(value: number, name: string): number {
+    if (!Number.isFinite(value)) {
+      throw new Error(name + " must be finite");
+    }
+    return value;
+  }
+
+  static seed(seed: number): number {
+    if (!Number.isSafeInteger(seed) || seed < 0) {
+      throw new Error("Perlin seed must be a non-negative safe integer");
+    }
+    return seed;
+  }
+
+  static point(values: readonly number[]): NoisePoint {
+    if (values.length < 1 || values.length > 3) {
+      throw new Error("Perlin point must contain 1, 2, or 3 coordinates");
+    }
+
+    const validated = values.map((value, index) =>
+      this.finite(value, "point[" + index + "]"),
+    );
+
+    if (validated.length === 1) return [validated[0]];
+    if (validated.length === 2) return [validated[0], validated[1]];
+    return [validated[0], validated[1], validated[2]];
+  }
+
+  static fbm(options: PerlinFbmOptions = {}): NormalizedFbmOptions {
+    const octaves = options.octaves ?? 4;
+    const frequency = options.frequency ?? 1.0;
+    const lacunarity = options.lacunarity ?? 2.0;
+    const gain = options.gain ?? 0.5;
+
+    if (!Number.isInteger(octaves) || octaves < 1 || octaves > 32) {
+      throw new Error("Perlin fBm octaves must be an integer in 1..=32");
+    }
+    this.finite(frequency, "frequency");
+    this.finite(lacunarity, "lacunarity");
+    this.finite(gain, "gain");
+    if (frequency <= 0.0) throw new Error("frequency must be > 0");
+    if (lacunarity <= 0.0) throw new Error("lacunarity must be > 0");
+    if (gain < 0.0 || gain > 2.0) {
+      throw new Error("gain must be in 0..=2");
+    }
+
+    return { octaves, frequency, lacunarity, gain };
+  }
+}
+
+class NoiseServiceClient {
+  private static readonly service = "engine.noise";
+  private static readonly sampleMethod = "noise.sample_json_v1";
+  private static readonly fbmMethod = "noise.fbm_json_v1";
+  private static readonly batchMethod = "noise.batch_json_v1";
+
+  sample(
+    coordinates: readonly number[],
+    seed: number,
+    normalized01: boolean,
+  ): number {
+    return this.call<NoiseValueResponse>(NoiseServiceClient.sampleMethod, {
+      seed: NoiseValidation.seed(seed),
+      point: NoiseValidation.point(coordinates),
+      normalized_01: normalized01,
+    }).value;
+  }
+
+  fbm(
+    coordinates: readonly number[],
+    seed: number,
+    options: PerlinFbmOptions,
+    normalized01: boolean,
+  ): number {
+    return this.call<NoiseValueResponse>(NoiseServiceClient.fbmMethod, {
+      seed: NoiseValidation.seed(seed),
+      point: NoiseValidation.point(coordinates),
+      ...NoiseValidation.fbm(options),
+      normalized_01: normalized01,
+    }).value;
+  }
+
+  batch(
+    points: readonly NoisePoint[],
+    seed: number,
+    options: PerlinBatchOptions = {},
+  ): number[] {
+    const validated = points.map((coordinates) =>
+      NoiseValidation.point(coordinates),
+    );
+    const useFbm = options.fbm === true;
+
+    return this.call<NoiseBatchResponse>(NoiseServiceClient.batchMethod, {
+      seed: NoiseValidation.seed(seed),
+      points: validated,
+      fbm: useFbm ? NoiseValidation.fbm(options) : null,
+      normalized_01: options.normalized01 === true,
+    }).values;
+  }
+
+  private call<T>(method: string, payload: unknown): T {
+    if (
+      typeof NewViso !== "object" ||
+      NewViso === null ||
+      typeof NewViso.callServiceJson !== "function"
+    ) {
+      throw new Error("NewViso host service bridge is unavailable");
+    }
+
+    const envelope = JSON.parse(
+      NewViso.callServiceJson(
+        NoiseServiceClient.service,
+        method,
+        JSON.stringify(payload),
+      ),
+    ) as HostCallEnvelope;
+
+    if (!envelope.ok) {
+      throw new Error(
+        "engine.noise call failed: " +
+          String(envelope.error ?? "unknown error"),
+      );
+    }
+
+    if (typeof envelope.payload_json !== "string") {
+      throw new Error("engine.noise returned no JSON payload");
+    }
+
+    return JSON.parse(envelope.payload_json) as T;
+  }
+}
+
+export class PerlinGenerator {
+  readonly seed: number;
+  private readonly service: NoiseServiceClient;
+
+  constructor(seed = 0, service = new NoiseServiceClient()) {
+    this.seed = NoiseValidation.seed(seed);
+    this.service = service;
+  }
+
+  noise1(x: number): number {
+    return this.service.sample([x], this.seed, false);
+  }
+
+  noise2(x: number, y: number): number {
+    return this.service.sample([x, y], this.seed, false);
+  }
+
+  noise3(x: number, y: number, z: number): number {
+    return this.service.sample([x, y, z], this.seed, false);
+  }
+
+  noise1_01(x: number): number {
+    return this.service.sample([x], this.seed, true);
+  }
+
+  noise2_01(x: number, y: number): number {
+    return this.service.sample([x, y], this.seed, true);
+  }
+
+  noise3_01(x: number, y: number, z: number): number {
+    return this.service.sample([x, y, z], this.seed, true);
+  }
+
+  fbm1(x: number, options: PerlinFbmOptions = {}): number {
+    return this.service.fbm([x], this.seed, options, false);
+  }
+
+  fbm2(
+    x: number,
+    y: number,
+    options: PerlinFbmOptions = {},
+  ): number {
+    return this.service.fbm([x, y], this.seed, options, false);
+  }
+
+  fbm3(
+    x: number,
+    y: number,
+    z: number,
+    options: PerlinFbmOptions = {},
+  ): number {
+    return this.service.fbm([x, y, z], this.seed, options, false);
+  }
+
+  fbm1_01(x: number, options: PerlinFbmOptions = {}): number {
+    return this.service.fbm([x], this.seed, options, true);
+  }
+
+  fbm2_01(
+    x: number,
+    y: number,
+    options: PerlinFbmOptions = {},
+  ): number {
+    return this.service.fbm([x, y], this.seed, options, true);
+  }
+
+  fbm3_01(
+    x: number,
+    y: number,
+    z: number,
+    options: PerlinFbmOptions = {},
+  ): number {
+    return this.service.fbm([x, y, z], this.seed, options, true);
+  }
+
+  batch(
+    points: readonly NoisePoint[],
+    options: PerlinBatchOptions = {},
+  ): number[] {
+    return this.service.batch(points, this.seed, options);
+  }
+}
+
+export class Perlin {
+  static create(seed = 0): PerlinGenerator {
+    return new PerlinGenerator(seed);
+  }
+
+  static noise1(x: number, seed = 0): number {
+    return this.create(seed).noise1(x);
+  }
+
+  static noise2(x: number, y: number, seed = 0): number {
+    return this.create(seed).noise2(x, y);
+  }
+
+  static noise3(x: number, y: number, z: number, seed = 0): number {
+    return this.create(seed).noise3(x, y, z);
+  }
+
+  static noise1_01(x: number, seed = 0): number {
+    return this.create(seed).noise1_01(x);
+  }
+
+  static noise2_01(x: number, y: number, seed = 0): number {
+    return this.create(seed).noise2_01(x, y);
+  }
+
+  static noise3_01(x: number, y: number, z: number, seed = 0): number {
+    return this.create(seed).noise3_01(x, y, z);
+  }
+
+  static fbm1(
+    x: number,
+    options: PerlinFbmOptions = {},
+    seed = 0,
+  ): number {
+    return this.create(seed).fbm1(x, options);
+  }
+
+  static fbm2(
+    x: number,
+    y: number,
+    options: PerlinFbmOptions = {},
+    seed = 0,
+  ): number {
+    return this.create(seed).fbm2(x, y, options);
+  }
+
+  static fbm3(
+    x: number,
+    y: number,
+    z: number,
+    options: PerlinFbmOptions = {},
+    seed = 0,
+  ): number {
+    return this.create(seed).fbm3(x, y, z, options);
+  }
+
+  static fbm1_01(
+    x: number,
+    options: PerlinFbmOptions = {},
+    seed = 0,
+  ): number {
+    return this.create(seed).fbm1_01(x, options);
+  }
+
+  static fbm2_01(
+    x: number,
+    y: number,
+    options: PerlinFbmOptions = {},
+    seed = 0,
+  ): number {
+    return this.create(seed).fbm2_01(x, y, options);
+  }
+
+  static fbm3_01(
+    x: number,
+    y: number,
+    z: number,
+    options: PerlinFbmOptions = {},
+    seed = 0,
+  ): number {
+    return this.create(seed).fbm3_01(x, y, z, options);
+  }
+
+  static batch(
+    points: readonly NoisePoint[],
+    options: PerlinBatchOptions = {},
+    seed = 0,
+  ): number[] {
+    return this.create(seed).batch(points, options);
+  }
+
+  static remap01(value: number): number {
+    return Math.max(
+      0.0,
+      Math.min(1.0, (NoiseValidation.finite(value, "value") + 1.0) * 0.5),
+    );
+  }
+
+  static remap11(value: number): number {
+    return Math.max(
+      -1.0,
+      Math.min(1.0, NoiseValidation.finite(value, "value") * 2.0 - 1.0),
+    );
+  }
+}

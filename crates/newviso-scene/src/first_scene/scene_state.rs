@@ -7,6 +7,88 @@ impl Scene3dRuntime {
     pub fn set_clear_color(&mut self, clear_color: [f32; 4]) {
         self.clear_color = clear_color;
     }
+    pub fn set_sky_time_seconds(&mut self, seconds: f32) -> Result<(), String> {
+        if !seconds.is_finite() {
+            return Err("scene sky time must be finite".to_owned());
+        }
+        self.sky_time_seconds = seconds.rem_euclid(86_400.0);
+        Ok(())
+    }
+    pub fn set_sky_time_scale(&mut self, scale: f32) -> Result<(), String> {
+        if !scale.is_finite() || scale.abs() > 100_000.0 {
+            return Err("scene sky time scale is invalid".to_owned());
+        }
+        self.sky_time_scale = scale;
+        Ok(())
+    }
+
+    pub fn timecycle_backend(&self) -> &TimeCycleBackendState {
+        &self.timecycle_backend
+    }
+
+    pub fn set_timecycle_backend(
+        &mut self,
+        cycle_seconds: f32,
+        phase: f32,
+        rate: f32,
+        duration_seconds: f32,
+    ) -> Result<(), String> {
+        if !cycle_seconds.is_finite()
+            || cycle_seconds < 0.0
+            || !phase.is_finite()
+            || !(0.0..=1.0).contains(&phase)
+            || !rate.is_finite()
+            || rate.abs() > 100_000.0
+            || !duration_seconds.is_finite()
+            || duration_seconds <= 0.0
+        {
+            return Err("invalid generic timecycle backend state".to_owned());
+        }
+
+        self.timecycle_backend = TimeCycleBackendState {
+            cycle_seconds,
+            phase,
+            rate,
+            duration_seconds,
+        };
+        Ok(())
+    }
+
+    pub fn weather_backend(&self) -> &WeatherBackendState {
+        &self.weather_backend
+    }
+
+    pub fn set_weather_backend(
+        &mut self,
+        current: &str,
+        next: &str,
+        blend: f32,
+    ) -> Result<(), String> {
+        let current = current.trim();
+        let next = next.trim();
+        if current.is_empty()
+            || next.is_empty()
+            || current.len() > 128
+            || next.len() > 128
+            || !blend.is_finite()
+            || !(0.0..=1.0).contains(&blend)
+        {
+            return Err("invalid generic weather backend state".to_owned());
+        }
+
+        self.weather_backend = WeatherBackendState {
+            current: current.to_owned(),
+            next: next.to_owned(),
+            blend,
+        };
+        Ok(())
+    }
+
+    pub fn focus_position(&self) -> [f32; 3] {
+        let focus = self.world.focus().position;
+        [focus.x, focus.y, focus.z]
+    }
+
     pub fn solid_aabbs(&self) -> Vec<([f32; 3], [f32; 3])> {
         self.world
             .solid_bounds()
@@ -18,6 +100,18 @@ impl Scene3dRuntime {
             })
             .collect()
     }
+    pub fn physics_static_solid_aabbs(&self) -> Vec<([f32; 3], [f32; 3])> {
+        self.world
+            .static_solid_bounds()
+            .map(|bounds| {
+                (
+                    [bounds.min.x, bounds.min.y, bounds.min.z],
+                    [bounds.max.x, bounds.max.y, bounds.max.z],
+                )
+            })
+            .collect()
+    }
+
     pub fn runtime_state(&self) -> Value {
         let focus = self.world.focus();
         let focus_source = match focus.source {
@@ -71,6 +165,7 @@ impl Scene3dRuntime {
                     "entities": self.world.entity_count(),
                     "static_entities": self.world.static_count(),
                     "dynamic_entities": self.world.dynamic_count(),
+                    "process_active": self.world.process_active_count(),
                     "visible": self.frame_plan.visible_count,
                     "culled": self.frame_plan.culled_count,
                     "resident": self.frame_plan.resident_count,
@@ -121,6 +216,63 @@ impl Scene3dRuntime {
                 "lens_flares": {
                     "count": self.lens_flares.len(),
                     "ids": self.lens_flares.keys().cloned().collect::<Vec<_>>()
+                },
+                "sky_clouds": {
+                    "enabled": self.sky_clouds.enabled,
+                    "coverage": self.sky_clouds.coverage,
+                    "density": self.sky_clouds.density,
+                    "softness": self.sky_clouds.softness,
+                    "scale": self.sky_clouds.scale,
+                    "detail_scale": self.sky_clouds.detail_scale,
+                    "speed": self.sky_clouds.speed,
+                    "horizon_fade": self.sky_clouds.horizon_fade,
+                    "macro_scale": self.sky_clouds.macro_scale,
+                    "macro_strength": self.sky_clouds.macro_strength,
+                    "detail_strength": self.sky_clouds.detail_strength,
+                    "micro_strength": self.sky_clouds.micro_strength,
+                    "erosion_strength": self.sky_clouds.erosion_strength,
+                    "warp_strength": self.sky_clouds.warp_strength,
+                    "shape_contrast": self.sky_clouds.shape_contrast,
+                    "shear_speed": self.sky_clouds.shear_speed,
+                    "seed_offset": self.sky_clouds.seed_offset,
+                    "time_seconds": self.sky_time_seconds,
+                    "time_scale": self.sky_time_scale
+                },
+                "environment": {
+                    "ambient_color": self.scene_environment.ambient_color,
+                    "ambient_intensity": self.scene_environment.ambient_intensity,
+                    "fog": {
+                        "enabled": self.scene_environment.fog_enabled,
+                        "color": self.scene_environment.fog_color,
+                        "density": self.scene_environment.fog_density,
+                        "start_distance": self.scene_environment.fog_start_distance,
+                        "height_falloff": self.scene_environment.fog_height_falloff,
+                        "base_height": self.scene_environment.fog_base_height,
+                        "max_opacity": self.scene_environment.fog_max_opacity
+                    },
+                    "haze": {
+                        "color": self.scene_environment.haze_color,
+                        "density": self.scene_environment.haze_density,
+                        "start_distance": self.scene_environment.haze_start_distance
+                    }
+                },
+                "atmosphere": {
+                    "twilight_altitudes": self.sky_atmosphere.twilight_altitudes,
+                    "daylight_altitudes": self.sky_atmosphere.daylight_altitudes,
+                    "horizon_power": self.sky_atmosphere.horizon_power,
+                    "star_intensity": self.sky_atmosphere.star_intensity,
+                    "cloud_alpha_range": self.sky_atmosphere.cloud_alpha_range
+                },
+                "timecycle": {
+                    "cycle_seconds": self.timecycle_backend.cycle_seconds,
+                    "phase": self.timecycle_backend.phase,
+                    "rate": self.timecycle_backend.rate,
+                    "duration_seconds": self.timecycle_backend.duration_seconds
+                },
+                "weather": {
+                    "current": self.weather_backend.current,
+                    "next": self.weather_backend.next,
+                    "blend": self.weather_backend.blend
                 },
                 "transient": {
                     "spheres": self.transient_spheres.len(),
@@ -216,6 +368,19 @@ impl Scene3dRuntime {
                 || sphere
                     .marker_color
                     .is_some_and(|color| color.iter().any(|value| !value.is_finite()))
+                || (sphere.marker_color.is_some()
+                    && (sphere
+                        .marker_direction
+                        .iter()
+                        .any(|value| !value.is_finite())
+                        || sphere
+                            .marker_direction
+                            .iter()
+                            .map(|value| value * value)
+                            .sum::<f32>()
+                            <= 1.0e-8
+                        || !sphere.marker_threshold.is_finite()
+                        || !(-1.0..=1.0).contains(&sphere.marker_threshold)))
             {
                 return Err("scene.transient_spheres.set contains invalid sphere data".to_owned());
             }

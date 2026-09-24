@@ -171,6 +171,16 @@ impl SceneWorld {
                 .then_some(entity.bounds)
         })
     }
+    pub(crate) fn static_solid_bounds(&self) -> impl Iterator<Item = SceneBounds> + '_ {
+        self.entities.iter().filter_map(|entity| {
+            (entity.solid
+                && entity.mobility == SceneMobility::Static
+                && entity.lifecycle == SceneLifecycle::Active
+                && entity.residency == SceneResidency::Resident)
+                .then_some(entity.bounds)
+        })
+    }
+
     pub(crate) fn entity_count(&self) -> usize {
         self.entities
             .iter()

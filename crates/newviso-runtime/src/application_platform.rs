@@ -31,22 +31,25 @@ impl PlatformApplication for EngineApplication {
 
         if self.scripts.is_some() {
             bugtrap::set_phase("scripts.start");
+            let runtime_state = self.runtime_state();
             let control = {
                 let scripts = self
                     .scripts
                     .as_mut()
                     .ok_or_else(|| "script runtime disappeared during start".to_owned())?;
-                scripts.start(&self.project_context)?
+                scripts.start_with_runtime(&self.project_context, &runtime_state)?
             };
             self.exit_requested |= control.exit_requested;
             self.ui_bindings.extend(control.ui_bindings);
             self.apply_script_commands(&control.commands)?;
+            self.sync_world_actor_presentations()?;
         }
 
         self.publish_bound_ui_if_changed()?;
         self.publish_content_manager_if_changed()?;
 
         self.ready = true;
+        self.world_save_allowed = true;
 
         host::info(
             "newviso.runtime",
@@ -60,6 +63,7 @@ impl PlatformApplication for EngineApplication {
             return Ok(false);
         }
 
+        self.world_save_allowed = false;
         self.elapsed_seconds += f64::from(dt);
 
         bugtrap::set_phase("frame.input");
@@ -104,21 +108,32 @@ impl PlatformApplication for EngineApplication {
 
         if self.physics.is_some() {
             bugtrap::set_phase("physics.step");
-            let scene_solids = self.scene.solid_aabbs();
-            self.physics
-                .as_mut()
-                .expect("physics checked")
-                .step(dt, &scene_solids)?;
+            let scene_solids = self.scene.physics_static_solid_aabbs();
+            let (activity_updates, pose_updates) = {
+                let physics = self.physics.as_mut().expect("physics checked");
+                physics.step(dt, &scene_solids)?;
+                (
+                    physics.scene_activity_updates(),
+                    physics.scene_pose_updates(),
+                )
+            };
+            for activity in activity_updates {
+                self.scene
+                    .set_physics_process_active(activity.entity, activity.active)?;
+            }
+            for pose in pose_updates {
+                self.scene
+                    .apply_physics_pose(pose.entity, pose.position, pose.rotation)?;
+            }
         }
 
+        bugtrap::set_phase("living_world.tick");
+        let transient_observers = [self.scene.focus_position()];
+        self.living_world.tick_frame(dt, &transient_observers);
+        self.sync_world_actor_presentations()?;
+
         if self.scripts.is_some() {
-            let mut runtime_state = self.scene.runtime_state();
-            if let Some(physics) = self.physics.as_ref() {
-                runtime_state
-                    .as_object_mut()
-                    .expect("scene runtime state must be a JSON object")
-                    .insert("physics".to_owned(), physics.runtime_state());
-            }
+            let runtime_state = self.runtime_state();
             let frame_context = json!({
                 "input": {
                     "state": &input.state,
@@ -154,12 +169,17 @@ impl PlatformApplication for EngineApplication {
             self.exit_requested |= control.exit_requested;
             self.ui_bindings.extend(control.ui_bindings);
             self.apply_script_commands(&control.commands)?;
+            self.sync_world_actor_presentations()?;
             bugtrap::set_phase("scene.tick");
             self.scene.tick(dt)?;
         } else {
             // Native orbit is an engine/editor navigation fallback, not gameplay.
             self.scene
                 .update_native_input_from_snapshot(&input, dt, camera_navigation_enabled)?;
+        }
+
+        for mutation in self.scene.drain_entity_mutations() {
+            host::publish_event_json(event_topic::SCENE_ENTITY_MUTATED, "newviso.scene", mutation)?;
         }
 
         // The scene contributes only generic asset interest. Residency, dependency
@@ -180,6 +200,8 @@ impl PlatformApplication for EngineApplication {
             }),
         )?;
 
+        self.world_save_allowed = true;
+        self.autosave_world(dt);
         if self.exit_requested {
             return Ok(true);
         }
@@ -365,6 +387,7 @@ impl PlatformApplication for EngineApplication {
                         "newviso.scripting",
                         format!("script shutdown hook failed: {error}"),
                     );
+                    self.world_save_allowed = false;
                     None
                 }
             }
@@ -377,12 +400,14 @@ impl PlatformApplication for EngineApplication {
                     "newviso.scripting",
                     format!("script shutdown commands failed: {error}"),
                 );
+                self.world_save_allowed = false;
             }
         }
 
+        self.save_world_on_shutdown();
         host::info(
-            "newviso.scene",
-            format!("final runtime state: {}", self.scene.runtime_state()),
+            "newviso.runtime",
+            format!("final runtime state: {}", self.runtime_state()),
         );
 
         // Provider event sinks are ABI trait objects whose vtables live in the

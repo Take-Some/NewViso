@@ -1,6 +1,5 @@
 use super::*;
 
-#[cfg(test)]
 pub(super) fn append_flare_quad(
     out: &mut Vec<f32>,
     center: [f32; 2],
@@ -35,7 +34,6 @@ pub(super) fn append_flare_quad(
         ]);
     }
 }
-#[cfg(test)]
 pub(super) fn ray_hits_aabb(
     origin: Vec3,
     direction: Vec3,

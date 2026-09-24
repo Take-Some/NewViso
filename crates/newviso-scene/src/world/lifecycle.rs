@@ -37,17 +37,27 @@ impl SceneWorld {
             entity.priority_score = 0.0;
         }
     }
+
     pub(crate) fn update(&mut self) {
-        for entity in &mut self.entities {
-            if entity.lifecycle == SceneLifecycle::Removed {
+        // Process-control is deliberately separate from render lifecycle. An entity
+        // may remain Active/visible/resident while being absent from this set.
+        let frame = self.frame;
+        let active_ids = self.process_active_ids();
+        for id in active_ids {
+            let Some(entity) = self.entity_mut(id) else {
+                self.process_active.remove(&id);
+                continue;
+            };
+            if matches!(
+                entity.lifecycle,
+                SceneLifecycle::PendingRemove | SceneLifecycle::Removed
+            ) {
+                self.process_active.remove(&id);
                 continue;
             }
-            if entity.mobility == SceneMobility::Dynamic
-                && entity.lifecycle == SceneLifecycle::Dormant
-            {
-                entity.lifecycle = SceneLifecycle::Active;
-            }
+            entity.last_process_frame = Some(frame);
         }
+
         self.flush_removals();
     }
 }
