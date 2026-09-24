@@ -1,0 +1,329 @@
+{
+  "schema": "newviso.map.cell.v1",
+  "coord": {
+    "x": -1,
+    "z": -2
+  },
+  "placements": [
+    {
+      "id": "desk_0_0",
+      "transform": {
+        "position": [
+          -12.0,
+          0.72,
+          -22.0
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          3.4,
+          1.15,
+          1.3
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.42,
+          0.29,
+          0.18,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 95,
+        "stream_distance": 145,
+        "fade_range": 14.25
+      },
+      "visibility": null,
+      "tags": [
+        "prop",
+        "desk"
+      ],
+      "definition_ref": null
+    },
+    {
+      "id": "desk_0_1",
+      "transform": {
+        "position": [
+          -4.0,
+          0.72,
+          -22.0
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          3.4,
+          1.15,
+          1.3
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.42,
+          0.29,
+          0.18,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 95,
+        "stream_distance": 145,
+        "fade_range": 14.25
+      },
+      "visibility": null,
+      "tags": [
+        "prop",
+        "desk"
+      ],
+      "definition_ref": null
+    },
+    {
+      "id": "divider_0_0",
+      "transform": {
+        "position": [
+          -12.0,
+          1.45,
+          -22.72
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          3.4,
+          1.4,
+          0.08
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.31,
+          0.34,
+          0.36,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 95,
+        "stream_distance": 145,
+        "fade_range": 14.25
+      },
+      "visibility": null,
+      "tags": [
+        "prop"
+      ],
+      "definition_ref": null
+    },
+    {
+      "id": "divider_0_1",
+      "transform": {
+        "position": [
+          -4.0,
+          1.45,
+          -22.72
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          3.4,
+          1.4,
+          0.08
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.31,
+          0.34,
+          0.36,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 95,
+        "stream_distance": 145,
+        "fade_range": 14.25
+      },
+      "visibility": null,
+      "tags": [
+        "prop"
+      ],
+      "definition_ref": null
+    },
+    {
+      "id": "divider_1_0",
+      "transform": {
+        "position": [
+          -12.0,
+          1.45,
+          -16.72
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          3.4,
+          1.4,
+          0.08
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.31,
+          0.34,
+          0.36,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 95,
+        "stream_distance": 145,
+        "fade_range": 14.25
+      },
+      "visibility": null,
+      "tags": [
+        "prop"
+      ],
+      "definition_ref": null
+    },
+    {
+      "id": "divider_1_1",
+      "transform": {
+        "position": [
+          -4.0,
+          1.45,
+          -16.72
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          3.4,
+          1.4,
+          0.08
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.31,
+          0.34,
+          0.36,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 95,
+        "stream_distance": 145,
+        "fade_range": 14.25
+      },
+      "visibility": null,
+      "tags": [
+        "prop"
+      ],
+      "definition_ref": null
+    },
+    {
+      "id": "server_room_east",
+      "transform": {
+        "position": [
+          -16.0,
+          1.5,
+          -23.0
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.3,
+          3.0,
+          10.0
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.62,
+          0.62,
+          0.59,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 130,
+        "stream_distance": 180,
+        "fade_range": 19.5
+      },
+      "visibility": null,
+      "tags": [
+        "server"
+      ],
+      "definition_ref": null
+    }
+  ],
+  "metadata": {
+    "source": "maps/lifeinvader/source/lifeinvader_proxy.placements.json"
+  }
+}

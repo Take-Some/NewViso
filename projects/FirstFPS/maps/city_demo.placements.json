@@ -1,0 +1,6735 @@
+{
+  "schema": "newviso.placements.v1",
+  "title": "First FPS - Clean Room Urban Sector",
+  "camera": {
+    "name": "PlayerCamera",
+    "position": [
+      0,
+      1.7,
+      126
+    ],
+    "target": [
+      0,
+      1.7,
+      80
+    ],
+    "up": [
+      0,
+      1,
+      0
+    ],
+    "fov_y_degrees": 72,
+    "near": 0.08,
+    "far": 700
+  },
+  "placements": [
+    {
+      "name": "CityGround",
+      "transform": {
+        "position": [
+          0,
+          -0.3,
+          0
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          320,
+          0.6,
+          320
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.18,
+          0.2,
+          0.21,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 700,
+        "stream_distance": 780.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Road_NS_0",
+      "transform": {
+        "position": [
+          -108,
+          0.015,
+          0
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          14,
+          0.03,
+          300
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.085,
+          0.09,
+          0.095,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 550,
+        "stream_distance": 630.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Road_NS_1",
+      "transform": {
+        "position": [
+          -54,
+          0.015,
+          0
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          14,
+          0.03,
+          300
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.085,
+          0.09,
+          0.095,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 550,
+        "stream_distance": 630.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Road_NS_2",
+      "transform": {
+        "position": [
+          0,
+          0.015,
+          0
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          14,
+          0.03,
+          300
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.085,
+          0.09,
+          0.095,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 550,
+        "stream_distance": 630.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Road_NS_3",
+      "transform": {
+        "position": [
+          54,
+          0.015,
+          0
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          14,
+          0.03,
+          300
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.085,
+          0.09,
+          0.095,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 550,
+        "stream_distance": 630.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Road_NS_4",
+      "transform": {
+        "position": [
+          108,
+          0.015,
+          0
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          14,
+          0.03,
+          300
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.085,
+          0.09,
+          0.095,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 550,
+        "stream_distance": 630.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Road_EW_0",
+      "transform": {
+        "position": [
+          0,
+          0.02,
+          -108
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          300,
+          0.04,
+          14
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.08,
+          0.085,
+          0.09,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 550,
+        "stream_distance": 630.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Road_EW_1",
+      "transform": {
+        "position": [
+          0,
+          0.02,
+          -54
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          300,
+          0.04,
+          14
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.08,
+          0.085,
+          0.09,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 550,
+        "stream_distance": 630.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Road_EW_2",
+      "transform": {
+        "position": [
+          0,
+          0.02,
+          0
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          300,
+          0.04,
+          14
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.08,
+          0.085,
+          0.09,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 550,
+        "stream_distance": 630.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Road_EW_3",
+      "transform": {
+        "position": [
+          0,
+          0.02,
+          54
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          300,
+          0.04,
+          14
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.08,
+          0.085,
+          0.09,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 550,
+        "stream_distance": 630.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Road_EW_4",
+      "transform": {
+        "position": [
+          0,
+          0.02,
+          108
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          300,
+          0.04,
+          14
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.08,
+          0.085,
+          0.09,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 550,
+        "stream_distance": 630.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Lane_NS_0",
+      "transform": {
+        "position": [
+          -108,
+          0.045,
+          0
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.18,
+          0.02,
+          300
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.82,
+          0.77,
+          0.52,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 220,
+        "stream_distance": 300.0,
+        "fade_range": 33.0
+      }
+    },
+    {
+      "name": "Lane_NS_1",
+      "transform": {
+        "position": [
+          -54,
+          0.045,
+          0
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.18,
+          0.02,
+          300
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.82,
+          0.77,
+          0.52,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 220,
+        "stream_distance": 300.0,
+        "fade_range": 33.0
+      }
+    },
+    {
+      "name": "Lane_NS_2",
+      "transform": {
+        "position": [
+          0,
+          0.045,
+          0
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.18,
+          0.02,
+          300
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.82,
+          0.77,
+          0.52,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 220,
+        "stream_distance": 300.0,
+        "fade_range": 33.0
+      }
+    },
+    {
+      "name": "Lane_NS_3",
+      "transform": {
+        "position": [
+          54,
+          0.045,
+          0
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.18,
+          0.02,
+          300
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.82,
+          0.77,
+          0.52,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 220,
+        "stream_distance": 300.0,
+        "fade_range": 33.0
+      }
+    },
+    {
+      "name": "Lane_NS_4",
+      "transform": {
+        "position": [
+          108,
+          0.045,
+          0
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.18,
+          0.02,
+          300
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.82,
+          0.77,
+          0.52,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 220,
+        "stream_distance": 300.0,
+        "fade_range": 33.0
+      }
+    },
+    {
+      "name": "Lane_EW_0",
+      "transform": {
+        "position": [
+          0,
+          0.05,
+          -108
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          300,
+          0.02,
+          0.18
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.82,
+          0.77,
+          0.52,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 220,
+        "stream_distance": 300.0,
+        "fade_range": 33.0
+      }
+    },
+    {
+      "name": "Lane_EW_1",
+      "transform": {
+        "position": [
+          0,
+          0.05,
+          -54
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          300,
+          0.02,
+          0.18
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.82,
+          0.77,
+          0.52,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 220,
+        "stream_distance": 300.0,
+        "fade_range": 33.0
+      }
+    },
+    {
+      "name": "Lane_EW_2",
+      "transform": {
+        "position": [
+          0,
+          0.05,
+          0
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          300,
+          0.02,
+          0.18
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.82,
+          0.77,
+          0.52,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 220,
+        "stream_distance": 300.0,
+        "fade_range": 33.0
+      }
+    },
+    {
+      "name": "Lane_EW_3",
+      "transform": {
+        "position": [
+          0,
+          0.05,
+          54
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          300,
+          0.02,
+          0.18
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.82,
+          0.77,
+          0.52,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 220,
+        "stream_distance": 300.0,
+        "fade_range": 33.0
+      }
+    },
+    {
+      "name": "Lane_EW_4",
+      "transform": {
+        "position": [
+          0,
+          0.05,
+          108
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          300,
+          0.02,
+          0.18
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.82,
+          0.77,
+          0.52,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 220,
+        "stream_distance": 300.0,
+        "fade_range": 33.0
+      }
+    },
+    {
+      "name": "Sidewalk_0",
+      "transform": {
+        "position": [
+          -81,
+          0.12,
+          -81
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          40,
+          0.24,
+          40
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.4,
+          0.41,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Lot_0_0",
+      "transform": {
+        "position": [
+          -91,
+          0.16,
+          -91
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          17,
+          0.08,
+          17
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.14,
+          0.15,
+          0.16,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "LotBarrier_0_0_0",
+      "transform": {
+        "position": [
+          -96,
+          0.55,
+          -84.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "LotBarrier_0_0_1",
+      "transform": {
+        "position": [
+          -91,
+          0.55,
+          -84.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "LotBarrier_0_0_2",
+      "transform": {
+        "position": [
+          -86,
+          0.55,
+          -84.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "Building_0_1",
+      "transform": {
+        "position": [
+          -70.553,
+          10.204,
+          -90.196
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          16.755,
+          19.928,
+          13.576
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.5,
+          0.47,
+          0.43,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_0_2",
+      "transform": {
+        "position": [
+          -92.015,
+          10.289,
+          -72.218
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          17.142,
+          20.097,
+          15.494
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.36,
+          0.4,
+          0.43,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_0_2",
+      "transform": {
+        "position": [
+          -92.015,
+          21.197,
+          -72.218
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4.8,
+          2.0,
+          3.409
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Building_0_3",
+      "transform": {
+        "position": [
+          -71.505,
+          15.58,
+          -69.865
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          16.044,
+          30.68,
+          17.824
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.55,
+          0.53,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 500,
+        "stream_distance": 580.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_0_3",
+      "transform": {
+        "position": [
+          -71.505,
+          31.78,
+          -69.865
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4.492,
+          2.0,
+          3.921
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Sidewalk_1",
+      "transform": {
+        "position": [
+          -27,
+          0.12,
+          -81
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          40,
+          0.24,
+          40
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.4,
+          0.41,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_1_0",
+      "transform": {
+        "position": [
+          -36.65,
+          11.5,
+          -90.295
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          17.477,
+          22.52,
+          13.404
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.5,
+          0.47,
+          0.43,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_1_0",
+      "transform": {
+        "position": [
+          -36.65,
+          23.62,
+          -90.295
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4.893,
+          2.0,
+          2.949
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Building_1_1",
+      "transform": {
+        "position": [
+          -17.715,
+          12.01,
+          -90.865
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          16.102,
+          23.541,
+          16.138
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.36,
+          0.4,
+          0.43,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_1_1",
+      "transform": {
+        "position": [
+          -17.715,
+          24.641,
+          -90.865
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4.509,
+          2.0,
+          3.55
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Building_1_2",
+      "transform": {
+        "position": [
+          -37.37,
+          6.921,
+          -71.184
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          14.835,
+          13.363,
+          15.794
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.55,
+          0.53,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_1_3",
+      "transform": {
+        "position": [
+          -16.445,
+          17.744,
+          -69.729
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          14.871,
+          35.008,
+          16.968
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.3,
+          0.34,
+          0.38,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 500,
+        "stream_distance": 580.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_1_3",
+      "transform": {
+        "position": [
+          -16.445,
+          36.108,
+          -69.729
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4.164,
+          2.0,
+          3.733
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Sidewalk_2",
+      "transform": {
+        "position": [
+          27,
+          0.12,
+          -81
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          40,
+          0.24,
+          40
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.4,
+          0.41,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_2_0",
+      "transform": {
+        "position": [
+          16.131,
+          14.16,
+          -89.762
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          14.109,
+          27.841,
+          13.436
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.36,
+          0.4,
+          0.43,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 500,
+        "stream_distance": 580.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_2_0",
+      "transform": {
+        "position": [
+          16.131,
+          28.941,
+          -89.762
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          3.95,
+          2.0,
+          2.956
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Building_2_1",
+      "transform": {
+        "position": [
+          37.035,
+          8.633,
+          -91.671
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          16.682,
+          16.787,
+          13.396
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.55,
+          0.53,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_2_2",
+      "transform": {
+        "position": [
+          17.509,
+          5.308,
+          -70.136
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          16.439,
+          10.137,
+          16.51
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.3,
+          0.34,
+          0.38,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_2_3",
+      "transform": {
+        "position": [
+          36.365,
+          9.749,
+          -70.432
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          16.866,
+          19.018,
+          16.212
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.46,
+          0.42,
+          0.39,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Sidewalk_3",
+      "transform": {
+        "position": [
+          81,
+          0.12,
+          -81
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          40,
+          0.24,
+          40
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.4,
+          0.41,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_3_0",
+      "transform": {
+        "position": [
+          71.543,
+          8.136,
+          -90.987
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          14.592,
+          15.791,
+          15.95
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.55,
+          0.53,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_3_1",
+      "transform": {
+        "position": [
+          91.144,
+          5.434,
+          -91.365
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          17.633,
+          10.389,
+          17.895
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.3,
+          0.34,
+          0.38,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_3_2",
+      "transform": {
+        "position": [
+          70.832,
+          15.918,
+          -70.78
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          14.041,
+          31.357,
+          16.093
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.46,
+          0.42,
+          0.39,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 500,
+        "stream_distance": 580.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_3_2",
+      "transform": {
+        "position": [
+          70.832,
+          32.457,
+          -70.78
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          3.931,
+          2.0,
+          3.54
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Building_3_3",
+      "transform": {
+        "position": [
+          91.99,
+          8.919,
+          -70.596
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          15.78,
+          17.357,
+          14.395
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.42,
+          0.44,
+          0.46,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Sidewalk_4",
+      "transform": {
+        "position": [
+          -81,
+          0.12,
+          -27
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          40,
+          0.24,
+          40
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.4,
+          0.41,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_4_0",
+      "transform": {
+        "position": [
+          -92.179,
+          14.111,
+          -37.236
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          15.093,
+          27.743,
+          13.88
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.3,
+          0.34,
+          0.38,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 500,
+        "stream_distance": 580.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_4_0",
+      "transform": {
+        "position": [
+          -92.179,
+          28.843,
+          -37.236
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4.226,
+          2.0,
+          3.054
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Building_4_1",
+      "transform": {
+        "position": [
+          -69.796,
+          5.306,
+          -37.747
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          14.048,
+          10.131,
+          15.676
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.46,
+          0.42,
+          0.39,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_4_2",
+      "transform": {
+        "position": [
+          -90.163,
+          14.791,
+          -17.761
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          16.957,
+          29.102,
+          15.3
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.42,
+          0.44,
+          0.46,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 500,
+        "stream_distance": 580.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_4_2",
+      "transform": {
+        "position": [
+          -90.163,
+          30.202,
+          -17.761
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4.748,
+          2.0,
+          3.366
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Lot_4_3",
+      "transform": {
+        "position": [
+          -71,
+          0.16,
+          -17
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          17,
+          0.08,
+          17
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.14,
+          0.15,
+          0.16,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "LotBarrier_4_3_0",
+      "transform": {
+        "position": [
+          -76,
+          0.55,
+          -10.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "LotBarrier_4_3_1",
+      "transform": {
+        "position": [
+          -71,
+          0.55,
+          -10.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "LotBarrier_4_3_2",
+      "transform": {
+        "position": [
+          -66,
+          0.55,
+          -10.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "ParkBase_5",
+      "transform": {
+        "position": [
+          -27,
+          0.08,
+          -27
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          40,
+          0.16,
+          40
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.16,
+          0.28,
+          0.16,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 320,
+        "stream_distance": 400.0,
+        "fade_range": 48.0
+      }
+    },
+    {
+      "name": "ParkPlanter_5_0",
+      "transform": {
+        "position": [
+          -41.0,
+          0.45,
+          -39
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          3.2,
+          0.9,
+          3.2
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.25,
+          0.32,
+          0.22,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 150,
+        "stream_distance": 230.0,
+        "fade_range": 22.5
+      }
+    },
+    {
+      "name": "ParkPlanter_5_1",
+      "transform": {
+        "position": [
+          -31.7,
+          0.45,
+          -39
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          3.2,
+          0.9,
+          3.2
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.25,
+          0.32,
+          0.22,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 150,
+        "stream_distance": 230.0,
+        "fade_range": 22.5
+      }
+    },
+    {
+      "name": "ParkPlanter_5_2",
+      "transform": {
+        "position": [
+          -22.4,
+          0.45,
+          -39
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          3.2,
+          0.9,
+          3.2
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.25,
+          0.32,
+          0.22,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 150,
+        "stream_distance": 230.0,
+        "fade_range": 22.5
+      }
+    },
+    {
+      "name": "ParkPlanter_5_3",
+      "transform": {
+        "position": [
+          -13.1,
+          0.45,
+          -39
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          3.2,
+          0.9,
+          3.2
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.25,
+          0.32,
+          0.22,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 150,
+        "stream_distance": 230.0,
+        "fade_range": 22.5
+      }
+    },
+    {
+      "name": "ParkPlanter_5_4",
+      "transform": {
+        "position": [
+          -41.0,
+          0.45,
+          -15
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          3.2,
+          0.9,
+          3.2
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.25,
+          0.32,
+          0.22,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 150,
+        "stream_distance": 230.0,
+        "fade_range": 22.5
+      }
+    },
+    {
+      "name": "ParkPlanter_5_5",
+      "transform": {
+        "position": [
+          -31.7,
+          0.45,
+          -15
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          3.2,
+          0.9,
+          3.2
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.25,
+          0.32,
+          0.22,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 150,
+        "stream_distance": 230.0,
+        "fade_range": 22.5
+      }
+    },
+    {
+      "name": "ParkPlanter_5_6",
+      "transform": {
+        "position": [
+          -22.4,
+          0.45,
+          -15
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          3.2,
+          0.9,
+          3.2
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.25,
+          0.32,
+          0.22,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 150,
+        "stream_distance": 230.0,
+        "fade_range": 22.5
+      }
+    },
+    {
+      "name": "ParkPlanter_5_7",
+      "transform": {
+        "position": [
+          -13.1,
+          0.45,
+          -15
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          3.2,
+          0.9,
+          3.2
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.25,
+          0.32,
+          0.22,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 150,
+        "stream_distance": 230.0,
+        "fade_range": 22.5
+      }
+    },
+    {
+      "name": "Sidewalk_6",
+      "transform": {
+        "position": [
+          27,
+          0.12,
+          -27
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          40,
+          0.24,
+          40
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.4,
+          0.41,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_6_0",
+      "transform": {
+        "position": [
+          17.295,
+          15.796,
+          -38.214
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          16.88,
+          31.113,
+          16.142
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.42,
+          0.44,
+          0.46,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 500,
+        "stream_distance": 580.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_6_0",
+      "transform": {
+        "position": [
+          17.295,
+          32.213,
+          -38.214
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4.726,
+          2.0,
+          3.551
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Lot_6_1",
+      "transform": {
+        "position": [
+          37,
+          0.16,
+          -37
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          17,
+          0.08,
+          17
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.14,
+          0.15,
+          0.16,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "LotBarrier_6_1_0",
+      "transform": {
+        "position": [
+          32,
+          0.55,
+          -30.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "LotBarrier_6_1_1",
+      "transform": {
+        "position": [
+          37,
+          0.55,
+          -30.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "LotBarrier_6_1_2",
+      "transform": {
+        "position": [
+          42,
+          0.55,
+          -30.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "Building_6_2",
+      "transform": {
+        "position": [
+          16.298,
+          5.024,
+          -17.99
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          14.344,
+          9.568,
+          17.659
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.36,
+          0.4,
+          0.43,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_6_3",
+      "transform": {
+        "position": [
+          37.106,
+          18.662,
+          -18.219
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          17.338,
+          36.844,
+          15.139
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.55,
+          0.53,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 500,
+        "stream_distance": 580.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_6_3",
+      "transform": {
+        "position": [
+          37.106,
+          37.944,
+          -18.219
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4.855,
+          2.0,
+          3.331
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Sidewalk_7",
+      "transform": {
+        "position": [
+          81,
+          0.12,
+          -27
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          40,
+          0.24,
+          40
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.4,
+          0.41,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Lot_7_0",
+      "transform": {
+        "position": [
+          71,
+          0.16,
+          -37
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          17,
+          0.08,
+          17
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.14,
+          0.15,
+          0.16,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "LotBarrier_7_0_0",
+      "transform": {
+        "position": [
+          66,
+          0.55,
+          -30.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "LotBarrier_7_0_1",
+      "transform": {
+        "position": [
+          71,
+          0.55,
+          -30.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "LotBarrier_7_0_2",
+      "transform": {
+        "position": [
+          76,
+          0.55,
+          -30.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "Building_7_1",
+      "transform": {
+        "position": [
+          91.482,
+          9.945,
+          -37.638
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          15.185,
+          19.409,
+          13.492
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.36,
+          0.4,
+          0.43,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_7_2",
+      "transform": {
+        "position": [
+          70.251,
+          5.454,
+          -16.543
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          17.054,
+          10.428,
+          16.184
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.55,
+          0.53,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_7_3",
+      "transform": {
+        "position": [
+          90.034,
+          18.618,
+          -17.399
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          16.885,
+          36.756,
+          13.619
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.3,
+          0.34,
+          0.38,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 500,
+        "stream_distance": 580.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_7_3",
+      "transform": {
+        "position": [
+          90.034,
+          37.856,
+          -17.399
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4.728,
+          2.0,
+          2.996
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Sidewalk_8",
+      "transform": {
+        "position": [
+          -81,
+          0.12,
+          27
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          40,
+          0.24,
+          40
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.4,
+          0.41,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_8_0",
+      "transform": {
+        "position": [
+          -89.86,
+          6.542,
+          17.577
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          16.158,
+          12.603,
+          16.343
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.36,
+          0.4,
+          0.43,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_8_1",
+      "transform": {
+        "position": [
+          -70.875,
+          11.438,
+          15.815
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          16.795,
+          22.396,
+          17.288
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.55,
+          0.53,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_8_1",
+      "transform": {
+        "position": [
+          -70.875,
+          23.496,
+          15.815
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4.703,
+          2.0,
+          3.803
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Building_8_2",
+      "transform": {
+        "position": [
+          -90.807,
+          14.129,
+          37.871
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          16.925,
+          27.779,
+          13.263
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.3,
+          0.34,
+          0.38,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 500,
+        "stream_distance": 580.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_8_2",
+      "transform": {
+        "position": [
+          -90.807,
+          28.879,
+          37.871
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4.739,
+          2.0,
+          2.918
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Building_8_3",
+      "transform": {
+        "position": [
+          -70.273,
+          12.517,
+          37.65
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          16.637,
+          24.554,
+          15.502
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.46,
+          0.42,
+          0.39,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_8_3",
+      "transform": {
+        "position": [
+          -70.273,
+          25.654,
+          37.65
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4.658,
+          2.0,
+          3.411
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Sidewalk_9",
+      "transform": {
+        "position": [
+          -27,
+          0.12,
+          27
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          40,
+          0.24,
+          40
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.4,
+          0.41,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_9_0",
+      "transform": {
+        "position": [
+          -37.406,
+          4.931,
+          16.71
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          15.388,
+          9.382,
+          15.529
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.55,
+          0.53,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_9_1",
+      "transform": {
+        "position": [
+          -16.32,
+          11.095,
+          17.751
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          16.71,
+          21.711,
+          15.361
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.3,
+          0.34,
+          0.38,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_9_1",
+      "transform": {
+        "position": [
+          -16.32,
+          22.811,
+          17.751
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4.679,
+          2.0,
+          3.379
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Building_9_2",
+      "transform": {
+        "position": [
+          -37.864,
+          4.944,
+          36.233
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          15.737,
+          9.408,
+          13.349
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.46,
+          0.42,
+          0.39,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_9_3",
+      "transform": {
+        "position": [
+          -16.522,
+          12.047,
+          36.292
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          15.488,
+          23.613,
+          15.28
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.42,
+          0.44,
+          0.46,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_9_3",
+      "transform": {
+        "position": [
+          -16.522,
+          24.713,
+          36.292
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4.337,
+          2.0,
+          3.362
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Sidewalk_10",
+      "transform": {
+        "position": [
+          27,
+          0.12,
+          27
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          40,
+          0.24,
+          40
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.4,
+          0.41,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_10_0",
+      "transform": {
+        "position": [
+          16.292,
+          8.809,
+          17.991
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          17.265,
+          17.138,
+          16.319
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.3,
+          0.34,
+          0.38,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_10_1",
+      "transform": {
+        "position": [
+          36.211,
+          14.217,
+          17.71
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          17.115,
+          27.954,
+          14.575
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.46,
+          0.42,
+          0.39,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 500,
+        "stream_distance": 580.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_10_1",
+      "transform": {
+        "position": [
+          36.211,
+          29.054,
+          17.71
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4.792,
+          2.0,
+          3.207
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Building_10_2",
+      "transform": {
+        "position": [
+          16.623,
+          17.393,
+          36.94
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          13.934,
+          34.307,
+          17.588
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.42,
+          0.44,
+          0.46,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 500,
+        "stream_distance": 580.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_10_2",
+      "transform": {
+        "position": [
+          16.623,
+          35.407,
+          36.94
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          3.902,
+          2.0,
+          3.869
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Building_10_3",
+      "transform": {
+        "position": [
+          38.181,
+          10.915,
+          36.48
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          15.49,
+          21.35,
+          16.589
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.5,
+          0.47,
+          0.43,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_10_3",
+      "transform": {
+        "position": [
+          38.181,
+          22.45,
+          36.48
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4.337,
+          2.0,
+          3.649
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Sidewalk_11",
+      "transform": {
+        "position": [
+          81,
+          0.12,
+          27
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          40,
+          0.24,
+          40
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.4,
+          0.41,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_11_0",
+      "transform": {
+        "position": [
+          70.716,
+          9.549,
+          16.697
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          14.184,
+          18.618,
+          14.033
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.46,
+          0.42,
+          0.39,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_11_1",
+      "transform": {
+        "position": [
+          92.298,
+          12.823,
+          16.907
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          15.664,
+          25.166,
+          14.881
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.42,
+          0.44,
+          0.46,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 500,
+        "stream_distance": 580.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_11_1",
+      "transform": {
+        "position": [
+          92.298,
+          26.266,
+          16.907
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4.386,
+          2.0,
+          3.274
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Building_11_2",
+      "transform": {
+        "position": [
+          71.393,
+          6.968,
+          37.122
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          14.868,
+          13.456,
+          16.084
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.5,
+          0.47,
+          0.43,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Lot_11_3",
+      "transform": {
+        "position": [
+          91,
+          0.16,
+          37
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          17,
+          0.08,
+          17
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.14,
+          0.15,
+          0.16,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "LotBarrier_11_3_0",
+      "transform": {
+        "position": [
+          86,
+          0.55,
+          43.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "LotBarrier_11_3_1",
+      "transform": {
+        "position": [
+          91,
+          0.55,
+          43.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "LotBarrier_11_3_2",
+      "transform": {
+        "position": [
+          96,
+          0.55,
+          43.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "Sidewalk_12",
+      "transform": {
+        "position": [
+          -81,
+          0.12,
+          81
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          40,
+          0.24,
+          40
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.4,
+          0.41,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_12_0",
+      "transform": {
+        "position": [
+          -89.783,
+          17.075,
+          70.41
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          16.654,
+          33.671,
+          15.371
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.42,
+          0.44,
+          0.46,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 500,
+        "stream_distance": 580.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_12_0",
+      "transform": {
+        "position": [
+          -89.783,
+          34.771,
+          70.41
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4.663,
+          2.0,
+          3.382
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Building_12_1",
+      "transform": {
+        "position": [
+          -70.781,
+          8.864,
+          71.215
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          16.869,
+          17.249,
+          13.305
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.5,
+          0.47,
+          0.43,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Lot_12_2",
+      "transform": {
+        "position": [
+          -91,
+          0.16,
+          91
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          17,
+          0.08,
+          17
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.14,
+          0.15,
+          0.16,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "LotBarrier_12_2_0",
+      "transform": {
+        "position": [
+          -96,
+          0.55,
+          97.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "LotBarrier_12_2_1",
+      "transform": {
+        "position": [
+          -91,
+          0.55,
+          97.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "LotBarrier_12_2_2",
+      "transform": {
+        "position": [
+          -86,
+          0.55,
+          97.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "Building_12_3",
+      "transform": {
+        "position": [
+          -71.046,
+          8.94,
+          90.935
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          14.29,
+          17.401,
+          13.689
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.55,
+          0.53,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Sidewalk_13",
+      "transform": {
+        "position": [
+          -27,
+          0.12,
+          81
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          40,
+          0.24,
+          40
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.4,
+          0.41,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_13_0",
+      "transform": {
+        "position": [
+          -37.472,
+          11.46,
+          70.346
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          14.745,
+          22.439,
+          16.434
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.5,
+          0.47,
+          0.43,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_13_0",
+      "transform": {
+        "position": [
+          -37.472,
+          23.539,
+          70.346
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4.129,
+          2.0,
+          3.616
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Lot_13_1",
+      "transform": {
+        "position": [
+          -17,
+          0.16,
+          71
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          17,
+          0.08,
+          17
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.14,
+          0.15,
+          0.16,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "LotBarrier_13_1_0",
+      "transform": {
+        "position": [
+          -22,
+          0.55,
+          77.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "LotBarrier_13_1_1",
+      "transform": {
+        "position": [
+          -17,
+          0.55,
+          77.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "LotBarrier_13_1_2",
+      "transform": {
+        "position": [
+          -12,
+          0.55,
+          77.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "Building_13_2",
+      "transform": {
+        "position": [
+          -37.688,
+          5.189,
+          91.502
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          17.277,
+          9.898,
+          16.658
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.55,
+          0.53,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_13_3",
+      "transform": {
+        "position": [
+          -17.135,
+          14.226,
+          91.168
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          13.649,
+          27.971,
+          16.44
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.3,
+          0.34,
+          0.38,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 500,
+        "stream_distance": 580.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_13_3",
+      "transform": {
+        "position": [
+          -17.135,
+          29.071,
+          91.168
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          3.822,
+          2.0,
+          3.617
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Sidewalk_14",
+      "transform": {
+        "position": [
+          27,
+          0.12,
+          81
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          40,
+          0.24,
+          40
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.4,
+          0.41,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Lot_14_0",
+      "transform": {
+        "position": [
+          17,
+          0.16,
+          71
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          17,
+          0.08,
+          17
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.14,
+          0.15,
+          0.16,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "LotBarrier_14_0_0",
+      "transform": {
+        "position": [
+          12,
+          0.55,
+          77.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "LotBarrier_14_0_1",
+      "transform": {
+        "position": [
+          17,
+          0.55,
+          77.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "LotBarrier_14_0_2",
+      "transform": {
+        "position": [
+          22,
+          0.55,
+          77.5
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.8,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.58,
+          0.56,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 200.0,
+        "fade_range": 18.0
+      }
+    },
+    {
+      "name": "Building_14_1",
+      "transform": {
+        "position": [
+          37.963,
+          8.44,
+          71.631
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          17.096,
+          16.401,
+          15.979
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.55,
+          0.53,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_14_2",
+      "transform": {
+        "position": [
+          17.633,
+          8.649,
+          90.301
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          15.161,
+          16.818,
+          14.554
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.3,
+          0.34,
+          0.38,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_14_3",
+      "transform": {
+        "position": [
+          37.125,
+          4.798,
+          91.732
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          14.203,
+          9.115,
+          14.94
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.46,
+          0.42,
+          0.39,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Sidewalk_15",
+      "transform": {
+        "position": [
+          81,
+          0.12,
+          81
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          40,
+          0.24,
+          40
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.4,
+          0.41,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_15_0",
+      "transform": {
+        "position": [
+          70.071,
+          8.729,
+          70.382
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          14.194,
+          16.978,
+          16.325
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.55,
+          0.53,
+          0.49,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 380,
+        "stream_distance": 460.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Building_15_1",
+      "transform": {
+        "position": [
+          90.486,
+          15.602,
+          71.636
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          17.866,
+          30.723,
+          15.089
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.3,
+          0.34,
+          0.38,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 500,
+        "stream_distance": 580.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_15_1",
+      "transform": {
+        "position": [
+          90.486,
+          31.823,
+          71.636
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          5.003,
+          2.0,
+          3.32
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Building_15_2",
+      "transform": {
+        "position": [
+          71.013,
+          17.598,
+          89.936
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          14.933,
+          34.716,
+          13.627
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.46,
+          0.42,
+          0.39,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 500,
+        "stream_distance": 580.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_15_2",
+      "transform": {
+        "position": [
+          71.013,
+          35.816,
+          89.936
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4.181,
+          2.0,
+          2.998
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Building_15_3",
+      "transform": {
+        "position": [
+          91.031,
+          12.997,
+          91.386
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          15.683,
+          25.514,
+          17.799
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.42,
+          0.44,
+          0.46,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 500,
+        "stream_distance": 580.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "RoofUnit_15_3",
+      "transform": {
+        "position": [
+          91.031,
+          26.614,
+          91.386
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          4.391,
+          2.0,
+          3.916
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.24,
+          0.27,
+          0.29,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 340.0,
+        "fade_range": 39.0
+      }
+    },
+    {
+      "name": "Tower_0",
+      "transform": {
+        "position": [
+          -126,
+          28.0,
+          -78
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          22,
+          56,
+          22
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.27,
+          0.31,
+          0.34,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 650,
+        "stream_distance": 730.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "TowerCap_0",
+      "transform": {
+        "position": [
+          -126,
+          57.5,
+          -78
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          10,
+          3,
+          10
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.18,
+          0.21,
+          0.23,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 400,
+        "stream_distance": 480.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Tower_1",
+      "transform": {
+        "position": [
+          126,
+          31.0,
+          78
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          22,
+          62,
+          22
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.29000000000000004,
+          0.31,
+          0.34,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 650,
+        "stream_distance": 730.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "TowerCap_1",
+      "transform": {
+        "position": [
+          126,
+          63.5,
+          78
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          10,
+          3,
+          10
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.18,
+          0.21,
+          0.23,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 400,
+        "stream_distance": 480.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Tower_2",
+      "transform": {
+        "position": [
+          -126,
+          23.0,
+          78
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          22,
+          46,
+          22
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.31,
+          0.31,
+          0.34,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 650,
+        "stream_distance": 730.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "TowerCap_2",
+      "transform": {
+        "position": [
+          -126,
+          47.5,
+          78
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          10,
+          3,
+          10
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.18,
+          0.21,
+          0.23,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 400,
+        "stream_distance": 480.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Tower_3",
+      "transform": {
+        "position": [
+          126,
+          26.0,
+          -78
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          22,
+          52,
+          22
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.27,
+          0.31,
+          0.34,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 650,
+        "stream_distance": 730.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "TowerCap_3",
+      "transform": {
+        "position": [
+          126,
+          53.5,
+          -78
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          10,
+          3,
+          10
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.18,
+          0.21,
+          0.23,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 400,
+        "stream_distance": 480.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Tower_4",
+      "transform": {
+        "position": [
+          -72,
+          32.0,
+          126
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          22,
+          64,
+          22
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.29000000000000004,
+          0.31,
+          0.34,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 650,
+        "stream_distance": 730.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "TowerCap_4",
+      "transform": {
+        "position": [
+          -72,
+          65.5,
+          126
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          10,
+          3,
+          10
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.18,
+          0.21,
+          0.23,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 400,
+        "stream_distance": 480.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "Tower_5",
+      "transform": {
+        "position": [
+          72,
+          29.0,
+          -126
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          22,
+          58,
+          22
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.31,
+          0.31,
+          0.34,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 650,
+        "stream_distance": 730.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "TowerCap_5",
+      "transform": {
+        "position": [
+          72,
+          59.5,
+          -126
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          10,
+          3,
+          10
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.18,
+          0.21,
+          0.23,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 400,
+        "stream_distance": 480.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "NorthBoundary",
+      "transform": {
+        "position": [
+          0,
+          1.5,
+          -154
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          310,
+          3,
+          1
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.2,
+          0.22,
+          0.23,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 350,
+        "stream_distance": 430.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "SouthBoundary",
+      "transform": {
+        "position": [
+          0,
+          1.5,
+          154
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          310,
+          3,
+          1
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.2,
+          0.22,
+          0.23,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 350,
+        "stream_distance": 430.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "WestBoundary",
+      "transform": {
+        "position": [
+          -154,
+          1.5,
+          0
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          3,
+          310
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.2,
+          0.22,
+          0.23,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 350,
+        "stream_distance": 430.0,
+        "fade_range": 50.0
+      }
+    },
+    {
+      "name": "EastBoundary",
+      "transform": {
+        "position": [
+          154,
+          1.5,
+          0
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          3,
+          310
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.2,
+          0.22,
+          0.23,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "lod": {
+        "visible_distance": 350,
+        "stream_distance": 430.0,
+        "fade_range": 50.0
+      }
+    }
+  ]
+}

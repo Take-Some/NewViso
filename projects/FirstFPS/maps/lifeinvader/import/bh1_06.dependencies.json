@@ -1,0 +1,1021 @@
+{
+  "schema": "newviso.gta.ymap.dependencies.v1",
+  "gta_root": "D:\\Games\\Grand Theft Auto V",
+  "maps": [
+    {
+      "name": "bh1_06.ymap",
+      "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf\\bh1_06.ymap",
+      "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf",
+      "size": 1499
+    },
+    {
+      "name": "bh1_06_strm_0.ymap",
+      "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf\\bh1_06_strm_0.ymap",
+      "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf",
+      "size": 6550
+    },
+    {
+      "name": "bh1_06_long_0.ymap",
+      "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf\\bh1_06_long_0.ymap",
+      "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf",
+      "size": 1851
+    }
+  ],
+  "unique_archetypes": 39,
+  "resolved_archetypes": 39,
+  "unresolved_archetypes": 0,
+  "dependencies": [
+    {
+      "name": "bh1_06_building",
+      "asset_name": "bh1_06_building",
+      "hash": 865034338,
+      "type": "CBaseArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "beverly_metadata_009_strm.ytyp",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf\\beverly_metadata_009_strm.ytyp",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf",
+        "size": 11258
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "bh1_06",
+      "ydr": {
+        "name": "bh1_06_building.ydr",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06_building.ydr",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 1302745
+      },
+      "ydd": null,
+      "ytd": {
+        "name": "bh1_06.ytd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06.ytd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 1562658
+      },
+      "ybn": null
+    },
+    {
+      "name": "bh1_06_building_lod",
+      "asset_name": "bh1_06_building_lod",
+      "hash": 3723208554,
+      "type": "CBaseArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "beverly_metadata_004.ytyp",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf\\beverly_metadata_004.ytyp",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf",
+        "size": 13324
+      },
+      "drawable_dictionary": "bh1_06_slod1_children",
+      "texture_dictionary": "bh1_06_lod",
+      "ydr": null,
+      "ydd": {
+        "name": "bh1_06_slod1_children.ydd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly.rpf\\bh1_06_slod1_children.ydd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly.rpf",
+        "size": 67588
+      },
+      "ytd": {
+        "name": "bh1_06_lod.ytd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06_lod.ytd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 191370
+      },
+      "ybn": null
+    },
+    {
+      "name": "bh1_06_building_wins",
+      "asset_name": "bh1_06_building_wins",
+      "hash": 3387202877,
+      "type": "CBaseArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "beverly_metadata_009_strm.ytyp",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf\\beverly_metadata_009_strm.ytyp",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf",
+        "size": 11258
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "bh1_06",
+      "ydr": {
+        "name": "bh1_06_building_wins.ydr",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06_building_wins.ydr",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 6037
+      },
+      "ydd": null,
+      "ytd": {
+        "name": "bh1_06.ytd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06.ytd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 1562658
+      },
+      "ybn": null
+    },
+    {
+      "name": "bh1_06_building_wins_lod",
+      "asset_name": "bh1_06_building_wins_lod",
+      "hash": 1757746282,
+      "type": "CBaseArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "beverly_metadata_004.ytyp",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf\\beverly_metadata_004.ytyp",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf",
+        "size": 13324
+      },
+      "drawable_dictionary": "bh1_06_slod1_children",
+      "texture_dictionary": "bh1_06_lod",
+      "ydr": null,
+      "ydd": {
+        "name": "bh1_06_slod1_children.ydd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly.rpf\\bh1_06_slod1_children.ydd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly.rpf",
+        "size": 67588
+      },
+      "ytd": {
+        "name": "bh1_06_lod.ytd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06_lod.ytd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 191370
+      },
+      "ybn": null
+    },
+    {
+      "name": "bh1_06_details",
+      "asset_name": "bh1_06_details",
+      "hash": 2032548067,
+      "type": "CBaseArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "beverly_metadata_009_strm.ytyp",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf\\beverly_metadata_009_strm.ytyp",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf",
+        "size": 11258
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "bh1_06_details",
+      "ydr": {
+        "name": "bh1_06_details.ydr",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06_details.ydr",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 371112
+      },
+      "ydd": null,
+      "ytd": {
+        "name": "bh1_06_details.ytd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06_details.ytd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 894518
+      },
+      "ybn": null
+    },
+    {
+      "name": "bh1_06_em",
+      "asset_name": "bh1_06_em",
+      "hash": 3218076907,
+      "type": "CTimeArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "beverly_metadata_009_strm.ytyp",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf\\beverly_metadata_009_strm.ytyp",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf",
+        "size": 11258
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "2529603327",
+      "ydr": {
+        "name": "bh1_06_em.ydr",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06_em.ydr",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 2641
+      },
+      "ydd": null,
+      "ytd": null,
+      "ybn": null
+    },
+    {
+      "name": "bh1_06_em_lod",
+      "asset_name": "bh1_06_em_lod",
+      "hash": 1174156826,
+      "type": "CTimeArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "beverly_metadata_004.ytyp",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf\\beverly_metadata_004.ytyp",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf",
+        "size": 13324
+      },
+      "drawable_dictionary": "bh1_06_em_slod_children",
+      "texture_dictionary": "2641335633",
+      "ydr": null,
+      "ydd": {
+        "name": "bh1_06_em_slod_children.ydd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly.rpf\\bh1_06_em_slod_children.ydd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly.rpf",
+        "size": 2323
+      },
+      "ytd": null,
+      "ybn": null
+    },
+    {
+      "name": "bh1_06_em_slod",
+      "asset_name": "bh1_06_em_slod",
+      "hash": 2789838469,
+      "type": "CTimeArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "beverly_metadata_004.ytyp",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf\\beverly_metadata_004.ytyp",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf",
+        "size": 13324
+      },
+      "drawable_dictionary": "bh1_lod_emissive_6_21_children",
+      "texture_dictionary": "bh1_lod_emissive_6_21_children",
+      "ydr": null,
+      "ydd": {
+        "name": "bh1_lod_emissive_6_21_children.ydd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly.rpf\\bh1_lod_emissive_6_21_children.ydd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly.rpf",
+        "size": 74341
+      },
+      "ytd": {
+        "name": "bh1_lod_emissive_6_21_children.ytd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly.rpf\\bh1_lod_emissive_6_21_children.ytd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly.rpf",
+        "size": 289118
+      },
+      "ybn": null
+    },
+    {
+      "name": "bh1_06_furgrass_01",
+      "asset_name": "bh1_06_furgrass_01",
+      "hash": 4074849474,
+      "type": "CBaseArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "beverly_metadata_009_strm.ytyp",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf\\beverly_metadata_009_strm.ytyp",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf",
+        "size": 11258
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "bh1_06",
+      "ydr": {
+        "name": "bh1_06_furgrass_01.ydr",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06_furgrass_01.ydr",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 8759
+      },
+      "ydd": null,
+      "ytd": {
+        "name": "bh1_06.ytd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06.ytd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 1562658
+      },
+      "ybn": null
+    },
+    {
+      "name": "bh1_06_furgrass_02",
+      "asset_name": "bh1_06_furgrass_02",
+      "hash": 3485597308,
+      "type": "CBaseArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "beverly_metadata_009_strm.ytyp",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf\\beverly_metadata_009_strm.ytyp",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf",
+        "size": 11258
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "bh1_06",
+      "ydr": {
+        "name": "bh1_06_furgrass_02.ydr",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06_furgrass_02.ydr",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 7176
+      },
+      "ydd": null,
+      "ytd": {
+        "name": "bh1_06.ytd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06.ytd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 1562658
+      },
+      "ybn": null
+    },
+    {
+      "name": "bh1_06_furgrass_03",
+      "asset_name": "bh1_06_furgrass_03",
+      "hash": 3525444420,
+      "type": "CBaseArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "beverly_metadata_009_strm.ytyp",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf\\beverly_metadata_009_strm.ytyp",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf",
+        "size": 11258
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "bh1_06",
+      "ydr": {
+        "name": "bh1_06_furgrass_03.ydr",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06_furgrass_03.ydr",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 12687
+      },
+      "ydd": null,
+      "ytd": {
+        "name": "bh1_06.ytd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06.ytd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 1562658
+      },
+      "ybn": null
+    },
+    {
+      "name": "bh1_06_furmat_01",
+      "asset_name": "bh1_06_furmat_01",
+      "hash": 1421477616,
+      "type": "CBaseArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "beverly_metadata_009_strm.ytyp",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf\\beverly_metadata_009_strm.ytyp",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf",
+        "size": 11258
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "bh1_06",
+      "ydr": {
+        "name": "bh1_06_furmat_01.ydr",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06_furmat_01.ydr",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 1299
+      },
+      "ydd": null,
+      "ytd": {
+        "name": "bh1_06.ytd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06.ytd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 1562658
+      },
+      "ybn": null
+    },
+    {
+      "name": "bh1_06_furmat_02",
+      "asset_name": "bh1_06_furmat_02",
+      "hash": 2415754614,
+      "type": "CBaseArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "beverly_metadata_009_strm.ytyp",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf\\beverly_metadata_009_strm.ytyp",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf",
+        "size": 11258
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "bh1_06",
+      "ydr": {
+        "name": "bh1_06_furmat_02.ydr",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06_furmat_02.ydr",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 1382
+      },
+      "ydd": null,
+      "ytd": {
+        "name": "bh1_06.ytd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06.ytd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 1562658
+      },
+      "ybn": null
+    },
+    {
+      "name": "bh1_06_ivydetail01",
+      "asset_name": "bh1_06_ivydetail01",
+      "hash": 925008764,
+      "type": "CBaseArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "beverly_metadata_009_strm.ytyp",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf\\beverly_metadata_009_strm.ytyp",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf",
+        "size": 11258
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "bh1_06_details",
+      "ydr": {
+        "name": "bh1_06_ivydetail01.ydr",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06_ivydetail01.ydr",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 401535
+      },
+      "ydd": null,
+      "ytd": {
+        "name": "bh1_06_details.ytd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06_details.ytd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 894518
+      },
+      "ybn": null
+    },
+    {
+      "name": "bh1_06_ivydetail02",
+      "asset_name": "bh1_06_ivydetail02",
+      "hash": 252687187,
+      "type": "CBaseArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "beverly_metadata_009_strm.ytyp",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf\\beverly_metadata_009_strm.ytyp",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf",
+        "size": 11258
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "bh1_06_details",
+      "ydr": {
+        "name": "bh1_06_ivydetail02.ydr",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06_ivydetail02.ydr",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 204586
+      },
+      "ydd": null,
+      "ytd": {
+        "name": "bh1_06_details.ytd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06_details.ytd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 894518
+      },
+      "ybn": null
+    },
+    {
+      "name": "bh1_06_lifeinvadersign",
+      "asset_name": "bh1_06_lifeinvadersign",
+      "hash": 4203258812,
+      "type": "CBaseArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "beverly_metadata_009_strm.ytyp",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf\\beverly_metadata_009_strm.ytyp",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf",
+        "size": 11258
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "bh1_06",
+      "ydr": {
+        "name": "bh1_06_lifeinvadersign.ydr",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06_lifeinvadersign.ydr",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 401152
+      },
+      "ydd": null,
+      "ytd": {
+        "name": "bh1_06.ytd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06.ytd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 1562658
+      },
+      "ybn": null
+    },
+    {
+      "name": "bh1_06_lifeinvadersign_lod",
+      "asset_name": "bh1_06_lifeinvadersign_lod",
+      "hash": 298980642,
+      "type": "CBaseArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "beverly_metadata_004.ytyp",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf\\beverly_metadata_004.ytyp",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf",
+        "size": 13324
+      },
+      "drawable_dictionary": "bh1_06_slod1_children",
+      "texture_dictionary": "bh1_06_lod",
+      "ydr": null,
+      "ydd": {
+        "name": "bh1_06_slod1_children.ydd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly.rpf\\bh1_06_slod1_children.ydd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly.rpf",
+        "size": 67588
+      },
+      "ytd": {
+        "name": "bh1_06_lod.ytd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06_lod.ytd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 191370
+      },
+      "ybn": null
+    },
+    {
+      "name": "bh1_06_railing",
+      "asset_name": "bh1_06_railing",
+      "hash": 2494914199,
+      "type": "CBaseArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "beverly_metadata_009_strm.ytyp",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf\\beverly_metadata_009_strm.ytyp",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf",
+        "size": 11258
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "bh1_06",
+      "ydr": {
+        "name": "bh1_06_railing.ydr",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06_railing.ydr",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 391525
+      },
+      "ydd": null,
+      "ytd": {
+        "name": "bh1_06.ytd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf\\bh1_06.ytd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\bh1_06.rpf",
+        "size": 1562658
+      },
+      "ybn": null
+    },
+    {
+      "name": "bh1_06_slod1",
+      "asset_name": "bh1_06_slod1",
+      "hash": 12217071,
+      "type": "CBaseArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "beverly_metadata_004.ytyp",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf\\beverly_metadata_004.ytyp",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly_metadata.rpf",
+        "size": 13324
+      },
+      "drawable_dictionary": "bh1_lod_06_07_08_11_children",
+      "texture_dictionary": "bh1_lod_06_07_08_11_children",
+      "ydr": null,
+      "ydd": {
+        "name": "bh1_lod_06_07_08_11_children.ydd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly.rpf\\bh1_lod_06_07_08_11_children.ydd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly.rpf",
+        "size": 145966
+      },
+      "ytd": {
+        "name": "bh1_lod_06_07_08_11_children.ytd",
+        "path": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly.rpf\\bh1_lod_06_07_08_11_children.ytd",
+        "rpf": "x64l.rpf\\levels\\gta5\\_cityw\\beverly_01\\beverly.rpf",
+        "size": 614584
+      },
+      "ybn": null
+    },
+    {
+      "name": "prop_agave_01",
+      "asset_name": "prop_agave_01",
+      "hash": 3238329798,
+      "type": "CBaseArchetypeDef",
+      "placements": 19,
+      "ytyp": {
+        "name": "v_ext_veg.ytyp",
+        "path": "x64c.rpf\\levels\\gta5\\props\\vegetation\\v_ext_veg.rpf\\v_ext_veg.ytyp",
+        "rpf": "x64c.rpf\\levels\\gta5\\props\\vegetation\\v_ext_veg.rpf",
+        "size": 4270
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "1971668611",
+      "ydr": {
+        "name": "prop_agave_01.ydr",
+        "path": "x64c.rpf\\levels\\gta5\\props\\vegetation\\v_ext_veg.rpf\\prop_agave_01.ydr",
+        "rpf": "x64c.rpf\\levels\\gta5\\props\\vegetation\\v_ext_veg.rpf",
+        "size": 173983
+      },
+      "ydd": null,
+      "ytd": null,
+      "ybn": null
+    },
+    {
+      "name": "prop_agave_02",
+      "asset_name": "prop_agave_02",
+      "hash": 2857095252,
+      "type": "CBaseArchetypeDef",
+      "placements": 7,
+      "ytyp": {
+        "name": "v_ext_veg.ytyp",
+        "path": "x64c.rpf\\levels\\gta5\\props\\vegetation\\v_ext_veg.rpf\\v_ext_veg.ytyp",
+        "rpf": "x64c.rpf\\levels\\gta5\\props\\vegetation\\v_ext_veg.rpf",
+        "size": 4270
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "1971668611",
+      "ydr": {
+        "name": "prop_agave_02.ydr",
+        "path": "x64c.rpf\\levels\\gta5\\props\\vegetation\\v_ext_veg.rpf\\prop_agave_02.ydr",
+        "rpf": "x64c.rpf\\levels\\gta5\\props\\vegetation\\v_ext_veg.rpf",
+        "size": 173811
+      },
+      "ydd": null,
+      "ytd": null,
+      "ybn": null
+    },
+    {
+      "name": "prop_bench_01a",
+      "asset_name": "prop_bench_01a",
+      "hash": 1805980844,
+      "type": "CBaseArchetypeDef",
+      "placements": 2,
+      "ytyp": {
+        "name": "v_seating_tables.ytyp",
+        "path": "x64f.rpf\\levels\\gta5\\props\\roadside\\v_seating_tables.rpf\\v_seating_tables.ytyp",
+        "rpf": "x64f.rpf\\levels\\gta5\\props\\roadside\\v_seating_tables.rpf",
+        "size": 11870
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "prop_bench_01a",
+      "ydr": null,
+      "ydd": null,
+      "ytd": {
+        "name": "prop_bench_01a.ytd",
+        "path": "x64f.rpf\\levels\\gta5\\props\\roadside\\v_seating_tables.rpf\\prop_bench_01a.ytd",
+        "rpf": "x64f.rpf\\levels\\gta5\\props\\roadside\\v_seating_tables.rpf",
+        "size": 45690
+      },
+      "ybn": null
+    },
+    {
+      "name": "prop_bench_03",
+      "asset_name": "prop_bench_03",
+      "hash": 3232156621,
+      "type": "CBaseArchetypeDef",
+      "placements": 6,
+      "ytyp": {
+        "name": "v_seating_tables.ytyp",
+        "path": "x64f.rpf\\levels\\gta5\\props\\roadside\\v_seating_tables.rpf\\v_seating_tables.ytyp",
+        "rpf": "x64f.rpf\\levels\\gta5\\props\\roadside\\v_seating_tables.rpf",
+        "size": 11870
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "1773402955",
+      "ydr": null,
+      "ydd": null,
+      "ytd": null,
+      "ybn": null
+    },
+    {
+      "name": "prop_bin_05a",
+      "asset_name": "prop_bin_05a",
+      "hash": 1329570871,
+      "type": "CBaseArchetypeDef",
+      "placements": 3,
+      "ytyp": {
+        "name": "v_bins.ytyp",
+        "path": "x64i.rpf\\levels\\gta5\\props\\roadside\\v_bins.rpf\\v_bins.ytyp",
+        "rpf": "x64i.rpf\\levels\\gta5\\props\\roadside\\v_bins.rpf",
+        "size": 7738
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "2927588251",
+      "ydr": null,
+      "ydd": null,
+      "ytd": null,
+      "ybn": null
+    },
+    {
+      "name": "prop_bin_12a",
+      "asset_name": "prop_bin_12a",
+      "hash": 2198842852,
+      "type": "CBaseArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "v_bins.ytyp",
+        "path": "x64i.rpf\\levels\\gta5\\props\\roadside\\v_bins.rpf\\v_bins.ytyp",
+        "rpf": "x64i.rpf\\levels\\gta5\\props\\roadside\\v_bins.rpf",
+        "size": 7738
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "prop_bin_12a",
+      "ydr": {
+        "name": "prop_bin_12a.ydr",
+        "path": "x64i.rpf\\levels\\gta5\\props\\roadside\\v_bins.rpf\\prop_bin_12a.ydr",
+        "rpf": "x64i.rpf\\levels\\gta5\\props\\roadside\\v_bins.rpf",
+        "size": 19571
+      },
+      "ydd": null,
+      "ytd": {
+        "name": "prop_bin_12a.ytd",
+        "path": "x64i.rpf\\levels\\gta5\\props\\roadside\\v_bins.rpf\\prop_bin_12a.ytd",
+        "rpf": "x64i.rpf\\levels\\gta5\\props\\roadside\\v_bins.rpf",
+        "size": 77628
+      },
+      "ybn": null
+    },
+    {
+      "name": "prop_bollard_02a",
+      "asset_name": "prop_bollard_02a",
+      "hash": 3300474446,
+      "type": "CBaseArchetypeDef",
+      "placements": 9,
+      "ytyp": {
+        "name": "v_utility.ytyp",
+        "path": "x64h.rpf\\levels\\gta5\\props\\roadside\\v_utility.rpf\\v_utility.ytyp",
+        "rpf": "x64h.rpf\\levels\\gta5\\props\\roadside\\v_utility.rpf",
+        "size": 19443
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "prop_bollard_02a",
+      "ydr": null,
+      "ydd": null,
+      "ytd": null,
+      "ybn": null
+    },
+    {
+      "name": "prop_cctv_cam_01a",
+      "asset_name": "prop_cctv_cam_01a",
+      "hash": 548760764,
+      "type": "CBaseArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "v_utility.ytyp",
+        "path": "x64h.rpf\\levels\\gta5\\props\\roadside\\v_utility.rpf\\v_utility.ytyp",
+        "rpf": "x64h.rpf\\levels\\gta5\\props\\roadside\\v_utility.rpf",
+        "size": 19443
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "679872414",
+      "ydr": null,
+      "ydd": null,
+      "ytd": null,
+      "ybn": null
+    },
+    {
+      "name": "prop_cctv_cam_01b",
+      "asset_name": "prop_cctv_cam_01b",
+      "hash": 3940745496,
+      "type": "CBaseArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "v_utility.ytyp",
+        "path": "x64h.rpf\\levels\\gta5\\props\\roadside\\v_utility.rpf\\v_utility.ytyp",
+        "rpf": "x64h.rpf\\levels\\gta5\\props\\roadside\\v_utility.rpf",
+        "size": 19443
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "679872414",
+      "ydr": null,
+      "ydd": null,
+      "ytd": null,
+      "ybn": null
+    },
+    {
+      "name": "prop_cctv_cam_04c",
+      "asset_name": "prop_cctv_cam_04c",
+      "hash": 2410265639,
+      "type": "CBaseArchetypeDef",
+      "placements": 3,
+      "ytyp": {
+        "name": "v_utility.ytyp",
+        "path": "x64h.rpf\\levels\\gta5\\props\\roadside\\v_utility.rpf\\v_utility.ytyp",
+        "rpf": "x64h.rpf\\levels\\gta5\\props\\roadside\\v_utility.rpf",
+        "size": 19443
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "679872414",
+      "ydr": null,
+      "ydd": null,
+      "ytd": null,
+      "ybn": null
+    },
+    {
+      "name": "prop_fire_driser_1a",
+      "asset_name": "prop_fire_driser_1a",
+      "hash": 3109360976,
+      "type": "CBaseArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "v_utility.ytyp",
+        "path": "x64h.rpf\\levels\\gta5\\props\\roadside\\v_utility.rpf\\v_utility.ytyp",
+        "rpf": "x64h.rpf\\levels\\gta5\\props\\roadside\\v_utility.rpf",
+        "size": 19443
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "1626860317",
+      "ydr": {
+        "name": "prop_fire_driser_1a.ydr",
+        "path": "x64h.rpf\\levels\\gta5\\props\\roadside\\v_utility.rpf\\prop_fire_driser_1a.ydr",
+        "rpf": "x64h.rpf\\levels\\gta5\\props\\roadside\\v_utility.rpf",
+        "size": 63287
+      },
+      "ydd": null,
+      "ytd": null,
+      "ybn": null
+    },
+    {
+      "name": "prop_gatecom_02",
+      "asset_name": "prop_gatecom_02",
+      "hash": 4056680558,
+      "type": "CBaseArchetypeDef",
+      "placements": 2,
+      "ytyp": {
+        "name": "v_fences_2.ytyp",
+        "path": "x64i.rpf\\levels\\gta5\\props\\roadside\\v_fences_2.rpf\\v_fences_2.ytyp",
+        "rpf": "x64i.rpf\\levels\\gta5\\props\\roadside\\v_fences_2.rpf",
+        "size": 20688
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "1872275816",
+      "ydr": {
+        "name": "prop_gatecom_02.ydr",
+        "path": "x64i.rpf\\levels\\gta5\\props\\roadside\\v_fences_2.rpf\\prop_gatecom_02.ydr",
+        "rpf": "x64i.rpf\\levels\\gta5\\props\\roadside\\v_fences_2.rpf",
+        "size": 34774
+      },
+      "ydd": null,
+      "ytd": null,
+      "ybn": null
+    },
+    {
+      "name": "prop_plant_01a",
+      "asset_name": "prop_plant_01a",
+      "hash": 2611685511,
+      "type": "CBaseArchetypeDef",
+      "placements": 19,
+      "ytyp": {
+        "name": "v_ext_veg.ytyp",
+        "path": "x64c.rpf\\levels\\gta5\\props\\vegetation\\v_ext_veg.rpf\\v_ext_veg.ytyp",
+        "rpf": "x64c.rpf\\levels\\gta5\\props\\vegetation\\v_ext_veg.rpf",
+        "size": 4270
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "1971668611",
+      "ydr": {
+        "name": "prop_plant_01a.ydr",
+        "path": "x64c.rpf\\levels\\gta5\\props\\vegetation\\v_ext_veg.rpf\\prop_plant_01a.ydr",
+        "rpf": "x64c.rpf\\levels\\gta5\\props\\vegetation\\v_ext_veg.rpf",
+        "size": 99284
+      },
+      "ydd": null,
+      "ytd": null,
+      "ybn": null
+    },
+    {
+      "name": "prop_plant_fern_02a",
+      "asset_name": "prop_plant_fern_02a",
+      "hash": 3529729772,
+      "type": "CBaseArchetypeDef",
+      "placements": 9,
+      "ytyp": {
+        "name": "v_ext_veg.ytyp",
+        "path": "x64c.rpf\\levels\\gta5\\props\\vegetation\\v_ext_veg.rpf\\v_ext_veg.ytyp",
+        "rpf": "x64c.rpf\\levels\\gta5\\props\\vegetation\\v_ext_veg.rpf",
+        "size": 4270
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "1088937293",
+      "ydr": {
+        "name": "prop_plant_fern_02a.ydr",
+        "path": "x64c.rpf\\levels\\gta5\\props\\vegetation\\v_ext_veg.rpf\\prop_plant_fern_02a.ydr",
+        "rpf": "x64c.rpf\\levels\\gta5\\props\\vegetation\\v_ext_veg.rpf",
+        "size": 162012
+      },
+      "ydd": null,
+      "ytd": null,
+      "ybn": null
+    },
+    {
+      "name": "prop_plant_group_01",
+      "asset_name": "prop_plant_group_01",
+      "hash": 1859431100,
+      "type": "CBaseArchetypeDef",
+      "placements": 3,
+      "ytyp": {
+        "name": "v_bush.ytyp",
+        "path": "x64f.rpf\\levels\\gta5\\props\\vegetation\\v_bush.rpf\\v_bush.ytyp",
+        "rpf": "x64f.rpf\\levels\\gta5\\props\\vegetation\\v_bush.rpf",
+        "size": 6953
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "4083935702",
+      "ydr": {
+        "name": "prop_plant_group_01.ydr",
+        "path": "x64f.rpf\\levels\\gta5\\props\\vegetation\\v_bush.rpf\\prop_plant_group_01.ydr",
+        "rpf": "x64f.rpf\\levels\\gta5\\props\\vegetation\\v_bush.rpf",
+        "size": 302304
+      },
+      "ydd": null,
+      "ytd": null,
+      "ybn": null
+    },
+    {
+      "name": "prop_plant_group_02",
+      "asset_name": "prop_plant_group_02",
+      "hash": 1563330416,
+      "type": "CBaseArchetypeDef",
+      "placements": 11,
+      "ytyp": {
+        "name": "v_bush.ytyp",
+        "path": "x64f.rpf\\levels\\gta5\\props\\vegetation\\v_bush.rpf\\v_bush.ytyp",
+        "rpf": "x64f.rpf\\levels\\gta5\\props\\vegetation\\v_bush.rpf",
+        "size": 6953
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "4083935702",
+      "ydr": {
+        "name": "prop_plant_group_02.ydr",
+        "path": "x64f.rpf\\levels\\gta5\\props\\vegetation\\v_bush.rpf\\prop_plant_group_02.ydr",
+        "rpf": "x64f.rpf\\levels\\gta5\\props\\vegetation\\v_bush.rpf",
+        "size": 330782
+      },
+      "ydd": null,
+      "ytd": null,
+      "ybn": null
+    },
+    {
+      "name": "prop_p_spider_01c",
+      "asset_name": "prop_p_spider_01c",
+      "hash": 3894139463,
+      "type": "CBaseArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "v_ext_veg.ytyp",
+        "path": "x64c.rpf\\levels\\gta5\\props\\vegetation\\v_ext_veg.rpf\\v_ext_veg.ytyp",
+        "rpf": "x64c.rpf\\levels\\gta5\\props\\vegetation\\v_ext_veg.rpf",
+        "size": 4270
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "387385768",
+      "ydr": {
+        "name": "prop_p_spider_01c.ydr",
+        "path": "x64c.rpf\\levels\\gta5\\props\\vegetation\\v_ext_veg.rpf\\prop_p_spider_01c.ydr",
+        "rpf": "x64c.rpf\\levels\\gta5\\props\\vegetation\\v_ext_veg.rpf",
+        "size": 105404
+      },
+      "ydd": null,
+      "ytd": null,
+      "ybn": null
+    },
+    {
+      "name": "prop_sec_barier_04b",
+      "asset_name": "prop_sec_barier_04b",
+      "hash": 1801655140,
+      "type": "CBaseArchetypeDef",
+      "placements": 1,
+      "ytyp": {
+        "name": "v_utility.ytyp",
+        "path": "x64h.rpf\\levels\\gta5\\props\\roadside\\v_utility.rpf\\v_utility.ytyp",
+        "rpf": "x64h.rpf\\levels\\gta5\\props\\roadside\\v_utility.rpf",
+        "size": 19443
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "138909381",
+      "ydr": null,
+      "ydd": null,
+      "ytd": null,
+      "ybn": null
+    },
+    {
+      "name": "prop_wall_light_02a",
+      "asset_name": "prop_wall_light_02a",
+      "hash": 2420804668,
+      "type": "CBaseArchetypeDef",
+      "placements": 3,
+      "ytyp": {
+        "name": "v_traffic_lights.ytyp",
+        "path": "x64h.rpf\\levels\\gta5\\props\\roadside\\v_traffic_lights.rpf\\v_traffic_lights.ytyp",
+        "rpf": "x64h.rpf\\levels\\gta5\\props\\roadside\\v_traffic_lights.rpf",
+        "size": 13454
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "prop_walllight_02",
+      "ydr": null,
+      "ydd": null,
+      "ytd": {
+        "name": "prop_walllight_02.ytd",
+        "path": "x64h.rpf\\levels\\gta5\\props\\roadside\\v_traffic_lights.rpf\\prop_walllight_02.ytd",
+        "rpf": "x64h.rpf\\levels\\gta5\\props\\roadside\\v_traffic_lights.rpf",
+        "size": 200122
+      },
+      "ybn": null
+    },
+    {
+      "name": "prop_wall_light_03a",
+      "asset_name": "prop_wall_light_03a",
+      "hash": 1457658556,
+      "type": "CBaseArchetypeDef",
+      "placements": 12,
+      "ytyp": {
+        "name": "v_traffic_lights.ytyp",
+        "path": "x64h.rpf\\levels\\gta5\\props\\roadside\\v_traffic_lights.rpf\\v_traffic_lights.ytyp",
+        "rpf": "x64h.rpf\\levels\\gta5\\props\\roadside\\v_traffic_lights.rpf",
+        "size": 13454
+      },
+      "drawable_dictionary": "",
+      "texture_dictionary": "prop_walllight_03",
+      "ydr": null,
+      "ydd": null,
+      "ytd": {
+        "name": "prop_walllight_03.ytd",
+        "path": "x64h.rpf\\levels\\gta5\\props\\roadside\\v_traffic_lights.rpf\\prop_walllight_03.ytd",
+        "rpf": "x64h.rpf\\levels\\gta5\\props\\roadside\\v_traffic_lights.rpf",
+        "size": 220137
+      },
+      "ybn": null
+    }
+  ],
+  "unresolved": []
+}

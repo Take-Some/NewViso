@@ -1,0 +1,393 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CMapData>
+ <name>bh1_06_long_0</name>
+ <parent>bh1_06</parent>
+ <flags value="0" />
+ <contentFlags value="65" />
+ <streamingExtentsMin x="-1325.0856" y="-472.72693" z="-163.08476" />
+ <streamingExtentsMax x="-828.15674" y="-20.448654" z="238.77371" />
+ <entitiesExtentsMin x="-1132.4877" y="-279.47955" z="35.59469" />
+ <entitiesExtentsMax x="-1020.3784" y="-216.71985" z="57.07395" />
+ <entities>
+  <Item type="CEntityDef">
+   <archetypeName>bh1_06_em</archetypeName>
+   <flags value="8" />
+   <guid value="1575229922" />
+   <position x="-1076.4331" y="-246.31258" z="46.33432" />
+   <rotation x="0" y="0" z="0" w="1" />
+   <scaleXY value="1" />
+   <scaleZ value="1" />
+   <parentIndex value="2" />
+   <lodDist value="160" />
+   <childLodDist value="0" />
+   <lodLevel>LODTYPES_DEPTH_HD</lodLevel>
+   <numChildren value="0" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+  <Item type="CEntityDef">
+   <archetypeName>bh1_06_building</archetypeName>
+   <flags value="1572872" />
+   <guid value="1126206117" />
+   <position x="-1076.4331" y="-246.31258" z="46.33432" />
+   <rotation x="0" y="0" z="0" w="1" />
+   <scaleXY value="1" />
+   <scaleZ value="1" />
+   <parentIndex value="3" />
+   <lodDist value="160" />
+   <childLodDist value="0" />
+   <lodLevel>LODTYPES_DEPTH_HD</lodLevel>
+   <numChildren value="0" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+  <Item type="CEntityDef">
+   <archetypeName>bh1_06_building_wins</archetypeName>
+   <flags value="1572872" />
+   <guid value="113163656" />
+   <position x="-1076.4331" y="-248.0997" z="44.083893" />
+   <rotation x="0" y="0" z="0" w="1" />
+   <scaleXY value="1" />
+   <scaleZ value="1" />
+   <parentIndex value="5" />
+   <lodDist value="160" />
+   <childLodDist value="0" />
+   <lodLevel>LODTYPES_DEPTH_HD</lodLevel>
+   <numChildren value="0" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+  <Item type="CEntityDef">
+   <archetypeName>bh1_06_railing</archetypeName>
+   <flags value="1572864" />
+   <guid value="2395124804" />
+   <position x="-1075.4423" y="-248.15498" z="55.205833" />
+   <rotation x="0" y="0" z="0" w="1" />
+   <scaleXY value="1" />
+   <scaleZ value="1" />
+   <parentIndex value="-1" />
+   <lodDist value="160" />
+   <childLodDist value="0" />
+   <lodLevel>LODTYPES_DEPTH_ORPHANHD</lodLevel>
+   <numChildren value="0" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+  <Item type="CEntityDef">
+   <archetypeName>prop_plant_group_02</archetypeName>
+   <flags value="5767169" />
+   <guid value="4224267193" />
+   <position x="-1125.0856" y="-266.7273" z="37.193268" />
+   <rotation x="-0.007616002" y="0.016296005" z="-0.42332113" w="0.9058011" />
+   <scaleXY value="1" />
+   <scaleZ value="1" />
+   <parentIndex value="-1" />
+   <lodDist value="-1" />
+   <childLodDist value="0" />
+   <lodLevel>LODTYPES_DEPTH_ORPHANHD</lodLevel>
+   <numChildren value="0" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+  <Item type="CEntityDef">
+   <archetypeName>prop_plant_group_02</archetypeName>
+   <flags value="1572864" />
+   <guid value="1108841367" />
+   <position x="-1118.0748" y="-272.72693" z="37.34024" />
+   <rotation x="-0.047181994" y="-0.015823998" z="-0.06035299" w="0.9969358" />
+   <scaleXY value="1" />
+   <scaleZ value="1" />
+   <parentIndex value="-1" />
+   <lodDist value="-1" />
+   <childLodDist value="0" />
+   <lodLevel>LODTYPES_DEPTH_ORPHANHD</lodLevel>
+   <numChildren value="0" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+  <Item type="CEntityDef">
+   <archetypeName>prop_plant_group_02</archetypeName>
+   <flags value="1572865" />
+   <guid value="1995644182" />
+   <position x="-1109.6285" y="-262.71243" z="37.55522" />
+   <rotation x="0.048524987" y="0.006535998" z="0.99865466" w="-0.017073995" />
+   <scaleXY value="1" />
+   <scaleZ value="1" />
+   <parentIndex value="-1" />
+   <lodDist value="-1" />
+   <childLodDist value="0" />
+   <lodLevel>LODTYPES_DEPTH_ORPHANHD</lodLevel>
+   <numChildren value="0" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+  <Item type="CEntityDef">
+   <archetypeName>prop_plant_group_02</archetypeName>
+   <flags value="1572865" />
+   <guid value="1883119051" />
+   <position x="-1107.5498" y="-250.1234" z="37.15174" />
+   <rotation x="-0.014756004" y="-0.010175004" z="-0.5675772" w="0.8231251" />
+   <scaleXY value="1" />
+   <scaleZ value="1" />
+   <parentIndex value="-1" />
+   <lodDist value="-1" />
+   <childLodDist value="0" />
+   <lodLevel>LODTYPES_DEPTH_ORPHANHD</lodLevel>
+   <numChildren value="0" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+  <Item type="CEntityDef">
+   <archetypeName>prop_plant_group_02</archetypeName>
+   <flags value="1572864" />
+   <guid value="1277922892" />
+   <position x="-1082.204" y="-234.82716" z="37.25621" />
+   <rotation x="0.0057720006" y="-0.011724" z="-0.441671" w="0.8970819" />
+   <scaleXY value="1" />
+   <scaleZ value="1" />
+   <parentIndex value="-1" />
+   <lodDist value="-1" />
+   <childLodDist value="0" />
+   <lodLevel>LODTYPES_DEPTH_ORPHANHD</lodLevel>
+   <numChildren value="0" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+  <Item type="CEntityDef">
+   <archetypeName>prop_plant_group_02</archetypeName>
+   <flags value="1572869" />
+   <guid value="1033983735" />
+   <position x="-1070.7225" y="-235.97539" z="37.515087" />
+   <rotation x="0.029168006" y="-0.0018380005" z="0.9975932" w="-0.06287801" />
+   <scaleXY value="0.889" />
+   <scaleZ value="0.889" />
+   <parentIndex value="-1" />
+   <lodDist value="-1" />
+   <childLodDist value="0" />
+   <lodLevel>LODTYPES_DEPTH_ORPHANHD</lodLevel>
+   <numChildren value="0" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+  <Item type="CEntityDef">
+   <archetypeName>prop_plant_group_02</archetypeName>
+   <flags value="1572869" />
+   <guid value="3098191764" />
+   <position x="-1029.3008" y="-222.1025" z="37.01171" />
+   <rotation x="-0.012617" y="0.0152859995" z="0.256368" w="0.966376" />
+   <scaleXY value="0.865951" />
+   <scaleZ value="0.865951" />
+   <parentIndex value="-1" />
+   <lodDist value="-1" />
+   <childLodDist value="0" />
+   <lodLevel>LODTYPES_DEPTH_ORPHANHD</lodLevel>
+   <numChildren value="0" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+  <Item type="CEntityDef">
+   <archetypeName>prop_plant_group_01</archetypeName>
+   <flags value="5767172" />
+   <guid value="523608592" />
+   <position x="-1107.7345" y="-271.21478" z="37.173595" />
+   <rotation x="-0.012779999" y="-0.023050994" z="-0.18786195" w="0.98184174" />
+   <scaleXY value="0.772873" />
+   <scaleZ value="0.772873" />
+   <parentIndex value="-1" />
+   <lodDist value="-1" />
+   <childLodDist value="0" />
+   <lodLevel>LODTYPES_DEPTH_ORPHANHD</lodLevel>
+   <numChildren value="0" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+  <Item type="CEntityDef">
+   <archetypeName>prop_plant_group_01</archetypeName>
+   <flags value="1572865" />
+   <guid value="3061062815" />
+   <position x="-1094.9436" y="-243.52533" z="36.915234" />
+   <rotation x="0.004103" y="0.021926" z="0.891698" w="0.452081" />
+   <scaleXY value="1" />
+   <scaleZ value="1" />
+   <parentIndex value="-1" />
+   <lodDist value="-1" />
+   <childLodDist value="0" />
+   <lodLevel>LODTYPES_DEPTH_ORPHANHD</lodLevel>
+   <numChildren value="0" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+  <Item type="CEntityDef">
+   <archetypeName>prop_plant_group_01</archetypeName>
+   <flags value="1572869" />
+   <guid value="1749335851" />
+   <position x="-1108.353" y="-253.68156" z="37.214775" />
+   <rotation x="0.015724" y="0.004542" z="0.861567" w="0.50738" />
+   <scaleXY value="1.085" />
+   <scaleZ value="1.085" />
+   <parentIndex value="-1" />
+   <lodDist value="-1" />
+   <childLodDist value="0" />
+   <lodLevel>LODTYPES_DEPTH_ORPHANHD</lodLevel>
+   <numChildren value="0" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+  <Item type="CEntityDef">
+   <archetypeName>prop_plant_group_02</archetypeName>
+   <flags value="1572869" />
+   <guid value="1262603720" />
+   <position x="-1036.4443" y="-235.98822" z="38.77372" />
+   <rotation x="-0.012679001" y="0.00063200004" z="0.900341" w="-0.435" />
+   <scaleXY value="0.636608" />
+   <scaleZ value="0.636608" />
+   <parentIndex value="-1" />
+   <lodDist value="-1" />
+   <childLodDist value="0" />
+   <lodLevel>LODTYPES_DEPTH_ORPHANHD</lodLevel>
+   <numChildren value="0" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+  <Item type="CEntityDef">
+   <archetypeName>prop_plant_group_02</archetypeName>
+   <flags value="1572868" />
+   <guid value="342219396" />
+   <position x="-1028.1567" y="-229.86458" z="37.471184" />
+   <rotation x="0.022542007" y="0.021723008" z="0.8063643" w="-0.59059024" />
+   <scaleXY value="0.721608" />
+   <scaleZ value="0.721608" />
+   <parentIndex value="-1" />
+   <lodDist value="-1" />
+   <childLodDist value="0" />
+   <lodLevel>LODTYPES_DEPTH_ORPHANHD</lodLevel>
+   <numChildren value="0" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+  <Item type="CEntityDef">
+   <archetypeName>prop_plant_group_02</archetypeName>
+   <flags value="1572864" />
+   <guid value="1247891343" />
+   <position x="-1114.0563" y="-257.33224" z="37.193268" />
+   <rotation x="-0.007616002" y="0.016296005" z="-0.42332113" w="0.9058011" />
+   <scaleXY value="1" />
+   <scaleZ value="1" />
+   <parentIndex value="-1" />
+   <lodDist value="-1" />
+   <childLodDist value="0" />
+   <lodLevel>LODTYPES_DEPTH_ORPHANHD</lodLevel>
+   <numChildren value="0" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+  <Item type="CEntityDef">
+   <archetypeName>prop_plant_group_02</archetypeName>
+   <flags value="1572868" />
+   <guid value="2344553324" />
+   <position x="-1034.5269" y="-220.44865" z="37.01171" />
+   <rotation x="0.012942006" y="0.015012006" z="0.99575347" w="-0.08990104" />
+   <scaleXY value="0.865951" />
+   <scaleZ value="0.865951" />
+   <parentIndex value="-1" />
+   <lodDist value="-1" />
+   <childLodDist value="0" />
+   <lodLevel>LODTYPES_DEPTH_ORPHANHD</lodLevel>
+   <numChildren value="0" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+ </entities>
+ <containerLods itemType="rage__fwContainerLodDef" />
+ <boxOccluders itemType="BoxOccluder" />
+ <occludeModels itemType="OccludeModel" />
+ <physicsDictionaries>
+  <Item>prop_plant_group_02</Item>
+  <Item>prop_plant_group_01</Item>
+ </physicsDictionaries>
+ <instancedData>
+  <ImapLink />
+  <PropInstanceList itemType="rage__fwPropInstanceListDef" />
+  <GrassInstanceList itemType="rage__fwGrassInstanceListDef" />
+ </instancedData>
+ <timeCycleModifiers itemType="CTimeCycleModifier" />
+ <carGenerators itemType="CCarGen" />
+ <LODLightsSOA>
+  <direction itemType="FloatXYZ" />
+  <falloff />
+  <falloffExponent />
+  <timeAndStateFlags />
+  <hash />
+  <coneInnerAngle />
+  <coneOuterAngleOrCapExt />
+  <coronaIntensity />
+ </LODLightsSOA>
+ <DistantLODLightsSOA>
+  <position itemType="FloatXYZ" />
+  <RGBI />
+  <numStreetLights value="0" />
+  <category value="0" />
+ </DistantLODLightsSOA>
+ <block>
+  <version value="0" />
+  <flags value="0" />
+  <name></name>
+  <exportedBy></exportedBy>
+  <owner></owner>
+  <time></time>
+ </block>
+</CMapData>

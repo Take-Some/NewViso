@@ -1,0 +1,209 @@
+{
+  "schema": "newviso.map.index.v1",
+  "map_id": "lifeinvader_vertical_slice",
+  "origin": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "cell_size": 16.0,
+  "cells": [
+    {
+      "coord": {
+        "x": -3,
+        "z": 1
+      },
+      "path": "cells/-3_1.json",
+      "required": true,
+      "placement_count": 1
+    },
+    {
+      "coord": {
+        "x": -2,
+        "z": -2
+      },
+      "path": "cells/-2_-2.json",
+      "required": true,
+      "placement_count": 13
+    },
+    {
+      "coord": {
+        "x": -2,
+        "z": -1
+      },
+      "path": "cells/-2_-1.json",
+      "required": true,
+      "placement_count": 9
+    },
+    {
+      "coord": {
+        "x": -2,
+        "z": 0
+      },
+      "path": "cells/-2_0.json",
+      "required": true,
+      "placement_count": 6
+    },
+    {
+      "coord": {
+        "x": -2,
+        "z": 1
+      },
+      "path": "cells/-2_1.json",
+      "required": true,
+      "placement_count": 1
+    },
+    {
+      "coord": {
+        "x": -1,
+        "z": -2
+      },
+      "path": "cells/-1_-2.json",
+      "required": true,
+      "placement_count": 7
+    },
+    {
+      "coord": {
+        "x": -1,
+        "z": -1
+      },
+      "path": "cells/-1_-1.json",
+      "required": true,
+      "placement_count": 10
+    },
+    {
+      "coord": {
+        "x": -1,
+        "z": 0
+      },
+      "path": "cells/-1_0.json",
+      "required": true,
+      "placement_count": 4
+    },
+    {
+      "coord": {
+        "x": -1,
+        "z": 1
+      },
+      "path": "cells/-1_1.json",
+      "required": true,
+      "placement_count": 1
+    },
+    {
+      "coord": {
+        "x": 0,
+        "z": -2
+      },
+      "path": "cells/0_-2.json",
+      "required": true,
+      "placement_count": 10
+    },
+    {
+      "coord": {
+        "x": 0,
+        "z": -1
+      },
+      "path": "cells/0_-1.json",
+      "required": true,
+      "placement_count": 12
+    },
+    {
+      "coord": {
+        "x": 0,
+        "z": 0
+      },
+      "path": "cells/0_0.json",
+      "required": true,
+      "placement_count": 11
+    },
+    {
+      "coord": {
+        "x": 0,
+        "z": 1
+      },
+      "path": "cells/0_1.json",
+      "required": true,
+      "placement_count": 3
+    },
+    {
+      "coord": {
+        "x": 1,
+        "z": -2
+      },
+      "path": "cells/1_-2.json",
+      "required": true,
+      "placement_count": 6
+    },
+    {
+      "coord": {
+        "x": 1,
+        "z": -1
+      },
+      "path": "cells/1_-1.json",
+      "required": true,
+      "placement_count": 8
+    },
+    {
+      "coord": {
+        "x": 1,
+        "z": 0
+      },
+      "path": "cells/1_0.json",
+      "required": true,
+      "placement_count": 5
+    },
+    {
+      "coord": {
+        "x": 1,
+        "z": 1
+      },
+      "path": "cells/1_1.json",
+      "required": true,
+      "placement_count": 1
+    },
+    {
+      "coord": {
+        "x": 2,
+        "z": -1
+      },
+      "path": "cells/2_-1.json",
+      "required": true,
+      "placement_count": 1
+    },
+    {
+      "coord": {
+        "x": 2,
+        "z": 1
+      },
+      "path": "cells/2_1.json",
+      "required": true,
+      "placement_count": 1
+    }
+  ],
+  "metadata": {
+    "title": "Lifeinvader Vertical Slice Proxy",
+    "camera": {
+      "name": "PlayerCamera",
+      "position": [
+        0,
+        1.7,
+        22
+      ],
+      "target": [
+        0,
+        1.7,
+        5
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "fov_y_degrees": 72,
+      "near": 0.08,
+      "far": 260
+    },
+    "placement_count": 110,
+    "source": "maps/lifeinvader/source/lifeinvader_proxy.placements.json"
+  }
+}

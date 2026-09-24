@@ -1,0 +1,57 @@
+{
+  "schema": "newviso.map.cell.v1",
+  "coord": {
+    "x": 2,
+    "z": -1
+  },
+  "placements": [
+    {
+      "id": "east_shell",
+      "transform": {
+        "position": [
+          32.0,
+          3.0,
+          -10.0
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.5,
+          6.0,
+          40.0
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.34,
+          0.36,
+          0.37,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 220,
+        "stream_distance": 270,
+        "fade_range": 24
+      },
+      "visibility": null,
+      "tags": [
+        "shell"
+      ],
+      "definition_ref": null
+    }
+  ],
+  "metadata": {
+    "source": "maps/lifeinvader/source/lifeinvader_proxy.placements.json"
+  }
+}

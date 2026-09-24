@@ -1,14 +1,20 @@
 {
   "schema": "newviso.project.runtime.v1",
   "window": {
-    "title": "NewViso | First FPS | Click: play / WASD: walk / Mouse: look / Shift: sprint / Esc: cursor / R: reset",
+    "title": "NewViso | First FPS | Lifeinvader Vertical Slice | WASD / Mouse / Shift / Space / LMB",
     "width": 1440,
     "height": 900
   },
+  "world_persistence": {
+    "save_path": ".newviso/saves/living-world.json",
+    "load_on_start": true,
+    "save_on_shutdown": true,
+    "autosave_interval_seconds": 5
+  },
   "streaming": {
     "max_resident_mb": 512,
-    "max_loads_per_tick": 8,
-    "max_source_mb_per_tick": 32,
+    "max_loads_per_tick": 12,
+    "max_source_mb_per_tick": 48,
     "eviction_grace_frames": 120,
     "failed_retry_frames": 120,
     "dependency_priority_scale": 0.95

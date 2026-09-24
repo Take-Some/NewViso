@@ -7,7 +7,35 @@
     1.0
   ],
   "sky": {
-    "model": "models/fps/skydome.ydd@skydome_high",
-    "billboard_texture": "textures/fps/skydome.ytd@moon_new"
+    "model": "models/skydome.ydd@skydome_high",
+    "billboard_texture": "textures/skydome.ytd@moon_new",
+    "clouds": {
+      "enabled": true,
+      "coverage": 0.46,
+      "density": 0.92,
+      "softness": 0.2,
+      "scale": 1.15,
+      "detail_scale": 3.6,
+      "speed": [
+        0.0045,
+        0.0018
+      ],
+      "horizon_fade": 0.16,
+      "macro_scale": 0.3,
+      "macro_strength": 0.72,
+      "detail_strength": 0.3,
+      "micro_strength": 0.13,
+      "erosion_strength": 0.72,
+      "warp_strength": 0.12,
+      "shape_contrast": 1.08,
+      "shear_speed": [
+        0.0011,
+        -0.0006
+      ],
+      "seed_offset": [
+        13.37,
+        -8.21
+      ]
+    }
   }
 }

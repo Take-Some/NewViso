@@ -1,0 +1,52 @@
+{
+  "schema": "newviso.map.package.v1",
+  "id": "lifeinvader_vertical_slice",
+  "title": "Lifeinvader Office Vertical Slice",
+  "purpose": "Authored-world vertical slice for exterior/interior streaming, collision, materials, props and portals.",
+  "source_policy": {
+    "current": "clean_room_proxy",
+    "replacement": "legally_exported_game_data_only",
+    "disallowed": [
+      "leaked source tree",
+      "copied proprietary source-code assets"
+    ]
+  },
+  "bounds_hint": {
+    "min": [
+      -55,
+      -1,
+      -35
+    ],
+    "max": [
+      55,
+      8,
+      45
+    ]
+  },
+  "map": {
+    "index": "generated/index.json",
+    "cell_size": 16,
+    "generated_cells": "generated/cells"
+  },
+  "projection": {
+    "current_runtime_scene": "../../scenes/lifeinvader_slice.scene.json",
+    "note": "Temporary projection until NewViso consumes engine.assets.maps cells directly."
+  },
+  "intended_asset_graph": {
+    "map": "maps/lifeinvader.ymap@map",
+    "definitions": "definitions/lifeinvader.ytyp@*",
+    "models": "models/lifeinvader/*.ydd@*",
+    "materials": "materials/lifeinvader/*.ymt@*",
+    "textures": "textures/lifeinvader/*.ytd@*"
+  },
+  "validation_targets": [
+    "exterior_to_interior_transition",
+    "cell_residency",
+    "static_collision",
+    "occlusion_and_culling",
+    "material_and_glass_handling",
+    "prop_instancing",
+    "projectile_collision",
+    "day_night_indoor_outdoor_contrast"
+  ]
+}

@@ -1,0 +1,240 @@
+{
+  "schema": "newviso.map.cell.v1",
+  "coord": {
+    "x": 1,
+    "z": 0
+  },
+  "placements": [
+    {
+      "id": "bollard_6",
+      "transform": {
+        "position": [
+          18.0,
+          0.55,
+          14.0
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.45,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.54,
+          0.55,
+          0.52,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 90,
+        "stream_distance": 140,
+        "fade_range": 13.5
+      },
+      "visibility": null,
+      "tags": [
+        "exterior",
+        "prop"
+      ],
+      "definition_ref": null
+    },
+    {
+      "id": "east_desk_3",
+      "transform": {
+        "position": [
+          25.0,
+          0.75,
+          1.0
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          5.0,
+          1.2,
+          1.4
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.42,
+          0.29,
+          0.18,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 90,
+        "stream_distance": 140,
+        "fade_range": 13.5
+      },
+      "visibility": null,
+      "tags": [
+        "prop",
+        "desk"
+      ],
+      "definition_ref": null
+    },
+    {
+      "id": "east_room_divider_3",
+      "transform": {
+        "position": [
+          25.0,
+          1.5,
+          5.0
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          12.0,
+          3.0,
+          0.3
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.62,
+          0.62,
+          0.59,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 170,
+        "fade_range": 18.0
+      },
+      "visibility": null,
+      "tags": [
+        "room"
+      ],
+      "definition_ref": null
+    },
+    {
+      "id": "east_room_wall_outer_3",
+      "transform": {
+        "position": [
+          31.0,
+          1.5,
+          1.0
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.3,
+          3.0,
+          8.0
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.62,
+          0.62,
+          0.59,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 170,
+        "fade_range": 18.0
+      },
+      "visibility": null,
+      "tags": [
+        "room"
+      ],
+      "definition_ref": null
+    },
+    {
+      "id": "south_shell_right",
+      "transform": {
+        "position": [
+          20.0,
+          3.0,
+          10.0
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          24.0,
+          6.0,
+          0.5
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.13,
+          0.24,
+          0.31,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 220,
+        "stream_distance": 270,
+        "fade_range": 24
+      },
+      "visibility": null,
+      "tags": [
+        "shell",
+        "facade"
+      ],
+      "definition_ref": null
+    }
+  ],
+  "metadata": {
+    "source": "maps/lifeinvader/source/lifeinvader_proxy.placements.json"
+  }
+}

@@ -1,0 +1,85 @@
+import type {
+  Vec3, WorldClockPolicy, WorldSimulationPolicy,
+} from "../newviso/world/living_world.ysc";
+
+export interface LivingDemoPolicy {
+  clock: WorldClockPolicy;
+  simulation: WorldSimulationPolicy;
+  factoryId: string;
+  factoryPosition: Vec3;
+  shopId: string;
+  shopPosition: Vec3;
+  productionProcess: string;
+  consumptionProcess: string;
+  productionInterval: number;
+  consumptionInterval: number;
+  batchSize: number;
+  consumptionUnits: number;
+  transitSeconds: number;
+  eventTtlSeconds: number;
+  initialStock: number;
+  lowStockThreshold: number;
+  traveler: {
+    actorId: string;
+    nodeIds: readonly string[];
+    positions: readonly Vec3[];
+    speed: number;
+  };
+  facts: {
+    produced: string;
+    delivered: string;
+    sold: string;
+    stock: string;
+    shortage: string;
+    power: string;
+  };
+}
+
+export const livingDemoPolicy: LivingDemoPolicy = {
+  clock: { fixedHz: 20, timeScale: 1, maxStepsPerFrame: 8 },
+  simulation: {
+    transientFullRadius: 12, transientReducedRadius: 24,
+    fullIntervalSeconds: 0.05, reducedIntervalSeconds: 0.25,
+    backgroundIntervalSeconds: 2, maxActorUpdatesPerStep: 256,
+  },
+  factoryId: "demo.factory",
+  factoryPosition: [10000, 0, 0],
+  shopId: "demo.shop",
+  shopPosition: [10060, 0, 0],
+  productionProcess: "demo.factory.production",
+  consumptionProcess: "demo.shop.consumption",
+  productionInterval: 8,
+  consumptionInterval: 3,
+  batchSize: 4,
+  consumptionUnits: 2,
+  transitSeconds: 5,
+  eventTtlSeconds: 60,
+  initialStock: 6,
+  lowStockThreshold: 2,
+  traveler: {
+    actorId: "demo.traveler",
+    nodeIds: [
+      "demo.route.origin",
+      "demo.route.1km",
+      "demo.route.2km",
+      "demo.route.3km",
+      "demo.route.4km",
+    ],
+    positions: [
+      [0, 1.0, 10],
+      [1000, 1.0, 10],
+      [2000, 1.0, 10],
+      [3000, 1.0, 10],
+      [4000, 1.0, 10],
+    ],
+    speed: 120,
+  },
+  facts: {
+    produced: "demo.factory.produced",
+    delivered: "demo.shop.delivered",
+    sold: "demo.shop.sold",
+    stock: "demo.shop.stock",
+    shortage: "demo.shop.shortage",
+    power: "demo.factory.power_available",
+  },
+};

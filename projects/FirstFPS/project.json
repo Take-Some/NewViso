@@ -2,7 +2,7 @@
   "schema": "newviso.project.v1",
   "project": {
     "id": "first-fps",
-    "name": "First FPS — Blockout Yard",
+    "name": "First FPS — Lifeinvader Vertical Slice",
     "version": "0.1.0"
   },
   "paths": {
@@ -13,7 +13,7 @@
   "files": {
     "runtime": "config/runtime.json",
     "environment": "environments/yard.environment.json",
-    "scene": "scenes/yard.scene.json"
+    "scene": "scenes/lifeinvader_slice.scene.json"
   },
   "capabilities": {
     "required": [
@@ -25,6 +25,10 @@
     "optional": [
       {
         "id": "audio.backend",
+        "min_version": 1
+      },
+      {
+        "id": "noise.backend",
         "min_version": 1
       }
     ]
@@ -39,6 +43,11 @@
       "shutdown": "on_shutdown",
       "event": "on_event"
     },
-    "permissions": []
+    "permissions": [
+      {
+        "id": "service.call",
+        "scope": "engine.noise"
+      }
+    ]
   }
 }

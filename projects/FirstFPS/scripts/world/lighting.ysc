@@ -1,0 +1,214 @@
+import {
+  mix,
+  mix3,
+  orbitElevationDegrees,
+  orbitRotationDegrees,
+  smootherstep,
+  type Vec3,
+} from "../newviso/world/celestial.ysc";
+import {
+  timeCycleBackendCommand,
+  timeCycleFrame,
+} from "../newviso/world/timecycle.ysc";
+import {
+  weatherCommands,
+  weatherFrame,
+} from "../newviso/world/weather.ysc";
+import { WORLD } from "./config.ysc";
+
+function solarColor(elevationDegrees: number): Vec3 {
+  const deepTwilightToHorizon = smootherstep(-14.0, -1.0, elevationDegrees);
+  const horizonToGolden = smootherstep(-3.0, 18.0, elevationDegrees);
+  const goldenToDay = smootherstep(14.0, 52.0, elevationDegrees);
+
+  const deepTwilight: Vec3 = [0.34, 0.12, 0.10];
+  const horizon: Vec3 = [1.0, 0.23, 0.05];
+  const golden: Vec3 = [1.0, 0.64, 0.30];
+  const daylight: Vec3 = [1.0, 0.95, 0.87];
+
+  const lowSun = mix3(deepTwilight, horizon, deepTwilightToHorizon);
+  return mix3(mix3(lowSun, golden, horizonToGolden), daylight, goldenToDay);
+}
+
+function moonColor(elevationDegrees: number): Vec3 {
+  const deepToHorizon = smootherstep(-12.0, 2.0, elevationDegrees);
+  const horizonToHigh = smootherstep(0.0, 46.0, elevationDegrees);
+  return mix3(
+    mix3([0.13, 0.18, 0.38], [0.28, 0.39, 0.72], deepToHorizon),
+    [0.72, 0.82, 1.0],
+    horizonToHigh,
+  );
+}
+
+function sunIntensity(elevationDegrees: number): number {
+  const visibility = smootherstep(-18.0, 5.0, elevationDegrees);
+  const altitude = smootherstep(-2.0, 62.0, elevationDegrees);
+  const low = mix(0.035, 0.22, smootherstep(-8.0, 5.0, elevationDegrees));
+  return visibility * mix(low, 1.58, Math.pow(altitude, 0.58));
+}
+
+function moonIntensity(elevationDegrees: number): number {
+  const visibility = smootherstep(-16.0, 8.0, elevationDegrees);
+  const altitude = smootherstep(-2.0, 55.0, elevationDegrees);
+  const low = mix(0.008, 0.045, smootherstep(-8.0, 6.0, elevationDegrees));
+  return visibility * mix(low, 0.17, Math.pow(altitude, 0.72));
+}
+
+function celestialCommands(dayPhase: number, weather: any): unknown[] {
+  const moonPhase = (dayPhase + WORLD.moon.phaseOffsetDegrees) % 360.0;
+
+  const sunElevation = orbitElevationDegrees(dayPhase, WORLD.sun.maxElevationDegrees);
+  const moonElevation = orbitElevationDegrees(moonPhase, WORLD.moon.maxElevationDegrees);
+  const sunRotation = orbitRotationDegrees(
+    sunElevation,
+    WORLD.yawBaseDegrees,
+    dayPhase,
+    WORLD.sun.yawRate,
+  );
+  const moonRotation = orbitRotationDegrees(
+    moonElevation,
+    WORLD.yawBaseDegrees + 180.0,
+    moonPhase,
+    WORLD.moon.yawRate,
+  );
+
+  const sunColor = solarColor(sunElevation);
+  const moonColorValue = moonColor(moonElevation);
+  const sunPower = sunIntensity(sunElevation) * weather.sunScale;
+  const moonPower = moonIntensity(moonElevation) * weather.moonScale;
+  const sunShadowing = sunPower > 0.12;
+  const moonShadowing = sunPower < 0.04 && moonPower > 0.035;
+
+  const sunFade = smootherstep(-10.0, 3.0, sunElevation);
+  const sunVisualIntensity =
+    sunFade
+    * mix(0.35, 9.5, smootherstep(-4.0, 48.0, sunElevation))
+    * weather.sunScale;
+  const moonFade = smootherstep(-12.0, 5.0, moonElevation);
+  const moonVisualIntensity =
+    moonFade
+    * mix(0.10, 1.75, smootherstep(-3.0, 46.0, moonElevation))
+    * weather.moonScale;
+
+  return [
+    {
+      op: "scene.light.upsert",
+      id: WORLD.sun.lightId,
+      light_type: "directional",
+      color: sunColor,
+      intensity: sunPower,
+      casts_shadows: sunShadowing,
+      shadow_bias: WORLD.sun.shadowBias,
+      shadow_normal_bias: WORLD.sun.shadowNormalBias,
+      shadow_resolution: WORLD.sun.shadowResolution,
+      shadow_distance: WORLD.sun.shadowDistance,
+    },
+    {
+      op: "scene.entity.transform.set",
+      id: WORLD.sun.lightId,
+      rotation_degrees: sunRotation,
+    },
+    {
+      op: "scene.sky_visual.upsert",
+      id: WORLD.sun.visualId,
+      kind: "disc",
+      color: sunColor,
+      intensity: sunVisualIntensity,
+      angular_size_degrees: WORLD.sun.angularSizeDegrees,
+      halo_size_degrees: WORLD.sun.haloSizeDegrees,
+      halo_intensity:
+        sunFade * mix(0.08, 0.42, 1.0 - smootherstep(3.0, 46.0, sunElevation)),
+      atmosphere_driver: true,
+    },
+    {
+      op: "scene.entity.transform.set",
+      id: WORLD.sun.visualId,
+      rotation_degrees: sunRotation,
+    },
+    {
+      op: "scene.light.upsert",
+      id: WORLD.moon.lightId,
+      light_type: "directional",
+      color: moonColorValue,
+      intensity: moonPower,
+      casts_shadows: moonShadowing,
+      shadow_bias: WORLD.moon.shadowBias,
+      shadow_normal_bias: WORLD.moon.shadowNormalBias,
+      shadow_resolution: WORLD.moon.shadowResolution,
+      shadow_distance: WORLD.moon.shadowDistance,
+    },
+    {
+      op: "scene.entity.transform.set",
+      id: WORLD.moon.lightId,
+      rotation_degrees: moonRotation,
+    },
+    {
+      op: "scene.sky_visual.upsert",
+      id: WORLD.moon.visualId,
+      kind: "billboard",
+      color: moonColorValue,
+      intensity: moonVisualIntensity,
+      angular_size_degrees: WORLD.moon.angularSizeDegrees,
+      halo_size_degrees: WORLD.moon.haloSizeDegrees,
+      halo_intensity:
+        moonFade * mix(0.035, 0.14, smootherstep(-4.0, 24.0, moonElevation)),
+      atmosphere_driver: false,
+    },
+    {
+      op: "scene.entity.transform.set",
+      id: WORLD.moon.visualId,
+      rotation_degrees: moonRotation,
+    },
+  ];
+}
+
+function elapsedSeconds(payload: any): number {
+  const value = Number(payload?.elapsed_seconds);
+  return Number.isFinite(value) ? value : 0.0;
+}
+
+function frameCommands(payload: unknown): unknown[] {
+  const elapsed = elapsedSeconds(payload);
+  const timecycle = timeCycleFrame(
+    elapsed,
+    WORLD.dayDurationSeconds,
+    WORLD.phaseOffsetDegrees,
+    WORLD.skyTimeScale,
+  );
+  const weather = weatherFrame(
+    WORLD.weather.profiles as any[],
+    elapsed,
+    WORLD.weather.cycleOffsetSeconds,
+    WORLD.weather.variationSeed,
+  );
+
+  return [
+    timeCycleBackendCommand(timecycle),
+    ...weatherCommands(weather, WORLD.atmosphere),
+    ...celestialCommands(timecycle.phaseDegrees, weather),
+  ];
+}
+
+export function on_start(payload: unknown): unknown {
+  return {
+    commands: [
+      { op: "scene.sky.time_scale.set", scale: WORLD.skyTimeScale },
+      ...frameCommands(payload),
+    ],
+  };
+}
+
+export function on_frame(payload: unknown): unknown {
+  return { commands: frameCommands(payload) };
+}
+
+export function on_shutdown(_payload: unknown): unknown {
+  return {
+    commands: [
+      { op: "scene.sky_visual.remove", id: WORLD.sun.visualId },
+      { op: "scene.sky_visual.remove", id: WORLD.moon.visualId },
+      { op: "scene.entity.remove", id: WORLD.sun.lightId, if_exists: true },
+      { op: "scene.entity.remove", id: WORLD.moon.lightId, if_exists: true },
+    ],
+  };
+}

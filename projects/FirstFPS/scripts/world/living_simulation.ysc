@@ -1,0 +1,237 @@
+import {
+  LivingWorldCommands as World,
+  type EngineCommand,
+} from "../newviso/world/living_world.ysc";
+import { LivingWorldView } from "../newviso/world/living_world_state.ysc";
+import { livingDemoPolicy, type LivingDemoPolicy } from "./living_config.ysc";
+
+interface DeliveryPayload { units: number; }
+interface WorldResult {
+  commands: EngineCommand[];
+  ui?: { bindings: Record<string, unknown> };
+}
+
+/** Project rules run from world activations, with no input/camera dependency. */
+export class LivingWorldDemo {
+  readonly policy: LivingDemoPolicy;
+
+  constructor(policy: LivingDemoPolicy = livingDemoPolicy) {
+    this.policy = policy;
+  }
+
+  start(payload?: unknown): WorldResult {
+    const p = this.policy;
+    if (LivingWorldView.fromFrame(payload)?.factBoolean("demo.initialized", false)) {
+      return { commands: [World.configureClock(p.clock), World.configureSimulation(p.simulation)] };
+    }
+    const t = p.traveler;
+    if (t.nodeIds.length !== t.positions.length || t.nodeIds.length < 2) {
+      throw new Error("living-world traveler route requires matching nodeIds/positions with at least two nodes");
+    }
+
+    const routeCommands: EngineCommand[] = [];
+    for (let i = 0; i < t.nodeIds.length; i++) {
+      routeCommands.push(World.upsertNavNode({
+        id: t.nodeIds[i],
+        position: t.positions[i],
+        tags: ["demo", "offline-route"],
+      }));
+      if (i > 0) {
+        routeCommands.push(World.upsertNavEdge({
+          id: "demo.route.edge." + (i - 1) + "." + i,
+          from: t.nodeIds[i - 1],
+          to: t.nodeIds[i],
+          bidirectional: true,
+          costScale: 1.0,
+          tags: ["demo", "offline-route"],
+        }));
+      }
+    }
+
+    return { commands: [
+      World.configureClock(p.clock),
+      World.configureSimulation(p.simulation),
+      World.upsertActor({
+        id: p.factoryId, kind: "factory", position: p.factoryPosition,
+        state: { produced: 0 },
+      }),
+      World.upsertActor({
+        id: p.shopId, kind: "shop", position: p.shopPosition,
+        state: { stock: p.initialStock },
+      }),
+      World.upsertActor({
+        id: t.actorId,
+        kind: "traveler",
+        position: t.positions[0],
+        state: { journey: "demo.route.4km" },
+        tags: ["demo", "offline-travel"],
+      }),
+      ...routeCommands,
+      World.startTravel({
+        actorId: t.actorId,
+        startNode: t.nodeIds[0],
+        destinationNode: t.nodeIds[t.nodeIds.length - 1],
+        speed: t.speed,
+        mode: "demo.offline",
+        payload: { distanceMeters: 4000 },
+      }),
+      World.bindActorPresentation({
+        actorId: t.actorId,
+        sceneKey: "demo.traveler.presentation",
+        visual: "cube",
+        scale: [0.65, 1.8, 0.65],
+        baseColor: [0.18, 0.55, 0.92, 1.0],
+        boundsHalfExtent: [0.35, 0.9, 0.35],
+        solid: false,
+        visibleDistance: 140,
+        streamDistance: 220,
+        fadeRange: 24,
+        materializedRepresentations: ["physical", "proxy"],
+      }),
+      World.upsertProcess({
+        id: p.productionProcess, intervalSeconds: p.productionInterval,
+        phaseSeconds: 2, payload: { units: p.batchSize },
+      }),
+      World.upsertProcess({
+        id: p.consumptionProcess, intervalSeconds: p.consumptionInterval,
+        phaseSeconds: 1, payload: { units: p.consumptionUnits },
+      }),
+      World.setFact(p.facts.produced, 0),
+      World.setFact(p.facts.delivered, 0),
+      World.setFact(p.facts.sold, 0),
+      World.setFact(p.facts.stock, p.initialStock),
+      World.setFact(p.facts.shortage, p.initialStock <= p.lowStockThreshold),
+      World.setFact(p.facts.power, true),
+      World.setFact("demo.initialized", true),
+    ] };
+  }
+
+  frame(payload: unknown): WorldResult {
+    const view = LivingWorldView.fromFrame(payload);
+    if (!view) return { commands: [] };
+    const p = this.policy;
+    const commands: EngineCommand[] = [];
+    let stock = view.factNumber(p.facts.stock, p.initialStock);
+    let produced = view.factNumber(p.facts.produced, 0);
+    let delivered = view.factNumber(p.facts.delivered, 0);
+    let sold = view.factNumber(p.facts.sold, 0);
+    let shortage = view.factBoolean(p.facts.shortage, false);
+    let factoryChanged = false;
+    let shopChanged = false;
+
+    // All deliveries and processes in this snapshot are applied in world-time order.
+    // Local totals include earlier commands in the same batch; snapshots are immutable.
+    const actions = [
+      ...view.state.events.frame_due.map(event => ({
+        time: event.due_world_seconds, event, process: undefined,
+      })),
+      ...view.state.processes.frame_due.map(process => ({
+        time: process.due_world_seconds, event: undefined, process,
+      })),
+    ].sort((a, b) => a.time - b.time);
+
+    for (const action of actions) {
+      const event = action.event;
+      const process = action.process;
+      let stockCause: string | undefined;
+      if (event?.kind === "demo.delivery.arrived" && event.source === p.factoryId) {
+        const units = (event.payload as DeliveryPayload | null)?.units;
+        if (typeof units !== "number" || !Number.isFinite(units) || units <= 0) continue;
+        stockCause = event.reality_event_id;
+        stock += units;
+        delivered += units;
+        commands.push(
+          World.setFact(p.facts.stock, stock, event.reality_event_id),
+          World.setFact(p.facts.delivered, delivered, event.reality_event_id),
+        );
+        shopChanged = true;
+      } else if (process?.id === p.productionProcess) {
+        const units = p.batchSize * process.occurrences;
+        const cause = "demo.production." + process.due_world_seconds.toFixed(6);
+        if (!view.factBoolean(p.facts.power, true)) {
+          commands.push(World.recordReality({
+            id: cause, kind: "demo.production.blocked", source: p.factoryId,
+            participants: [p.factoryId], position: p.factoryPosition,
+            payload: { reason: "power_unavailable", occurrences: process.occurrences },
+          }));
+          continue;
+        }
+        produced += units;
+        commands.push(
+          World.recordReality({
+            id: cause, kind: "demo.production.completed", source: p.factoryId,
+            participants: [p.factoryId], position: p.factoryPosition,
+            payload: { units, occurrences: process.occurrences },
+          }),
+          World.setFact(p.facts.produced, produced, cause),
+          World.scheduleEvent<DeliveryPayload>({
+            id: "demo.delivery." + process.due_world_seconds.toFixed(6),
+            kind: "demo.delivery.arrived", source: p.factoryId, cause,
+            delaySeconds: p.transitSeconds, ttlSeconds: p.eventTtlSeconds,
+            position: p.shopPosition, payload: { units },
+          }),
+        );
+        factoryChanged = true;
+      } else if (process?.id === p.consumptionProcess) {
+        const demand = p.consumptionUnits * process.occurrences;
+        const purchased = Math.min(stock, demand);
+        stock -= purchased;
+        sold += purchased;
+        const cause = "demo.purchase." + process.due_world_seconds.toFixed(6);
+        stockCause = cause;
+        commands.push(
+          World.recordReality({
+            id: cause, kind: "demo.shop.purchase", source: p.shopId,
+            participants: [p.shopId], position: p.shopPosition,
+            payload: { demand, purchased, unfilled: demand - purchased },
+          }),
+          World.setFact(p.facts.stock, stock, cause),
+          World.setFact(p.facts.sold, sold, cause),
+        );
+        shopChanged = true;
+      } else {
+        continue;
+      }
+
+      const nextShortage = stock <= p.lowStockThreshold;
+      if (stockCause && nextShortage !== shortage) {
+        const cause = stockCause;
+        const id = "demo.shortage." + view.state.clock.fixed_tick + "." + commands.length;
+        commands.push(
+          World.recordReality({
+            id, kind: nextShortage ? "demo.shop.shortage" : "demo.shop.restocked",
+            source: p.shopId, cause, participants: [p.shopId],
+            position: p.shopPosition, payload: { stock },
+          }),
+          World.setFact(p.facts.shortage, nextShortage, id),
+        );
+        shortage = nextShortage;
+      }
+    }
+
+    if (factoryChanged) commands.push(World.upsertActor({
+      id: p.factoryId, kind: "factory",
+      position: view.actor(p.factoryId)?.position ?? p.factoryPosition,
+      state: { produced },
+    }));
+    if (shopChanged) commands.push(World.upsertActor({
+      id: p.shopId, kind: "shop",
+      position: view.actor(p.shopId)?.position ?? p.shopPosition,
+      state: { stock, delivered, sold, shortage },
+    }));
+
+    return { commands, ui: { bindings: {
+      "living_world.seconds": view.state.clock.world_seconds,
+      "living_world.produced": produced,
+      "living_world.delivered": delivered,
+      "living_world.stock": stock,
+      "living_world.sold": sold,
+      "living_world.shortage": shortage,
+      "living_world.traveler.x": view.actor(p.traveler.actorId)?.position[0] ?? p.traveler.positions[0][0],
+      "living_world.traveler.representation":
+        view.actor(p.traveler.actorId)?.representation ?? "abstract",
+    } } };
+  }
+}
+
+export const livingWorldDemo = new LivingWorldDemo();

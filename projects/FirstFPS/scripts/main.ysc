@@ -1,10 +1,12 @@
 import { Events } from "./newviso/events.ysc";
+import { livingTransport } from "./world/living_transport.ysc";
+import { livingWorldDemo } from "./world/living_simulation.ysc";
 import { frameGame, shutdownGame, startGame } from "./fps/game.ysc";
 import {
   on_frame as frameWorldLighting,
   on_shutdown as shutdownWorldLighting,
   on_start as startWorldLighting,
-} from "./newviso/world_lighting.ysc";
+} from "./world/lighting.ysc";
 
 type ScriptResult = {
   exit_requested?: boolean;
@@ -46,6 +48,8 @@ function mergeResults(...parts: unknown[]): ScriptResult {
 
 export function on_start(payload: unknown): unknown {
   const result = mergeResults(
+    livingWorldDemo.start(payload),
+    livingTransport.start(payload),
     startWorldLighting(payload),
     startGame(),
   );
@@ -55,6 +59,8 @@ export function on_start(payload: unknown): unknown {
 
 export function on_frame(payload: unknown): unknown {
   const result = mergeResults(
+    livingWorldDemo.frame(payload),
+    livingTransport.frame(payload),
     frameWorldLighting(payload as { elapsed_seconds?: number }),
     frameGame(payload),
   );

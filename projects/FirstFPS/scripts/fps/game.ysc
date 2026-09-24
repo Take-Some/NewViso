@@ -17,6 +17,22 @@ export function startGame(): unknown {
   return {
     commands: [
       { op: "platform.cursor.set", captured: false },
+      {
+        op: "physics.world.configure",
+        fixed_hz: CFG.physicsWorld.fixedHz,
+        max_steps_per_frame: CFG.physicsWorld.maxStepsPerFrame,
+        gravity: CFG.physicsWorld.gravity,
+        contact_skin: CFG.physicsWorld.contactSkin,
+        scene_colliders: {
+          enabled: CFG.physicsWorld.sceneColliders.enabled,
+          friction: CFG.physicsWorld.sceneColliders.friction,
+          restitution: CFG.physicsWorld.sceneColliders.restitution,
+          density: CFG.physicsWorld.sceneColliders.density,
+          participates_in_queries:
+            CFG.physicsWorld.sceneColliders.participatesInQueries,
+          casts_contacts: CFG.physicsWorld.sceneColliders.castsContacts,
+        },
+      },
       { op: "scene.transient_spheres.set", items: [] },
       { op: "scene.overlay_quads.set", items: [] },
     ],

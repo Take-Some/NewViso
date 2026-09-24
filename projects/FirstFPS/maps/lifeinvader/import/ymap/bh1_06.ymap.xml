@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CMapData>
+ <name>bh1_06</name>
+ <parent>bh1_lod</parent>
+ <flags value="2" />
+ <contentFlags value="18" />
+ <streamingExtentsMin x="-1782.8282" y="-1046.0249" z="-601.6968" />
+ <streamingExtentsMax x="-382.82825" y="353.97516" z="798.3032" />
+ <entitiesExtentsMin x="-1132.7899" y="-279.7314" z="35.565376" />
+ <entitiesExtentsMax x="-1020.23474" y="-216.56169" z="58.461758" />
+ <entities>
+  <Item type="CEntityDef">
+   <archetypeName>bh1_06_em_slod</archetypeName>
+   <flags value="8" />
+   <guid value="1077846557" />
+   <position x="-1076.3767" y="-246.31316" z="46.27854" />
+   <rotation x="0" y="0" z="0" w="1" />
+   <scaleXY value="1" />
+   <scaleZ value="1" />
+   <parentIndex value="11" />
+   <lodDist value="2000" />
+   <childLodDist value="300" />
+   <lodLevel>LODTYPES_DEPTH_SLOD1</lodLevel>
+   <numChildren value="1" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+  <Item type="CEntityDef">
+   <archetypeName>bh1_06_slod1</archetypeName>
+   <flags value="1572888" />
+   <guid value="3637524697" />
+   <position x="-1076.3767" y="-246.31316" z="46.27854" />
+   <rotation x="0" y="0" z="0" w="1" />
+   <scaleXY value="1" />
+   <scaleZ value="1" />
+   <parentIndex value="27" />
+   <lodDist value="500" />
+   <childLodDist value="300" />
+   <lodLevel>LODTYPES_DEPTH_SLOD1</lodLevel>
+   <numChildren value="3" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+  <Item type="CEntityDef">
+   <archetypeName>bh1_06_em_lod</archetypeName>
+   <flags value="0" />
+   <guid value="3529254712" />
+   <position x="-1076.4331" y="-246.31258" z="46.334007" />
+   <rotation x="0" y="0" z="0" w="1" />
+   <scaleXY value="1" />
+   <scaleZ value="1" />
+   <parentIndex value="0" />
+   <lodDist value="300" />
+   <childLodDist value="160" />
+   <lodLevel>LODTYPES_DEPTH_LOD</lodLevel>
+   <numChildren value="1" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+  <Item type="CEntityDef">
+   <archetypeName>bh1_06_building_lod</archetypeName>
+   <flags value="1572864" />
+   <guid value="422714805" />
+   <position x="-1076.4331" y="-246.31258" z="46.334003" />
+   <rotation x="0" y="0" z="0" w="1" />
+   <scaleXY value="1" />
+   <scaleZ value="1" />
+   <parentIndex value="1" />
+   <lodDist value="300" />
+   <childLodDist value="160" />
+   <lodLevel>LODTYPES_DEPTH_LOD</lodLevel>
+   <numChildren value="1" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+  <Item type="CEntityDef">
+   <archetypeName>bh1_06_lifeinvadersign_lod</archetypeName>
+   <flags value="1572864" />
+   <guid value="4032753718" />
+   <position x="-1076.1511" y="-250.87318" z="47.654884" />
+   <rotation x="0" y="0" z="0" w="1" />
+   <scaleXY value="1" />
+   <scaleZ value="1" />
+   <parentIndex value="1" />
+   <lodDist value="300" />
+   <childLodDist value="100" />
+   <lodLevel>LODTYPES_DEPTH_LOD</lodLevel>
+   <numChildren value="1" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+  <Item type="CEntityDef">
+   <archetypeName>bh1_06_building_wins_lod</archetypeName>
+   <flags value="1572864" />
+   <guid value="1262579635" />
+   <position x="-1076.4331" y="-246.31258" z="46.334007" />
+   <rotation x="0" y="0" z="0" w="1" />
+   <scaleXY value="1" />
+   <scaleZ value="1" />
+   <parentIndex value="1" />
+   <lodDist value="300" />
+   <childLodDist value="160" />
+   <lodLevel>LODTYPES_DEPTH_LOD</lodLevel>
+   <numChildren value="1" />
+   <priorityLevel>PRI_REQUIRED</priorityLevel>
+   <extensions />
+   <ambientOcclusionMultiplier value="255" />
+   <artificialAmbientOcclusion value="255" />
+   <tintValue value="0" />
+  </Item>
+ </entities>
+ <containerLods itemType="rage__fwContainerLodDef" />
+ <boxOccluders itemType="BoxOccluder" />
+ <occludeModels itemType="OccludeModel" />
+ <physicsDictionaries />
+ <instancedData>
+  <ImapLink />
+  <PropInstanceList itemType="rage__fwPropInstanceListDef" />
+  <GrassInstanceList itemType="rage__fwGrassInstanceListDef" />
+ </instancedData>
+ <timeCycleModifiers itemType="CTimeCycleModifier">
+  <Item>
+   <name>hash_9CFCA62E</name>
+   <minExtents x="-1045.0795" y="-232.31734" z="38.04016" />
+   <maxExtents x="-1042.171" y="-229.85402" z="41.174038" />
+   <percentage value="35" />
+   <range value="4" />
+   <startHour value="0" />
+   <endHour value="23" />
+  </Item>
+ </timeCycleModifiers>
+ <carGenerators itemType="CCarGen" />
+ <LODLightsSOA>
+  <direction itemType="FloatXYZ" />
+  <falloff />
+  <falloffExponent />
+  <timeAndStateFlags />
+  <hash />
+  <coneInnerAngle />
+  <coneOuterAngleOrCapExt />
+  <coronaIntensity />
+ </LODLightsSOA>
+ <DistantLODLightsSOA>
+  <position itemType="FloatXYZ" />
+  <RGBI />
+  <numStreetLights value="0" />
+  <category value="0" />
+ </DistantLODLightsSOA>
+ <block>
+  <version value="0" />
+  <flags value="0" />
+  <name>bh1_06</name>
+  <exportedBy>buildernorth</exportedBy>
+  <owner></owner>
+  <time>16 September 2014 20:32</time>
+ </block>
+</CMapData>

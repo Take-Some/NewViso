@@ -1,0 +1,56 @@
+import { LivingWorldCommands as World, type EngineCommand, type Vec3 } from "../newviso/world/living_world.ysc";
+import { LivingWorldView } from "../newviso/world/living_world_state.ysc";
+
+/** Project-owned route and visual; movement and lifetime belong to the world backend. */
+export class LivingTransport {
+  readonly actorId = "demo.courier";
+  readonly nearNode = "demo.route.near";
+  readonly farNode = "demo.route.far";
+  readonly near: Vec3 = [-8, 0, 18];
+  readonly far: Vec3 = [42, 0, 18];
+
+  start(payload?: unknown): { commands: EngineCommand[] } {
+    const view = LivingWorldView.fromFrame(payload);
+    const commands: EngineCommand[] = [
+      World.upsertNavNode({ id: this.nearNode, position: this.near }),
+      World.upsertNavNode({ id: this.farNode, position: this.far }),
+      World.upsertNavEdge({ id: "demo.route.road", from: this.nearNode, to: this.farNode, bidirectional: true }),
+    ];
+    if (!view?.actor(this.actorId)) {
+      commands.push(
+        World.upsertActor({ id: this.actorId, kind: "courier", position: this.near, state: { destination: this.farNode, trips: 0 } }),
+        this.travel(this.farNode),
+      );
+    }
+    commands.push(World.bindActorPresentation({
+      actorId: this.actorId, sceneKey: "world.demo.courier", visual: "cube",
+      positionOffset: [0, 0.9, 0], scale: [0.6, 1.8, 0.6], boundsHalfExtent: [0.3, 0.9, 0.3],
+      baseColor: [0.1, 0.65, 1, 1], solid: false, visibleDistance: 100, streamDistance: 120,
+      materializedRepresentations: ["physical", "proxy"],
+    }));
+    return { commands };
+  }
+
+  frame(payload: unknown): { commands: EngineCommand[] } {
+    const view = LivingWorldView.fromFrame(payload);
+    const actor = view?.actor(this.actorId);
+    if (!view || !actor || !view.state.navigation) return { commands: [] };
+    if (view.state.navigation.active_travel.some(t => t.actor_id === this.actorId)) return { commands: [] };
+    const state = actor.state as { destination?: string; trips?: number } | null;
+    const completion = view.state.navigation.frame_completions.find(t => t.actor_id === this.actorId);
+    const destination = completion
+      ? (completion.destination_node === this.farNode ? this.nearNode : this.farNode)
+      : (state?.destination === this.nearNode ? this.nearNode : this.farNode);
+    const trips = (state?.trips ?? 0) + (completion ? 1 : 0);
+    return { commands: [
+      World.upsertActor({ id: this.actorId, kind: actor.kind, position: actor.position, state: { destination, trips } }),
+      World.setFact("demo.courier.trips", trips),
+      this.travel(destination),
+    ] };
+  }
+
+  private travel(destinationNode: string): EngineCommand {
+    return World.startTravel({ actorId: this.actorId, destinationNode, speed: 5, mode: "walk" });
+  }
+}
+export const livingTransport = new LivingTransport();

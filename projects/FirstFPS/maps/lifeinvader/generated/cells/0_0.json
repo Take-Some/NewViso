@@ -1,0 +1,514 @@
+{
+  "schema": "newviso.map.cell.v1",
+  "coord": {
+    "x": 0,
+    "z": 0
+  },
+  "placements": [
+    {
+      "id": "bollard_3",
+      "transform": {
+        "position": [
+          0.0,
+          0.55,
+          14.0
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.45,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.54,
+          0.55,
+          0.52,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 90,
+        "stream_distance": 140,
+        "fade_range": 13.5
+      },
+      "visibility": null,
+      "tags": [
+        "exterior",
+        "prop"
+      ],
+      "definition_ref": null
+    },
+    {
+      "id": "bollard_4",
+      "transform": {
+        "position": [
+          6.0,
+          0.55,
+          14.0
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.45,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.54,
+          0.55,
+          0.52,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 90,
+        "stream_distance": 140,
+        "fade_range": 13.5
+      },
+      "visibility": null,
+      "tags": [
+        "exterior",
+        "prop"
+      ],
+      "definition_ref": null
+    },
+    {
+      "id": "bollard_5",
+      "transform": {
+        "position": [
+          12.0,
+          0.55,
+          14.0
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          0.45,
+          1.1,
+          0.45
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.54,
+          0.55,
+          0.52,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 90,
+        "stream_distance": 140,
+        "fade_range": 13.5
+      },
+      "visibility": null,
+      "tags": [
+        "exterior",
+        "prop"
+      ],
+      "definition_ref": null
+    },
+    {
+      "id": "brand_wall",
+      "transform": {
+        "position": [
+          0.0,
+          2.5,
+          2.25
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          7.0,
+          2.2,
+          0.15
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.74,
+          0.12,
+          0.18,
+          1
+        ]
+      },
+      "collider": {
+        "solid": false
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 170,
+        "fade_range": 18.0
+      },
+      "visibility": null,
+      "tags": [
+        "lobby",
+        "signage"
+      ],
+      "definition_ref": null
+    },
+    {
+      "id": "entrance_canopy",
+      "transform": {
+        "position": [
+          0.0,
+          4.8,
+          13.0
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          14.0,
+          0.35,
+          7.0
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.12,
+          0.13,
+          0.14,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 140,
+        "stream_distance": 190,
+        "fade_range": 21.0
+      },
+      "visibility": null,
+      "tags": [
+        "entrance"
+      ],
+      "definition_ref": null
+    },
+    {
+      "id": "entrance_step",
+      "transform": {
+        "position": [
+          0.0,
+          0.18,
+          12.5
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          14.0,
+          0.36,
+          5.0
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.39,
+          0.4,
+          0.4,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 120,
+        "stream_distance": 170,
+        "fade_range": 18.0
+      },
+      "visibility": null,
+      "tags": [
+        "entrance"
+      ],
+      "definition_ref": null
+    },
+    {
+      "id": "lounge_table_2",
+      "transform": {
+        "position": [
+          4.0,
+          0.6,
+          5.0
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          2.5,
+          1.0,
+          2.5
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.42,
+          0.29,
+          0.18,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 90,
+        "stream_distance": 140,
+        "fade_range": 13.5
+      },
+      "visibility": null,
+      "tags": [
+        "lounge",
+        "prop"
+      ],
+      "definition_ref": null
+    },
+    {
+      "id": "lounge_table_3",
+      "transform": {
+        "position": [
+          10.0,
+          0.6,
+          5.0
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          2.5,
+          1.0,
+          2.5
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.42,
+          0.29,
+          0.18,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 90,
+        "stream_distance": 140,
+        "fade_range": 13.5
+      },
+      "visibility": null,
+      "tags": [
+        "lounge",
+        "prop"
+      ],
+      "definition_ref": null
+    },
+    {
+      "id": "reception_back",
+      "transform": {
+        "position": [
+          0.0,
+          1.5,
+          2.5
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          12.0,
+          3.0,
+          0.4
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.62,
+          0.62,
+          0.59,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 140,
+        "stream_distance": 190,
+        "fade_range": 21.0
+      },
+      "visibility": null,
+      "tags": [
+        "lobby"
+      ],
+      "definition_ref": null
+    },
+    {
+      "id": "reception_desk",
+      "transform": {
+        "position": [
+          0.0,
+          0.75,
+          5.2
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          7.0,
+          1.5,
+          1.6
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.42,
+          0.29,
+          0.18,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 100,
+        "stream_distance": 150,
+        "fade_range": 15.0
+      },
+      "visibility": null,
+      "tags": [
+        "lobby",
+        "prop"
+      ],
+      "definition_ref": null
+    },
+    {
+      "id": "site_ground",
+      "transform": {
+        "position": [
+          0.0,
+          -0.25,
+          0.0
+        ],
+        "rotation_degrees": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          110.0,
+          0.5,
+          90.0
+        ]
+      },
+      "mesh": {
+        "primitive": "cube"
+      },
+      "material": {
+        "base_color": [
+          0.19,
+          0.2,
+          0.2,
+          1
+        ]
+      },
+      "collider": {
+        "solid": true
+      },
+      "mobility": "static",
+      "lod": {
+        "visible_distance": 260,
+        "stream_distance": 310,
+        "fade_range": 24
+      },
+      "visibility": null,
+      "tags": [
+        "site"
+      ],
+      "definition_ref": null
+    }
+  ],
+  "metadata": {
+    "source": "maps/lifeinvader/source/lifeinvader_proxy.placements.json"
+  }
+}
