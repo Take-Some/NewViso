@@ -1,9 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/newviso-bugtrap",
     "crates/newviso-audio-client",
     "crates/newviso-audio-api",
     "apps/newviso",
+    "apps/newviso-bugtrap",
     "crates/newviso-scripting",
     "crates/newviso-ui-client",
     "crates/newviso-script-client",
@@ -13,6 +15,7 @@ members = [
     "crates/newviso-config",
     "crates/newviso-content-manager",
     "crates/newviso-core",
+    "crates/newviso-events",
     "crates/newviso-host",
     "crates/newviso-input-client",
     "crates/newviso-platform",
@@ -35,6 +38,7 @@ license = "Proprietary"
 version = "0.1.0"
 
 [workspace.dependencies]
+newviso-bugtrap = { path = "crates/newviso-bugtrap" }
 newviso-audio-api = { path = "crates/newviso-audio-api" }
 newviso-audio-client = { path = "crates/newviso-audio-client" }
 newviso-scripting = { path = "crates/newviso-scripting" }
@@ -46,6 +50,7 @@ newviso-compat-abi = { path = "crates/newviso-compat-abi" }
 newviso-config = { path = "crates/newviso-config" }
 newviso-content-manager = { path = "crates/newviso-content-manager" }
 newviso-core = { path = "crates/newviso-core" }
+newviso-events = { path = "crates/newviso-events" }
 newviso-host = { path = "crates/newviso-host" }
 newviso-input-client = { path = "crates/newviso-input-client" }
 newviso-platform = { path = "crates/newviso-platform" }

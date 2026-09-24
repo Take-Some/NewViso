@@ -1,9 +1,7 @@
 import { clamp, cameraVector, copy3 } from "./math.ysc";
 
 export interface Projectile {
-  position: [number, number, number];
-  velocity: [number, number, number];
-  age: number;
+  entity: number;
 }
 
 export interface GameState {

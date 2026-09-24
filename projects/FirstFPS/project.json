@@ -36,7 +36,8 @@
     "lifecycle": {
       "start": "on_start",
       "frame": "on_frame",
-      "shutdown": "on_shutdown"
+      "shutdown": "on_shutdown",
+      "event": "on_event"
     },
     "permissions": []
   }

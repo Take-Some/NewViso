@@ -1,11 +1,19 @@
+import { Events } from "../newviso/events.ysc";
 import { CFG, KEY, MOUSE_PRIMARY } from "./config.ysc";
 import { clamp, finite, has, shortestAngle } from "./math.ysc";
 import { buildPresentationCommands } from "./presentation.ysc";
-import { simulateProjectiles, spawnProjectile } from "./projectiles.ysc";
+import { destroyProjectileCommands, spawnProjectile } from "./projectiles.ysc";
 import { initializeFromRuntime, resetPlayer, state } from "./state.ysc";
 import { moveHorizontalAxis, moveVertical, probeGround, solidsFrom } from "./world.ysc";
 
+let previousMoving = false;
+let previousWalking = false;
+let previousSprinting = false;
+
 export function startGame(): unknown {
+  previousMoving = false;
+  previousWalking = false;
+  previousSprinting = false;
   return {
     commands: [
       { op: "platform.cursor.set", captured: false },
@@ -39,9 +47,18 @@ export function frameGame(payload: any): unknown {
 
   const dt = clamp(finite(payload?.delta_seconds, 0), 0, 0.05);
   const solids = solidsFrom(payload);
+  const frameCommands: unknown[] = [];
+
+  let currentMoving = false;
+  let currentWalking = false;
+  let currentSprinting = false;
+  let movementSnapshot: any = null;
 
   if (state.captured && dt > 0) {
-    if (has(keyPressed, KEY.R)) resetPlayer();
+    if (has(keyPressed, KEY.R)) {
+      frameCommands.push(...destroyProjectileCommands(state.projectiles));
+      resetPlayer();
+    }
 
     const dx = finite(mouse?.delta?.x, 0);
     const dy = finite(mouse?.delta?.y, 0);
@@ -74,20 +91,73 @@ export function frameGame(payload: any): unknown {
     }
 
     const sprint = has(keyDown, KEY.ShiftLeft) || has(keyDown, KEY.ShiftRight);
-    const moving = Math.abs(forward) + Math.abs(right) > 0.001;
+    let moving = Math.abs(forward) + Math.abs(right) > 0.001;
     const speed = CFG.walkSpeed * (sprint ? CFG.sprintMultiplier : 1);
+
+    if (moving) {
+      const beforeMove = Events.emit(
+        "game.player.move.before",
+        {
+          position: [...state.position],
+          forward,
+          right,
+          sprint,
+          speed,
+          delta_seconds: dt,
+        },
+        { phase: "before", cancelable: true },
+      );
+      if (beforeMove.defaultPrevented) {
+        moving = false;
+        forward = 0;
+        right = 0;
+      }
+    }
 
     const vx = (Math.sin(state.yaw) * forward + Math.cos(state.yaw) * right) * speed;
     const vz = (-Math.cos(state.yaw) * forward + Math.sin(state.yaw) * right) * speed;
     moveHorizontalAxis(state.position, 0, vx * dt, solids);
     moveHorizontalAxis(state.position, 2, vz * dt, solids);
 
-    state.grounded = probeGround(state.position, solids);
-    if (has(keyPressed, KEY.Space) && state.grounded) {
-      state.verticalVelocity = CFG.jumpSpeed;
-      state.grounded = false;
+    currentMoving = moving;
+    currentSprinting = moving && sprint;
+    currentWalking = moving && !sprint;
+    if (moving) {
+      movementSnapshot = {
+        position: [...state.position],
+        direction: { forward, right },
+        velocity: [vx, 0, vz],
+        sprint,
+        speed,
+        delta_seconds: dt,
+      };
     }
 
+    state.grounded = probeGround(state.position, solids);
+    if (has(keyPressed, KEY.Space) && state.grounded) {
+      const beforeJump = Events.emit(
+        "game.player.jump.before",
+        {
+          position: [...state.position],
+          jump_speed: CFG.jumpSpeed,
+        },
+        { phase: "before", cancelable: true },
+      );
+      if (!beforeJump.defaultPrevented) {
+        state.verticalVelocity = CFG.jumpSpeed;
+        state.grounded = false;
+        Events.emit(
+          "game.player.jump",
+          {
+            position: [...state.position],
+            vertical_velocity: state.verticalVelocity,
+          },
+          { phase: "after" },
+        );
+      }
+    }
+
+    const groundedBeforeVertical = state.grounded;
     state.verticalVelocity += CFG.gravity * dt;
     const vertical = moveVertical(
       state.position,
@@ -96,6 +166,19 @@ export function frameGame(payload: any): unknown {
     );
     if (vertical.blocked) state.verticalVelocity = 0;
     state.grounded = vertical.grounded;
+    if (!groundedBeforeVertical && state.grounded) {
+      Events.emit(
+        "game.player.land",
+        {
+          position: [...state.position],
+        },
+        { phase: "after" },
+      );
+    }
+
+    if (movementSnapshot) {
+      movementSnapshot.grounded = state.grounded;
+    }
 
     const targetFov = sprint && moving ? CFG.sprintFovDelta : 0;
     const fovResponse = 1 - Math.exp(-CFG.fovResponseHz * dt);
@@ -118,12 +201,14 @@ export function frameGame(payload: any): unknown {
     }
 
     if (wasCaptured && has(mousePressed, MOUSE_PRIMARY)) {
-      state.projectiles = spawnProjectile(
+      const spawn = spawnProjectile(
         state.projectiles,
         state.position,
         state.yaw,
         state.pitch,
       );
+      state.projectiles = spawn.projectiles;
+      frameCommands.push(...spawn.commands);
     }
   } else {
     const fallbackDt = Math.max(dt, 1 / 120);
@@ -133,15 +218,51 @@ export function frameGame(payload: any): unknown {
     state.bob[1] *= Math.exp(-10 * fallbackDt);
   }
 
-  if (dt > 0) {
-    state.projectiles = simulateProjectiles(state.projectiles, dt, solids);
+  if (previousMoving && !currentMoving) {
+    Events.emit("game.player.move.stop", { position: [...state.position] }, { phase: "after" });
   }
+  if (!previousMoving && currentMoving) {
+    Events.emit("game.player.move.start", movementSnapshot, { phase: "after" });
+  }
+  if (previousWalking && !currentWalking) {
+    Events.emit("game.player.walk.stop", { position: [...state.position] }, { phase: "after" });
+  }
+  if (!previousWalking && currentWalking) {
+    Events.emit("game.player.walk.start", movementSnapshot, { phase: "after" });
+  }
+  if (previousSprinting && !currentSprinting) {
+    Events.emit("game.player.sprint.stop", { position: [...state.position] }, { phase: "after" });
+  }
+  if (!previousSprinting && currentSprinting) {
+    Events.emit("game.player.sprint.start", movementSnapshot, { phase: "after" });
+  }
+
+  if (movementSnapshot) {
+    Events.emit("game.player.move", movementSnapshot, { phase: "observe" });
+    Events.emit(
+      currentSprinting ? "game.player.sprint" : "game.player.walk",
+      movementSnapshot,
+      { phase: "observe" },
+    );
+  }
+
+  previousMoving = currentMoving;
+  previousWalking = currentWalking;
+  previousSprinting = currentSprinting;
 
   const width = Math.max(1, finite(payload?.frame?.surface?.width, 1));
   const height = Math.max(1, finite(payload?.frame?.surface?.height, 1));
 
   return {
-    commands: buildPresentationCommands(state, width, height),
+    commands: [
+      ...frameCommands,
+      ...buildPresentationCommands(
+        state,
+        width,
+        height,
+        payload?.runtime?.physics,
+      ),
+    ],
     ui: {
       bindings: {
         "fps.captured": state.captured,
@@ -154,11 +275,25 @@ export function frameGame(payload: any): unknown {
 }
 
 export function shutdownGame(): unknown {
+  if (previousMoving) {
+    Events.emit("game.player.move.stop", { position: [...state.position] }, { phase: "after" });
+  }
+  if (previousWalking) {
+    Events.emit("game.player.walk.stop", { position: [...state.position] }, { phase: "after" });
+  }
+  if (previousSprinting) {
+    Events.emit("game.player.sprint.stop", { position: [...state.position] }, { phase: "after" });
+  }
+  previousMoving = false;
+  previousWalking = false;
+  previousSprinting = false;
   state.captured = false;
+  const projectileDestroyCommands = destroyProjectileCommands(state.projectiles);
   state.projectiles = [];
   return {
     commands: [
       { op: "platform.cursor.set", captured: false },
+      ...projectileDestroyCommands,
       { op: "scene.transient_spheres.set", items: [] },
       { op: "scene.overlay_quads.set", items: [] },
     ],

@@ -2,10 +2,63 @@ import { CFG } from "./config.ysc";
 import { clamp, direction } from "./math.ysc";
 import { GameState } from "./state.ysc";
 
+type PhysicsBodyView = {
+  entity?: number;
+  position?: number[];
+  rotation?: number[];
+  linear_velocity?: number[];
+  angular_velocity?: number[];
+};
+
+function finiteVec3(value: unknown): [number, number, number] | null {
+  if (!Array.isArray(value) || value.length !== 3) return null;
+  const out = value.map(Number);
+  if (!out.every(Number.isFinite)) return null;
+  return [out[0], out[1], out[2]];
+}
+
+function quaternionToEulerDegrees(value: unknown): [number, number, number] {
+  if (!Array.isArray(value) || value.length !== 4) return [0, 0, 0];
+  const q = value.map(Number);
+  if (!q.every(Number.isFinite)) return [0, 0, 0];
+
+  const [x, y, z, w] = q;
+  const sinX = 2 * (w * x + y * z);
+  const cosX = 1 - 2 * (x * x + y * y);
+  const rx = Math.atan2(sinX, cosX);
+
+  const sinY = 2 * (w * y - z * x);
+  const ry =
+    Math.abs(sinY) >= 1
+      ? Math.sign(sinY) * Math.PI * 0.5
+      : Math.asin(sinY);
+
+  const sinZ = 2 * (w * z + x * y);
+  const cosZ = 1 - 2 * (y * y + z * z);
+  const rz = Math.atan2(sinZ, cosZ);
+
+  const scale = 180 / Math.PI;
+  return [rx * scale, ry * scale, rz * scale];
+}
+
+function physicsBodyMap(physics: any): Map<number, PhysicsBodyView> {
+  const out = new Map<number, PhysicsBodyView>();
+  const bodies = physics?.bodies;
+  if (!Array.isArray(bodies)) return out;
+
+  for (const raw of bodies) {
+    const entity = Number(raw?.entity);
+    if (!Number.isSafeInteger(entity) || entity < 0) continue;
+    out.set(entity, raw as PhysicsBodyView);
+  }
+  return out;
+}
+
 export function buildPresentationCommands(
   state: GameState,
   width: number,
   height: number,
+  physics: any,
 ): unknown[] {
   const dir = direction(state.yaw, state.pitch);
   const rightVec: [number, number, number] = [
@@ -24,6 +77,23 @@ export function buildPresentationCommands(
     cameraPosition[2] + dir[2],
   ];
 
+  const bodies = physicsBodyMap(physics);
+  const renderedBodies = state.projectiles
+    .map((projectile) => bodies.get(projectile.entity))
+    .filter((body): body is PhysicsBodyView => body !== undefined)
+    .map((body) => {
+      const position = finiteVec3(body.position);
+      if (!position) return null;
+      return {
+        position,
+        rotation_degrees: quaternionToEulerDegrees(body.rotation),
+        radius: CFG.projectileRadius,
+        color: [0.95, 0.42, 0.10, 1.0],
+        marker_color: [0.08, 0.10, 0.13, 1.0],
+      };
+    })
+    .filter((sphere) => sphere !== null);
+
   return [
     { op: "platform.cursor.set", captured: state.captured },
     {
@@ -35,11 +105,7 @@ export function buildPresentationCommands(
     },
     {
       op: "scene.transient_spheres.set",
-      items: state.projectiles.map((p) => ({
-        position: p.position,
-        radius: CFG.projectileRadius,
-        color: [0.95, 0.42, 0.10, 1.0],
-      })),
+      items: renderedBodies,
     },
     {
       op: "scene.overlay_quads.set",

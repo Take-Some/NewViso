@@ -5,17 +5,20 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+newviso-bugtrap.workspace = true
 newviso-assets-client.workspace = true
 newviso-capabilities.workspace = true
 newviso-compat-abi.workspace = true
 newviso-config.workspace = true
 newviso-content-manager.workspace = true
 newviso-core.workspace = true
+newviso-events.workspace = true
 newviso-host.workspace = true
 newviso-input-client.workspace = true
 newviso-materials.workspace = true
 newviso-model.workspace = true
 newviso-platform.workspace = true
+newviso-physics-client.workspace = true
 newviso-project.workspace = true
 newviso-provider-runtime.workspace = true
 newviso-render-client.workspace = true

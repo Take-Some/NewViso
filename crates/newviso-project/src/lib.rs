@@ -1,8 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::{
     fmt, fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
+
+mod validation;
+use validation::*;
 
 pub const PROJECT_MANIFEST_NAME: &str = "project.json";
 pub const PROJECT_SCHEMA_V1: &str = "newviso.project.v1";
@@ -81,6 +84,7 @@ pub struct ProjectScriptEntrypoint {
 pub struct ProjectScriptLifecycle {
     pub start: Option<String>,
     pub frame: Option<String>,
+    pub event: Option<String>,
     pub shutdown: Option<String>,
 }
 
@@ -89,6 +93,7 @@ impl Default for ProjectScriptLifecycle {
         Self {
             start: Some("on_start".to_owned()),
             frame: Some("on_frame".to_owned()),
+            event: Some("on_event".to_owned()),
             shutdown: Some("on_shutdown".to_owned()),
         }
     }
@@ -104,6 +109,7 @@ impl ProjectScriptEntrypoint {
                 asset: self.entrypoint.clone(),
                 on_start: self.lifecycle.start.clone(),
                 on_frame: self.lifecycle.frame.clone(),
+                on_event: self.lifecycle.event.clone(),
                 on_shutdown: self.lifecycle.shutdown.clone(),
                 permissions: self.permissions.clone(),
             }],
@@ -265,6 +271,8 @@ impl Default for ProjectCameraSettings {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProjectSkyEnvironment {
     pub model: String,
+    #[serde(default)]
+    pub billboard_texture: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -312,6 +320,15 @@ impl ProjectEnvironment {
                     "environment.sky.model must address a specific semantic entry".to_owned(),
                 ));
             }
+            if let Some(texture) = sky.billboard_texture.as_deref() {
+                validate_logical_asset_path("environment.sky.billboard_texture", texture)?;
+                if !texture.contains('@') {
+                    return Err(ProjectError::Asset(
+                        "environment.sky.billboard_texture must address a specific semantic entry"
+                            .to_owned(),
+                    ));
+                }
+            }
         }
         Ok(environment)
     }
@@ -357,6 +374,8 @@ pub struct ProjectScriptModule {
     pub on_start: Option<String>,
     #[serde(default)]
     pub on_frame: Option<String>,
+    #[serde(default)]
+    pub on_event: Option<String>,
     #[serde(default)]
     pub on_shutdown: Option<String>,
     #[serde(default)]
@@ -477,140 +496,6 @@ impl fmt::Display for ProjectError {
 }
 
 impl std::error::Error for ProjectError {}
-
-fn validate_manifest(manifest: &ProjectManifest) -> Result<(), ProjectError> {
-    if manifest.schema != PROJECT_SCHEMA_V1 {
-        return Err(ProjectError::Invalid(format!(
-            "unsupported schema '{}', expected '{}'",
-            manifest.schema, PROJECT_SCHEMA_V1
-        )));
-    }
-    if manifest.project.id.trim().is_empty() {
-        return Err(ProjectError::Invalid(
-            "project.id must not be empty".to_owned(),
-        ));
-    }
-    if manifest.project.name.trim().is_empty() {
-        return Err(ProjectError::Invalid(
-            "project.name must not be empty".to_owned(),
-        ));
-    }
-
-    validate_project_relative_path("paths.assets", &manifest.paths.assets)?;
-    validate_project_relative_path("paths.content", &manifest.paths.content)?;
-    validate_project_relative_path("paths.cache", &manifest.paths.cache)?;
-
-    validate_logical_asset_path("files.runtime", &manifest.files.runtime)?;
-    validate_logical_asset_path("files.environment", &manifest.files.environment)?;
-    validate_logical_asset_path("files.scene", &manifest.files.scene)?;
-    if let Some(path) = &manifest.files.scripts {
-        validate_logical_asset_path("files.scripts", path)?;
-    }
-    if let Some(scripts) = &manifest.scripts {
-        if manifest.files.scripts.is_some() {
-            return Err(ProjectError::Invalid(
-                "project manifest cannot define both 'scripts' and legacy 'files.scripts'"
-                    .to_owned(),
-            ));
-        }
-        if scripts.enabled && scripts.provider.trim().is_empty() {
-            return Err(ProjectError::Invalid(
-                "scripts.provider must not be empty when scripting is enabled".to_owned(),
-            ));
-        }
-        validate_logical_asset_path("scripts.entrypoint", &scripts.entrypoint)?;
-        for (name, operation) in [
-            (
-                "scripts.lifecycle.start",
-                scripts.lifecycle.start.as_deref(),
-            ),
-            (
-                "scripts.lifecycle.frame",
-                scripts.lifecycle.frame.as_deref(),
-            ),
-            (
-                "scripts.lifecycle.shutdown",
-                scripts.lifecycle.shutdown.as_deref(),
-            ),
-        ] {
-            if operation.is_some_and(|value| value.trim().is_empty()) {
-                return Err(ProjectError::Invalid(format!("{name} must not be empty")));
-            }
-        }
-        for permission in &scripts.permissions {
-            if permission.id.trim().is_empty() {
-                return Err(ProjectError::Invalid(
-                    "scripts.permissions[].id must not be empty".to_owned(),
-                ));
-            }
-        }
-    }
-    if let Some(path) = &manifest.files.ui {
-        validate_logical_asset_path("files.ui", path)?;
-    }
-
-    for request in manifest
-        .capabilities
-        .required
-        .iter()
-        .chain(manifest.capabilities.optional.iter())
-    {
-        if request.id.trim().is_empty() {
-            return Err(ProjectError::Invalid(
-                "capability id must not be empty".to_owned(),
-            ));
-        }
-        if request.min_version == 0 {
-            return Err(ProjectError::Invalid(format!(
-                "capability '{}' min_version must be greater than zero",
-                request.id
-            )));
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_project_relative_path(name: &str, path: &Path) -> Result<(), ProjectError> {
-    if path.as_os_str().is_empty() {
-        return Err(ProjectError::Invalid(format!("{name} must not be empty")));
-    }
-    if path.is_absolute() {
-        return Err(ProjectError::Invalid(format!(
-            "{name} must be relative to the project root"
-        )));
-    }
-    if path.components().any(|component| {
-        matches!(
-            component,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_)
-        )
-    }) {
-        return Err(ProjectError::Invalid(format!(
-            "{name} must stay inside the project root"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_logical_asset_path(name: &str, value: &str) -> Result<(), ProjectError> {
-    let normalized = value.trim().replace('\\', "/");
-    if normalized.is_empty() {
-        return Err(ProjectError::Invalid(format!("{name} must not be empty")));
-    }
-    if Path::new(&normalized).is_absolute()
-        || normalized.split('/').any(|component| component == "..")
-    {
-        return Err(ProjectError::Invalid(format!(
-            "{name} must be a logical path inside the project"
-        )));
-    }
-    Ok(())
-}
-
-fn resolve_project_path(root: &Path, path: &Path) -> PathBuf {
-    root.join(path)
-}
 
 fn default_project_version() -> String {
     "0.1.0".to_owned()

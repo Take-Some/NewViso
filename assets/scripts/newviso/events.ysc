@@ -1,0 +1,285 @@
+export type EventPhase = "before" | "after" | "observe";
+
+export interface EventEnvelope<T = unknown> {
+  schema?: string;
+  sequence?: number;
+  topic: string;
+  source?: string;
+  phase?: EventPhase;
+  cancelable?: boolean;
+  payload?: T;
+  metadata?: Record<string, unknown>;
+}
+
+export interface EventSubscriptionOptions {
+  priority?: number;
+  once?: boolean;
+}
+
+export interface EventEmitOptions {
+  source?: string;
+  phase?: EventPhase;
+  cancelable?: boolean;
+  broadcast?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+export type EventHandler<T = unknown> = (event: ScriptEvent<T>) => unknown;
+
+interface Subscription {
+  id: number;
+  pattern: string;
+  handler: EventHandler;
+  priority: number;
+  once: boolean;
+}
+
+export class ScriptEvent<T = unknown> {
+  readonly topic: string;
+  readonly source: string;
+  readonly phase: EventPhase;
+  readonly cancelable: boolean;
+  readonly sequence: number;
+  readonly payload: T;
+  readonly metadata: Record<string, unknown>;
+
+  defaultPrevented = false;
+  propagationStopped = false;
+
+  constructor(envelope: EventEnvelope<T>) {
+    this.topic = normalizeTopic(envelope.topic);
+    this.source = String(envelope.source ?? "unknown");
+    this.phase = normalizePhase(envelope.phase);
+    this.cancelable = envelope.cancelable === true;
+    this.sequence = finiteInteger(envelope.sequence, 0);
+    this.payload = envelope.payload as T;
+    this.metadata =
+      envelope.metadata && typeof envelope.metadata === "object"
+        ? { ...envelope.metadata }
+        : {};
+  }
+
+  preventDefault(): void {
+    if (this.cancelable) {
+      this.defaultPrevented = true;
+    }
+  }
+
+  stopPropagation(): void {
+    this.propagationStopped = true;
+  }
+
+  consume(): void {
+    this.preventDefault();
+    this.stopPropagation();
+  }
+}
+
+let nextSubscriptionId = 1;
+const subscriptions: Subscription[] = [];
+const outboundCommands: unknown[] = [];
+const lastByTopic = new Map<string, ScriptEvent>();
+const countsByTopic = new Map<string, number>();
+
+function normalizeTopic(topic: unknown): string {
+  const normalized = String(topic ?? "").trim().toLowerCase();
+  if (!normalized) throw new Error("event topic is empty");
+  if (normalized.startsWith(".") || normalized.endsWith(".") || normalized.includes("..")) {
+    throw new Error("invalid event topic: " + normalized);
+  }
+  if (!/^[a-z0-9_.:-]+$/.test(normalized)) {
+    throw new Error("unsupported event topic: " + normalized);
+  }
+  return normalized;
+}
+
+function normalizePattern(pattern: unknown): string {
+  const normalized = String(pattern ?? "").trim().toLowerCase();
+  if (!normalized) throw new Error("event subscription pattern is empty");
+  if (normalized.startsWith(".") || normalized.endsWith(".") || normalized.includes("..")) {
+    throw new Error("invalid event subscription pattern: " + normalized);
+  }
+  if (!/^[a-z0-9_.*:-]+$/.test(normalized)) {
+    throw new Error("unsupported event subscription pattern: " + normalized);
+  }
+  return normalized;
+}
+
+function normalizePhase(phase: unknown): EventPhase {
+  return phase === "before" || phase === "after" ? phase : "observe";
+}
+
+function finiteInteger(value: unknown, fallback: number): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
+function matchSegments(pattern: string[], topic: string[], pi = 0, ti = 0): boolean {
+  while (pi < pattern.length) {
+    const part = pattern[pi];
+    if (part === "**") {
+      if (pi === pattern.length - 1) return true;
+      for (let skip = ti; skip <= topic.length; skip++) {
+        if (matchSegments(pattern, topic, pi + 1, skip)) return true;
+      }
+      return false;
+    }
+    if (ti >= topic.length) return false;
+    if (part !== "*" && part !== topic[ti]) return false;
+    pi++;
+    ti++;
+  }
+  return ti === topic.length;
+}
+
+function matches(pattern: string, topic: string): boolean {
+  if (pattern === topic || pattern === "**") return true;
+  return matchSegments(pattern.split("."), topic.split("."));
+}
+
+function removeSubscription(id: number): boolean {
+  const index = subscriptions.findIndex((subscription) => subscription.id === id);
+  if (index < 0) return false;
+  subscriptions.splice(index, 1);
+  return true;
+}
+
+function dispatch(envelope: EventEnvelope): ScriptEvent {
+  const event = new ScriptEvent(envelope);
+  lastByTopic.set(event.topic, event);
+  countsByTopic.set(event.topic, (countsByTopic.get(event.topic) ?? 0) + 1);
+
+  const matching = subscriptions
+    .filter((subscription) => matches(subscription.pattern, event.topic))
+    .slice()
+    .sort((a, b) => b.priority - a.priority || a.id - b.id);
+
+  for (const subscription of matching) {
+    const result = subscription.handler(event);
+    if (subscription.once) removeSubscription(subscription.id);
+    if (result === false && event.cancelable) event.preventDefault();
+    if (event.propagationStopped) break;
+  }
+
+  return event;
+}
+
+export const Events = {
+  on<T = unknown>(
+    pattern: string,
+    handler: EventHandler<T>,
+    options: EventSubscriptionOptions = {},
+  ): number {
+    if (typeof handler !== "function") {
+      throw new Error("event handler must be a function");
+    }
+    const id = nextSubscriptionId++;
+    subscriptions.push({
+      id,
+      pattern: normalizePattern(pattern),
+      handler: handler as EventHandler,
+      priority: finiteInteger(options.priority, 0),
+      once: options.once === true,
+    });
+    return id;
+  },
+
+  once<T = unknown>(
+    pattern: string,
+    handler: EventHandler<T>,
+    options: Omit<EventSubscriptionOptions, "once"> = {},
+  ): number {
+    return this.on(pattern, handler, { ...options, once: true });
+  },
+
+  off(subscriptionId: number): boolean {
+    return removeSubscription(subscriptionId);
+  },
+
+  clear(pattern?: string): number {
+    if (pattern === undefined) {
+      const count = subscriptions.length;
+      subscriptions.length = 0;
+      return count;
+    }
+    const normalized = normalizePattern(pattern);
+    let removed = 0;
+    for (let index = subscriptions.length - 1; index >= 0; index--) {
+      if (subscriptions[index].pattern === normalized) {
+        subscriptions.splice(index, 1);
+        removed++;
+      }
+    }
+    return removed;
+  },
+
+  emit<T = unknown>(
+    topic: string,
+    payload: T,
+    options: EventEmitOptions = {},
+  ): ScriptEvent<T> {
+    const normalizedTopic = normalizeTopic(topic);
+    const phase = normalizePhase(options.phase);
+    const cancelable = options.cancelable === true;
+    const source = String(options.source ?? "game.script");
+    const metadata = {
+      ...(options.metadata ?? {}),
+      script_echo: false,
+    };
+
+    const event = dispatch({
+      schema: "newviso.event.v1",
+      sequence: 0,
+      topic: normalizedTopic,
+      source,
+      phase,
+      cancelable,
+      payload,
+      metadata,
+    }) as ScriptEvent<T>;
+
+    metadata.default_prevented = event.defaultPrevented;
+
+    if (options.broadcast !== false) {
+      outboundCommands.push({
+        op: "events.emit",
+        topic: normalizedTopic,
+        source,
+        phase,
+        cancelable,
+        payload,
+        metadata,
+      });
+    }
+
+    return event;
+  },
+
+  dispatchIncoming(envelope: EventEnvelope): ScriptEvent {
+    if (!envelope || typeof envelope !== "object") {
+      throw new Error("incoming event envelope must be an object");
+    }
+    return dispatch(envelope);
+  },
+
+  drainCommands(): unknown[] {
+    if (outboundCommands.length === 0) return [];
+    return outboundCommands.splice(0, outboundCommands.length);
+  },
+
+  last<T = unknown>(topic: string): ScriptEvent<T> | undefined {
+    return lastByTopic.get(normalizeTopic(topic)) as ScriptEvent<T> | undefined;
+  },
+
+  count(topic: string): number {
+    return countsByTopic.get(normalizeTopic(topic)) ?? 0;
+  },
+
+  subscriptionCount(): number {
+    return subscriptions.length;
+  },
+
+  matches(pattern: string, topic: string): boolean {
+    return matches(normalizePattern(pattern), normalizeTopic(topic));
+  },
+};

@@ -1,7 +1,7 @@
 @echo off
 setlocal
 pushd "%~dp0"
-call cargo build -p newviso -j1
+call cargo build -p newviso -p newviso-bugtrap-ui -j1
 if errorlevel 1 (
     popd
     pause

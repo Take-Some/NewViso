@@ -1,0 +1,244 @@
+type Vec3 = [number, number, number];
+
+const SUN_LIGHT = "world.celestial.sun_light";
+const SUN_VISUAL = "world.celestial.sun_visual";
+
+const MOON_LIGHT = "world.celestial.moon_light";
+const MOON_VISUAL = "world.celestial.moon_visual";
+
+const DAY_DURATION_SECONDS = 240.0;
+const SUN_MAX_ELEVATION_DEGREES = 68.0;
+const MOON_MAX_ELEVATION_DEGREES = 61.0;
+const ORBIT_YAW_BASE_DEGREES = 110.0;
+
+function clamp01(value: number): number {
+  return Math.max(0.0, Math.min(1.0, value));
+}
+
+function smoothstep(edge0: number, edge1: number, value: number): number {
+  if (edge0 === edge1) return value < edge0 ? 0.0 : 1.0;
+  const t = clamp01((value - edge0) / (edge1 - edge0));
+  return t * t * (3.0 - 2.0 * t);
+}
+
+function smootherstep(edge0: number, edge1: number, value: number): number {
+  if (edge0 === edge1) return value < edge0 ? 0.0 : 1.0;
+  const t = clamp01((value - edge0) / (edge1 - edge0));
+  return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+}
+
+function mix(a: number, b: number, t: number): number {
+  return a + (b - a) * clamp01(t);
+}
+
+function mix3(a: Vec3, b: Vec3, t: number): Vec3 {
+  return [
+    mix(a[0], b[0], t),
+    mix(a[1], b[1], t),
+    mix(a[2], b[2], t),
+  ];
+}
+
+function solarColor(elevationDegrees: number): Vec3 {
+  const deepTwilightToHorizon = smootherstep(-14.0, -1.0, elevationDegrees);
+  const horizonToGolden = smootherstep(-3.0, 18.0, elevationDegrees);
+  const goldenToDay = smootherstep(14.0, 52.0, elevationDegrees);
+
+  const deepTwilight: Vec3 = [0.34, 0.12, 0.10];
+  const horizon: Vec3 = [1.0, 0.23, 0.05];
+  const golden: Vec3 = [1.0, 0.64, 0.30];
+  const daylight: Vec3 = [1.0, 0.95, 0.87];
+
+  const lowSun = mix3(deepTwilight, horizon, deepTwilightToHorizon);
+  return mix3(
+    mix3(lowSun, golden, horizonToGolden),
+    daylight,
+    goldenToDay,
+  );
+}
+
+function moonColor(elevationDegrees: number): Vec3 {
+  const deepToHorizon = smootherstep(-12.0, 2.0, elevationDegrees);
+  const horizonToHigh = smootherstep(0.0, 46.0, elevationDegrees);
+
+  const deep: Vec3 = [0.13, 0.18, 0.38];
+  const horizon: Vec3 = [0.28, 0.39, 0.72];
+  const high: Vec3 = [0.72, 0.82, 1.0];
+
+  return mix3(
+    mix3(deep, horizon, deepToHorizon),
+    high,
+    horizonToHigh,
+  );
+}
+
+function sunIntensity(elevationDegrees: number): number {
+  const visibility = smootherstep(-18.0, 5.0, elevationDegrees);
+  const altitude = smootherstep(-2.0, 62.0, elevationDegrees);
+  const lowAltitudeStrength = mix(0.035, 0.22, smootherstep(-8.0, 5.0, elevationDegrees));
+  const daylightStrength = mix(
+    lowAltitudeStrength,
+    1.58,
+    Math.pow(altitude, 0.58),
+  );
+  return visibility * daylightStrength;
+}
+
+function moonIntensity(elevationDegrees: number): number {
+  const visibility = smootherstep(-16.0, 8.0, elevationDegrees);
+  const altitude = smootherstep(-2.0, 55.0, elevationDegrees);
+  const lowAltitudeStrength = mix(0.008, 0.045, smootherstep(-8.0, 6.0, elevationDegrees));
+  const highAltitudeStrength = mix(
+    lowAltitudeStrength,
+    0.17,
+    Math.pow(altitude, 0.72),
+  );
+  return visibility * highAltitudeStrength;
+}
+
+function celestialState(elapsedSeconds: number) {
+  const dayPhaseDegrees =
+    ((elapsedSeconds / DAY_DURATION_SECONDS) * 360.0 + 62.0) % 360.0;
+  const sunOrbitRadians = dayPhaseDegrees * Math.PI / 180.0;
+  const moonPhaseDegrees = (dayPhaseDegrees + 180.0) % 360.0;
+  const moonOrbitRadians = moonPhaseDegrees * Math.PI / 180.0;
+
+  const sunElevation =
+    Math.sin(sunOrbitRadians) * SUN_MAX_ELEVATION_DEGREES;
+  const moonElevation =
+    Math.sin(moonOrbitRadians) * MOON_MAX_ELEVATION_DEGREES;
+
+  const sunRotation: Vec3 = [
+    -sunElevation,
+    ORBIT_YAW_BASE_DEGREES + dayPhaseDegrees * 0.36,
+    0.0,
+  ];
+  const moonRotation: Vec3 = [
+    -moonElevation,
+    ORBIT_YAW_BASE_DEGREES + 180.0 + moonPhaseDegrees * 0.28,
+    0.0,
+  ];
+
+  return {
+    sunElevation,
+    moonElevation,
+    sunRotation,
+    moonRotation,
+    sunColor: solarColor(sunElevation),
+    moonColor: moonColor(moonElevation),
+    sunIntensity: sunIntensity(sunElevation),
+    moonIntensity: moonIntensity(moonElevation),
+  };
+}
+
+export function celestialCommands(elapsedSeconds: number): unknown[] {
+  const state = celestialState(elapsedSeconds);
+
+  const sunShadowing = state.sunIntensity > 0.12;
+  const moonShadowing =
+    state.sunIntensity < 0.04 &&
+    state.moonIntensity > 0.035;
+
+  const sunVisualFade = smootherstep(-10.0, 3.0, state.sunElevation);
+  const sunVisualIntensity =
+    sunVisualFade * mix(
+      0.35,
+      9.5,
+      smootherstep(-4.0, 48.0, state.sunElevation),
+    );
+
+  const moonVisualFade = smootherstep(-12.0, 5.0, state.moonElevation);
+  const moonVisualIntensity =
+    moonVisualFade * mix(
+      0.10,
+      1.75,
+      smootherstep(-3.0, 46.0, state.moonElevation),
+    );
+
+  return [
+    {
+      op: "scene.light.upsert",
+      id: SUN_LIGHT,
+      light_type: "directional",
+      color: state.sunColor,
+      intensity: state.sunIntensity,
+      casts_shadows: sunShadowing,
+      shadow_bias: 0.0018,
+      shadow_normal_bias: 0.018,
+      shadow_resolution: 8192,
+      shadow_distance: 96.0,
+    },
+    {
+      op: "scene.entity.transform.set",
+      id: SUN_LIGHT,
+      rotation_degrees: state.sunRotation,
+    },
+    {
+      op: "scene.sky_visual.upsert",
+      id: SUN_VISUAL,
+      kind: "disc",
+      color: state.sunColor,
+      intensity: sunVisualIntensity,
+      angular_size_degrees: 0.53,
+      halo_size_degrees: 6.5,
+      halo_intensity:
+        sunVisualFade *
+        mix(
+          0.08,
+          0.42,
+          1.0 - smootherstep(3.0, 46.0, state.sunElevation),
+        ),
+    },
+    {
+      op: "scene.entity.transform.set",
+      id: SUN_VISUAL,
+      rotation_degrees: state.sunRotation,
+    },
+    {
+      op: "scene.light.upsert",
+      id: MOON_LIGHT,
+      light_type: "directional",
+      color: state.moonColor,
+      intensity: state.moonIntensity,
+      casts_shadows: moonShadowing,
+      shadow_bias: 0.0024,
+      shadow_normal_bias: 0.022,
+      shadow_resolution: 4096,
+      shadow_distance: 72.0,
+    },
+    {
+      op: "scene.entity.transform.set",
+      id: MOON_LIGHT,
+      rotation_degrees: state.moonRotation,
+    },
+    {
+      op: "scene.sky_visual.upsert",
+      id: MOON_VISUAL,
+      kind: "billboard",
+      color: state.moonColor,
+      intensity: moonVisualIntensity,
+      angular_size_degrees: 0.52,
+      halo_size_degrees: 3.4,
+      halo_intensity:
+        moonVisualFade * mix(
+          0.035,
+          0.14,
+          smootherstep(-4.0, 24.0, state.moonElevation),
+        ),
+    },
+    {
+      op: "scene.entity.transform.set",
+      id: MOON_VISUAL,
+      rotation_degrees: state.moonRotation,
+    },
+  ];
+}
+
+export function celestialShutdownCommands(): unknown[] {
+  return [
+    { op: "scene.sky_visual.remove", id: SUN_VISUAL },
+    { op: "scene.sky_visual.remove", id: MOON_VISUAL },
+    { op: "scene.entity.remove", id: SUN_LIGHT },
+    { op: "scene.entity.remove", id: MOON_LIGHT },
+  ];
+}

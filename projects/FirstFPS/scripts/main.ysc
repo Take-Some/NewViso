@@ -1,9 +1,10 @@
+import { Events } from "./newviso/events.ysc";
 import { frameGame, shutdownGame, startGame } from "./fps/game.ysc";
 import {
   on_frame as frameWorldLighting,
   on_shutdown as shutdownWorldLighting,
   on_start as startWorldLighting,
-} from "./world_lighting.ysc";
+} from "./newviso/world_lighting.ysc";
 
 type ScriptResult = {
   exit_requested?: boolean;
@@ -44,22 +45,33 @@ function mergeResults(...parts: unknown[]): ScriptResult {
 }
 
 export function on_start(payload: unknown): unknown {
-  return mergeResults(
+  const result = mergeResults(
     startWorldLighting(payload),
     startGame(),
   );
+  result.commands!.push(...Events.drainCommands());
+  return result;
 }
 
 export function on_frame(payload: unknown): unknown {
-  return mergeResults(
+  const result = mergeResults(
     frameWorldLighting(payload as { elapsed_seconds?: number }),
     frameGame(payload),
   );
+  result.commands!.push(...Events.drainCommands());
+  return result;
+}
+
+export function on_event(event: unknown): unknown {
+  Events.dispatchIncoming(event as any);
+  return {};
 }
 
 export function on_shutdown(payload: unknown): unknown {
-  return mergeResults(
+  const result = mergeResults(
     shutdownGame(),
     shutdownWorldLighting(payload),
   );
+  result.commands!.push(...Events.drainCommands());
+  return result;
 }

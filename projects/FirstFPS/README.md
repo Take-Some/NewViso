@@ -35,7 +35,8 @@ scripts/main.ysc
 │  ├─ ./world.ysc
 │  ├─ ./projectiles.ysc
 │  └─ ./presentation.ysc
-└─ ./world_lighting.ysc
+└─ ./newviso/world_lighting.ysc      (Shared Assets)
+   └─ ./world/celestial.ysc          (Shared Assets)
 ```
 
 Bare/package imports and paths escaping the project VFS root are rejected.
@@ -67,6 +68,15 @@ Provider DLLs must be installed in `runtime/providers`.
 
 The physical input mapping and tuning constants live under `scripts/fps/`; the engine only exposes raw input and generic capabilities.
 
+## Celestial lighting
+
+`assets/scripts/newviso/world_lighting.ysc` is the shared lifecycle adapter. `assets/scripts/newviso/world/celestial.ysc` owns the reusable accelerated 240-second day/night cycle. FirstFPS reaches both through the Shared Assets VFS fallback.
+
+- Sun: 0.53° angular disc, altitude-driven intensity, red/orange horizon → golden hour → warm daylight color gradient, directional shadows while above the horizon.
+- Moon: 0.52° textured billboard using Shared Assets `textures/fps/skydome.ytd@moon_new`, blue horizon → cold neutral high-altitude color gradient, weak directional moonlight and night shadows when the sun is below the horizon.
+- Sky shader: day/night atmospheric gradient, twilight band, daytime star suppression, night stars, cloud response, solar limb glow, lunar surface modulation, and screen-space optical sun flare/ghosts.
+- Celestial behavior remains project-owned. NewViso only understands generic light, transform, sky-visual and shader/render capabilities.
+
 ## Project layout
 
 - `scripts/main.ysc` — project script composition root and lifecycle exports.
@@ -77,7 +87,8 @@ The physical input mapping and tuning constants live under `scripts/fps/`; the e
 - `scripts/fps/projectiles.ysc` — projectile simulation.
 - `scripts/fps/presentation.ysc` — camera, projectile visualization, and crosshair commands.
 - `scripts/fps/math.ysc` — shared game-script math helpers.
-- `scripts/world_lighting.ysc` — project-owned directional light/day-cycle behavior.
+- `assets/scripts/newviso/world_lighting.ysc` — shared celestial lifecycle adapter.
+- `assets/scripts/newviso/world/celestial.ysc` — shared sun/moon/day-night behavior.
 - `scenes/yard.scene.json` — scene/camera/geometry/collider data.
 - `config/runtime.json` — generic window/runtime configuration.
 - `environments/yard.environment.json` — environment/background data.

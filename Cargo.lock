@@ -245,6 +245,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 name = "newviso"
 version = "0.1.0"
 dependencies = [
+ "newviso-bugtrap",
  "newviso-config",
  "newviso-host",
  "newviso-runtime",
@@ -274,6 +275,22 @@ dependencies = [
  "newviso-host",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "newviso-bugtrap"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "newviso-bugtrap-ui"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "winresource",
 ]
 
 [[package]]
@@ -313,11 +330,20 @@ name = "newviso-core"
 version = "0.1.0"
 
 [[package]]
+name = "newviso-events"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "newviso-host"
 version = "0.1.0"
 dependencies = [
  "abi_stable",
  "newviso-compat-abi",
+ "newviso-events",
  "serde_json",
 ]
 
@@ -404,15 +430,18 @@ name = "newviso-runtime"
 version = "0.1.0"
 dependencies = [
  "newviso-assets-client",
+ "newviso-bugtrap",
  "newviso-capabilities",
  "newviso-compat-abi",
  "newviso-config",
  "newviso-content-manager",
  "newviso-core",
+ "newviso-events",
  "newviso-host",
  "newviso-input-client",
  "newviso-materials",
  "newviso-model",
+ "newviso-physics-client",
  "newviso-platform",
  "newviso-project",
  "newviso-provider-runtime",
@@ -453,7 +482,11 @@ dependencies = [
 name = "newviso-scripting"
 version = "0.1.0"
 dependencies = [
+ "abi_stable",
  "newviso-assets-client",
+ "newviso-compat-abi",
+ "newviso-events",
+ "newviso-host",
  "newviso-script-client",
  "serde_json",
 ]

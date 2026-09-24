@@ -210,7 +210,7 @@ impl RenderClient {
         &self,
         label: &str,
         layout: u32,
-        textures: [Option<u32>; 3],
+        textures: [Option<u32>; 4],
         sampler: Option<u32>,
         uniform: Option<(u32, u64, u64)>,
     ) -> Result<u32, String> {
@@ -221,7 +221,7 @@ impl RenderClient {
             self.command(json!({"CreateBindGroup":{
                 "label":label,"layout":layout,
                 "texture0":textures[0],"texture1":textures[1],"texture2":textures[2],
-                "texture3":null,"texture4":null,"texture5":null,
+                "texture3":textures[3],"texture4":null,"texture5":null,
                 "graph_texture_fallback":null,
                 "sampler0":sampler,
                 "uniform0":uniform0,"storage0":null,"storage1":null,"storage2":null

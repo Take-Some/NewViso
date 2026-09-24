@@ -4,7 +4,8 @@ mod math;
 mod world;
 
 pub use first_scene::{
-    Scene3dLoadReport, Scene3dRuntime, SceneLightDesc, SceneLightType, SceneOverlayQuad,
-    SceneStreamRequest, SceneTransientSphere, SkyDomeResources, SkyIndexFormat, SkyMeshResources,
-    SkyTextureResources, SkyVertex,
+    LensFlareDesc, LensFlareElementDesc, LensFlareElementKind, Scene3dLoadReport, Scene3dRuntime,
+    SceneLightDesc, SceneLightType, SceneOverlayQuad, SceneStreamRequest, SceneTransientSphere,
+    SkyDomeResources, SkyIndexFormat, SkyMeshResources, SkyTextureResources, SkyVertex,
+    SkyVisualDesc, SkyVisualKind,
 };

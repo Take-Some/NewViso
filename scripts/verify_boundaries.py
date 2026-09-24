@@ -6,8 +6,10 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 
 ALLOWED: dict[str, set[str]] = {
-    "newviso": {"newviso-config", "newviso-host", "newviso-runtime"},
+    "newviso": {"newviso-bugtrap", "newviso-config", "newviso-host", "newviso-runtime"},
     "newviso-assets-client": {"newviso-host"},
+    "newviso-bugtrap": set(),
+    "newviso-bugtrap-ui": set(),
     "newviso-audio-api": set(),
     "newviso-audio-client": {"newviso-audio-api", "newviso-host"},
     "newviso-capabilities": {"newviso-provider-runtime"},
@@ -15,7 +17,8 @@ ALLOWED: dict[str, set[str]] = {
     "newviso-config": set(),
     "newviso-content-manager": {"newviso-assets-client"},
     "newviso-core": set(),
-    "newviso-host": {"newviso-compat-abi"},
+    "newviso-events": set(),
+    "newviso-host": {"newviso-compat-abi", "newviso-events"},
     "newviso-input-client": {"newviso-host"},
     "newviso-platform": {"newviso-compat-abi", "newviso-host"},
     "newviso-physics-client": {"newviso-host"},
@@ -27,11 +30,13 @@ ALLOWED: dict[str, set[str]] = {
     "newviso-materials": {"newviso-resource-runtime", "newviso-textures"},
     "newviso-model": {"newviso-materials", "newviso-resource-runtime"},
     "newviso-runtime": {
+        "newviso-bugtrap",
         "newviso-compat-abi",
         "newviso-config",
         "newviso-content-manager",
         "newviso-core",
         "newviso-host",
+        "newviso-events",
         "newviso-input-client",
         "newviso-platform",
         "newviso-provider-runtime",
@@ -57,7 +62,13 @@ ALLOWED: dict[str, set[str]] = {
         "newviso-textures",
     },
     "newviso-script-client": {"newviso-host"},
-    "newviso-scripting": {"newviso-assets-client", "newviso-script-client"},
+    "newviso-scripting": {
+        "newviso-assets-client",
+        "newviso-compat-abi",
+        "newviso-events",
+        "newviso-host",
+        "newviso-script-client",
+    },
     "newviso-ui-client": {"newviso-host"},
 }
 
@@ -101,7 +112,7 @@ def internal_dependencies(data: dict) -> set[str]:
     return result
 
 def manifests() -> list[Path]:
-    paths = [ROOT / "apps" / "newviso" / "Cargo.toml"]
+    paths = sorted((ROOT / "apps").glob("*/Cargo.toml"))
     paths.extend(sorted((ROOT / "crates").glob("newviso-*/Cargo.toml")))
     return [path for path in paths if path.is_file()]
 

@@ -1,16 +1,27 @@
+use abi_stable::{
+    sabi_trait::TD_Opaque,
+    std_types::{RString, RVec},
+};
 use newviso_assets_client::AssetClient;
+use newviso_compat_abi::provider::{EventSinkV1, EventSinkV1_TO};
+use newviso_events::{decode_host_event, topic, EventEnvelope};
+use newviso_host as host;
 pub use newviso_script_client::ScriptPermission;
 use newviso_script_client::{
     ScriptClient, ScriptInvocation, ScriptModuleLoad, ScriptResponseStatus,
 };
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::{Arc, Mutex, Weak},
+};
 
 #[derive(Clone, Debug)]
 pub struct ScriptModuleSpec {
     pub asset: String,
     pub on_start: Option<String>,
     pub on_frame: Option<String>,
+    pub on_event: Option<String>,
     pub on_shutdown: Option<String>,
     pub permissions: Vec<ScriptPermission>,
 }
@@ -31,10 +42,44 @@ struct LoadedModule {
     spec: ScriptModuleSpec,
 }
 
-#[derive(Debug)]
+const MAX_SCRIPT_EVENT_QUEUE: usize = 4096;
+
+#[derive(Default)]
+struct ScriptEventQueue {
+    events: VecDeque<EventEnvelope>,
+    dropped: u64,
+}
+
+struct ScriptEventSink {
+    queue: Weak<Mutex<ScriptEventQueue>>,
+}
+
+impl EventSinkV1 for ScriptEventSink {
+    fn on_event(&mut self, topic_name: RString, payload: RVec<u8>) {
+        let event = decode_host_event(topic_name.as_str(), payload.as_slice());
+        if !event.script_echo_enabled() {
+            return;
+        }
+
+        let Some(queue) = self.queue.upgrade() else {
+            return;
+        };
+        let Ok(mut queue) = queue.lock() else {
+            return;
+        };
+
+        if queue.events.len() >= MAX_SCRIPT_EVENT_QUEUE {
+            queue.events.pop_front();
+            queue.dropped = queue.dropped.saturating_add(1);
+        }
+        queue.events.push_back(event);
+    }
+}
+
 pub struct ScriptRuntime {
     modules: Vec<LoadedModule>,
     request_counter: u64,
+    event_queue: Arc<Mutex<ScriptEventQueue>>,
 }
 
 impl ScriptRuntime {
@@ -57,9 +102,19 @@ impl ScriptRuntime {
             loaded.push(LoadedModule { spec });
         }
 
+        let event_queue = Arc::new(Mutex::new(ScriptEventQueue::default()));
+        let sink = EventSinkV1_TO::from_value(
+            ScriptEventSink {
+                queue: Arc::downgrade(&event_queue),
+            },
+            TD_Opaque,
+        );
+        host::subscribe_event_sink(sink)?;
+
         Ok(Self {
             modules: loaded,
             request_counter: 0,
+            event_queue,
         })
     }
 
@@ -95,14 +150,25 @@ impl ScriptRuntime {
     }
 
     pub fn start(&mut self, project_context: &Value) -> Result<ScriptControl, String> {
+        let mut control = ScriptControl::default();
+        for event in self.drain_events() {
+            let event_control = self.invoke_event(&event)?;
+            absorb_control(&mut control, event_control);
+        }
+
         let payload = json!({
             "event": "start",
             "project": project_context
         });
-        self.invoke_lifecycle("start", &payload, false)
+        let start_control = self.invoke_lifecycle("start", &payload, false)?;
+        absorb_control(&mut control, start_control);
+        Ok(control)
     }
 
     /// Runs one project-script frame from engine-neutral snapshots.
+    ///
+    /// Host/provider events are delivered to the optional on_event hook before
+    /// on_frame and are also exposed as an observational batch in payload.events.
     pub fn frame(
         &mut self,
         delta_seconds: f32,
@@ -111,23 +177,118 @@ impl ScriptRuntime {
         runtime_state: &Value,
         frame_context: &Value,
     ) -> Result<ScriptControl, String> {
+        let events = self.drain_events();
+        let mut control = ScriptControl::default();
+
+        for event in &events {
+            let event_control = self.invoke_event(event)?;
+            absorb_control(&mut control, event_control);
+        }
+
         let payload = json!({
             "event": "frame",
             "delta_seconds": delta_seconds,
             "elapsed_seconds": elapsed_seconds,
             "project": project_context,
             "runtime": runtime_state,
-            "frame": frame_context
+            "frame": frame_context,
+            "events": events
         });
-        self.invoke_lifecycle("frame", &payload, true)
+
+        let frame_control = self.invoke_lifecycle("frame", &payload, true)?;
+        absorb_control(&mut control, frame_control);
+        Ok(control)
     }
 
     pub fn shutdown(&mut self, project_context: &Value) -> Result<ScriptControl, String> {
+        let mut control = ScriptControl::default();
+        for event in self.drain_events() {
+            let event_control = self.invoke_event(&event)?;
+            absorb_control(&mut control, event_control);
+        }
+
         let payload = json!({
             "event": "shutdown",
             "project": project_context
         });
-        self.invoke_lifecycle("shutdown", &payload, false)
+        let shutdown_control = self.invoke_lifecycle("shutdown", &payload, false)?;
+        absorb_control(&mut control, shutdown_control);
+        Ok(control)
+    }
+
+    fn drain_events(&mut self) -> Vec<EventEnvelope> {
+        let Ok(mut queue) = self.event_queue.lock() else {
+            return Vec::new();
+        };
+
+        let dropped = std::mem::take(&mut queue.dropped);
+        let mut events = queue.events.drain(..).collect::<Vec<_>>();
+        drop(queue);
+
+        if dropped > 0 {
+            let synthetic = EventEnvelope::new(
+                0,
+                topic::SCRIPT_QUEUE_DROPPED,
+                "newviso.scripting",
+                json!({
+                    "dropped": dropped,
+                    "queue_capacity": MAX_SCRIPT_EVENT_QUEUE
+                }),
+            )
+            .expect("static scripting event topic must be valid");
+            events.insert(0, synthetic);
+        }
+
+        events
+    }
+
+    fn invoke_event(&mut self, event: &EventEnvelope) -> Result<ScriptControl, String> {
+        let client = ScriptClient::new();
+        let mut control = ScriptControl::default();
+        let payload = serde_json::to_value(event)
+            .map_err(|error| format!("script event payload encode failed: {error}"))?;
+
+        for module_index in 0..self.modules.len() {
+            let operation = self.modules[module_index].spec.on_event.clone();
+            let Some(operation) = operation else {
+                continue;
+            };
+
+            self.request_counter = self.request_counter.wrapping_add(1);
+            let request_id = format!("newviso-event-{}", self.request_counter);
+            let spec = &self.modules[module_index].spec;
+
+            let request = ScriptInvocation {
+                request_id: &request_id,
+                script_ref: &spec.asset,
+                operation: &operation,
+                payload: &payload,
+                context_bytes: &[],
+                permissions: &spec.permissions,
+                metadata: BTreeMap::from([
+                    ("phase".to_owned(), "event".to_owned()),
+                    ("topic".to_owned(), event.topic.clone()),
+                    ("payload_format".to_owned(), "json".to_owned()),
+                ]),
+            };
+
+            let response = client.invoke(&request)?;
+            match response.status {
+                ScriptResponseStatus::Ok | ScriptResponseStatus::Empty => {}
+                other => {
+                    return Err(format!(
+                        "script '{}' event operation '{}' topic='{}' returned status {:?}",
+                        spec.asset, operation, event.topic, other
+                    ))
+                }
+            }
+
+            if let Some(value) = response.payload_json()? {
+                merge_control(&mut control, &value);
+            }
+        }
+
+        Ok(control)
     }
 
     fn invoke_lifecycle(
@@ -195,6 +356,12 @@ impl ScriptRuntime {
 
         Ok(control)
     }
+}
+
+fn absorb_control(target: &mut ScriptControl, mut source: ScriptControl) {
+    target.exit_requested |= source.exit_requested;
+    target.ui_bindings.append(&mut source.ui_bindings);
+    target.commands.append(&mut source.commands);
 }
 
 fn merge_control(control: &mut ScriptControl, value: &Value) {

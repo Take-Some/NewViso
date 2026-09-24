@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+abi_stable.workspace = true
 newviso-assets-client.workspace = true
+newviso-compat-abi.workspace = true
+newviso-events.workspace = true
+newviso-host.workspace = true
 newviso-script-client.workspace = true
 serde_json.workspace = true

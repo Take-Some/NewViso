@@ -11,7 +11,7 @@ compiler = shutil.which("glslc")
 validator = shutil.which("spirv-val")
 if not compiler or not validator:
     raise SystemExit("Install the Vulkan SDK and add its Bin directory to PATH.")
-for stem in ("scene", "sky", "shadow"):
+for stem in ("scene", "sky", "shadow", "flare"):
     for stage in ("vert", "frag"):
         source = assets / f"{stem}.{stage}"
         output = source.with_suffix(source.suffix + ".spv")

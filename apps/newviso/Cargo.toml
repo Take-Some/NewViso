@@ -6,6 +6,7 @@ license.workspace = true
 build = "build.rs"
 
 [dependencies]
+newviso-bugtrap.workspace = true
 newviso-config.workspace = true
 newviso-host.workspace = true
 newviso-runtime.workspace = true

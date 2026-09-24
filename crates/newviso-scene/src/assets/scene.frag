@@ -22,12 +22,23 @@ layout(location = 3) in vec4 v_shadow_coord;
 layout(location = 4) flat in float v_overlay;
 layout(location = 0) out vec4 out_color;
 
-float sample_shadow(float n_dot_l) {
-    if (frame.globals.w < 0.5 || abs(v_shadow_coord.w) < 1e-6) {
+float sample_shadow(vec3 normal, float n_dot_l) {
+    if (frame.globals.w < 0.5) {
         return 0.0;
     }
 
-    vec3 ndc = v_shadow_coord.xyz / v_shadow_coord.w;
+    // shadow_params.x is normalized depth bias.
+    // shadow_params.y is a world-space receiver normal offset.
+    // Keeping those units separate avoids peter-panning: a value such as
+    // 0.02 world units must never be treated as 0.02 of the entire depth map.
+    float normal_scale = frame.shadow_params.y * (1.0 - n_dot_l);
+    vec3 receiver_position = v_world_position + normalize(normal) * normal_scale;
+    vec4 shadow_coord = frame.shadow_view_proj * vec4(receiver_position, 1.0);
+    if (abs(shadow_coord.w) < 1e-6) {
+        return 0.0;
+    }
+
+    vec3 ndc = shadow_coord.xyz / shadow_coord.w;
     vec2 uv = ndc.xy * 0.5 + 0.5;
     float depth = ndc.z;
     if (uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0
@@ -35,8 +46,7 @@ float sample_shadow(float n_dot_l) {
         return 0.0;
     }
 
-    float bias = max(frame.shadow_params.x,
-                     frame.shadow_params.y * (1.0 - n_dot_l));
+    float bias = max(frame.shadow_params.x, 0.000001);
     float inv_resolution = 1.0 / max(frame.shadow_params.z, 1.0);
     float occluded = 0.0;
     for (int y = -1; y <= 1; ++y) {
@@ -90,7 +100,6 @@ void main() {
                 float outer_cos = frame.light_cone[i].y;
                 attenuation *= smoothstep(outer_cos, inner_cos, cone_cos);
             } else if (light_type == 3) {
-                // Raster-v1 area-light fallback: finite-range diffuse source.
                 attenuation *= 0.75;
             }
         }
@@ -102,7 +111,7 @@ void main() {
 
         float shadow = 0.0;
         if (i == shadow_light_index) {
-            shadow = sample_shadow(n_dot_l);
+            shadow = sample_shadow(n, n_dot_l);
         }
         lighting += color * intensity * attenuation * n_dot_l * (1.0 - shadow);
     }

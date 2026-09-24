@@ -60,7 +60,9 @@ impl Cube {
 pub(super) fn append_sphere_vertices(
     center: Vec3,
     radius: f32,
+    rotation_degrees: Vec3,
     color: [f32; 4],
+    marker_color: Option<[f32; 4]>,
     out: &mut Vec<f32>,
 ) {
     let tau = std::f32::consts::TAU;
@@ -83,13 +85,25 @@ pub(super) fn append_sphere_vertices(
             let n01 = sphere_normal(theta0, phi1);
             let n11 = sphere_normal(theta1, phi1);
 
-            for normal in [n00, n10, n11, n00, n11, n01] {
+            for local_normal in [n00, n10, n11, n00, n11, n01] {
+                let normal = transform_point(local_normal, Vec3::ONE, rotation_degrees, Vec3::ZERO)
+                    .normalized();
                 let world = Vec3::new(
                     center.x + normal.x * radius,
                     center.y + normal.y * radius,
                     center.z + normal.z * radius,
                 );
-                append_world_vertex(out, world, normal, color);
+
+                // A perfect solid-color sphere is rotationally symmetric and
+                // cannot visually communicate spin. The optional marker is
+                // defined in local space, so it rotates with the body.
+                let vertex_color = marker_color
+                    .filter(|_| {
+                        local_normal.y.abs() < 0.22
+                            || (local_normal.z > 0.72 && local_normal.x > -0.2)
+                    })
+                    .unwrap_or(color);
+                append_world_vertex(out, world, normal, vertex_color);
             }
         }
     }
