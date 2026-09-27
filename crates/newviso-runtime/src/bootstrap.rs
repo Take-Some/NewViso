@@ -5,6 +5,7 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
     bugtrap::set_phase("runtime.bootstrap");
     host::reset();
     host::ensure_asset_types_registry()?;
+    host::ensure_threading_service()?;
 
     let mut state = EngineState::default();
     let mut bootstrap_providers = Vec::<RunningProvider>::new();
@@ -207,7 +208,12 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
         log_resolved_capabilities(&resolved_capabilities);
 
         let mut scripts = if let Some(files) = &loaded_project {
-            start_project_scripting(files.scripts.as_ref(), &providers, &mut bootstrap_providers)?
+            start_project_scripting(
+                files.scripts.as_ref(),
+                &providers,
+                &mut bootstrap_providers,
+                files.runtime.scripting.event_queue_capacity,
+            )?
         } else {
             None
         };
@@ -232,6 +238,11 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
         if let Some(sky_config) = environment.sky.as_ref() {
             scene.set_sky_dome(load_environment_sky(sky_config)?)?;
         }
+        scene.configure_orbit_controls(
+            runtime_settings.camera.rotate_button,
+            runtime_settings.camera.min_pitch_degrees,
+            runtime_settings.camera.max_pitch_degrees,
+        )?;
         scene.configure_orbit(
             runtime_settings.camera.rotate_sensitivity,
             runtime_settings.camera.zoom_sensitivity,
@@ -274,9 +285,12 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
                 project_context,
                 ui_template,
                 content_manager,
-                streaming_policy_from_project(&runtime_settings.streaming),
-                WorldStartup::open(&project_ref.root, &project_ref.manifest.project.id,
-                    &runtime_settings.world_persistence)?,
+                runtime_settings.clone(),
+                WorldStartup::open(
+                    &project_ref.root,
+                    &project_ref.manifest.project.id,
+                    &runtime_settings.world_persistence,
+                )?,
             )?);
             state.set_phase(RuntimePhase::Running);
 

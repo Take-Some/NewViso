@@ -14,10 +14,19 @@ struct AssetTypesService {
 
 impl AssetTypesService {
     fn extension_from_path(path: &str) -> String {
-        path.split('@')
-            .next()
-            .unwrap_or(path)
-            .rsplit_once('.')
+        let last_at = path.rfind('@');
+        let last_dot = path.rfind('.');
+        let last_sep = path
+            .rfind(|character| character == '/' || character == '\\')
+            .unwrap_or(0);
+        let base = if let Some(at) =
+            last_at.filter(|at| last_dot.is_some_and(|dot| *at > dot) && *at > last_sep)
+        {
+            &path[..at]
+        } else {
+            path
+        };
+        base.rsplit_once('.')
             .map(|(_, ext)| ext.trim().to_ascii_lowercase())
             .unwrap_or_default()
     }
@@ -143,6 +152,27 @@ impl ServiceV1 for AssetTypesService {
                 "unknown asset type registry method: {other}"
             ))),
         }
+    }
+}
+
+#[cfg(test)]
+mod asset_type_path_tests {
+    use super::AssetTypesService;
+
+    #[test]
+    fn rage_at_sign_inside_basename_keeps_extension() {
+        assert_eq!(
+            AssetTypesService::extension_from_path("maps/ybn/hi@bh1_06_0.ybn"),
+            "ybn"
+        );
+    }
+
+    #[test]
+    fn selector_after_extension_is_removed_before_probe() {
+        assert_eq!(
+            AssetTypesService::extension_from_path("models/world.asset@building"),
+            "asset"
+        );
     }
 }
 

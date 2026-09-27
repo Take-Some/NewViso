@@ -18,6 +18,7 @@ impl Scene3dRuntime {
         Self::load_scene_value(scene)
     }
     pub(super) fn load_scene_value(scene: Value) -> Result<(Self, Scene3dLoadReport), String> {
+        let mut portal_visibility = PortalVisibilityGraph::from_scene_value(&scene)?;
         let load = host_runtime::call_json(
             SCENE_SERVICE,
             "scene.load_json_v1",
@@ -368,6 +369,9 @@ impl Scene3dRuntime {
         // Map/scene data establishes revision zero.  Runtime mutation events
         // begin only after the initial graph has been fully assembled.
         world.seal_initial_state();
+        if let Some(graph) = portal_visibility.as_mut() {
+            graph.bind_entities(&world);
+        }
         let frame_plan = SceneFramePlan::default();
 
         let title = snapshot
@@ -399,7 +403,24 @@ impl Scene3dRuntime {
                 camera_entity_id,
                 camera,
                 orbit,
+                render_policy: RenderPolicy::default(),
                 cubes,
+                asset_meshes: BTreeMap::new(),
+                skinned_entities: BTreeMap::new(),
+                main_view_mesh_visibility: Default::default(),
+                static_asset_instance_epoch: 0,
+                asset_model_cache: BTreeMap::new(),
+                asset_draw_range_cache: BTreeMap::new(),
+                asset_model_gpu_ranges: BTreeMap::new(),
+                asset_gpu_textures: BTreeMap::new(),
+                asset_gpu_pending_textures: BTreeMap::new(),
+                asset_gpu_materials: BTreeMap::new(),
+                asset_binding_contexts: BTreeMap::new(),
+                asset_vertex_data: Vec::new(),
+                asset_upload_from_float: None,
+                asset_skin_upload_ranges: Vec::new(),
+                asset_geometry_full_rebuild: false,
+                retired_asset_vertex_buffers: Vec::new(),
                 transient_spheres: Vec::new(),
                 overlay_quads: Vec::new(),
                 sky_visuals: BTreeMap::new(),
@@ -415,6 +436,8 @@ impl Scene3dRuntime {
                 next_runtime_entity_id: 0x4e56_5343_0000_0000,
                 world,
                 frame_plan,
+                portal_visibility,
+                gpu_instance_table: GpuInstanceTable::default(),
                 clear_color: [0.0, 0.0, 0.0, 1.0],
                 gpu: None,
                 sky: None,

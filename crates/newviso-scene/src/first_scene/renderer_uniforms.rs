@@ -17,12 +17,45 @@ impl Scene3dRuntime {
         let view_proj = camera_view_projection(&self.camera, aspect);
         out[0..16].copy_from_slice(&view_proj);
 
-        let lights = self.world.active_lights();
+        let mut lights = self.world.active_lights();
+        // Directional lights are global and must never be evicted by nearby
+        // local lighting. Local lights are ranked by camera influence so the
+        // fixed GPU light budget follows the observer through interiors.
+        lights.sort_by(|a, b| {
+            let score = |entry: &(SceneEntityId, SceneTransform, LightComponent)| {
+                let (_, transform, light) = entry;
+                match light.light_type {
+                    LightType::Directional => f32::INFINITY,
+                    LightType::Point | LightType::Spot | LightType::Area => {
+                        let delta = transform.position.sub(self.camera.position);
+                        let distance_sq = delta.dot(delta).max(0.01);
+                        light.intensity.max(0.0) * light.range.max(0.001) / distance_sq
+                    }
+                }
+            };
+            score(b)
+                .partial_cmp(&score(a))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
         let light_count = lights.len().min(MAX_LIGHTS);
         let mut shadow_light_index: Option<usize> = None;
         let mut shadow_matrix = identity_matrix();
         let mut shadow_bias = 0.0015;
         let mut shadow_normal_bias = 0.02;
+
+        let meta_base = 40;
+        let pos_base = meta_base + MAX_LIGHTS * 4;
+        let dir_base = pos_base + MAX_LIGHTS * 4;
+        let color_base = dir_base + MAX_LIGHTS * 4;
+        let cone_base = color_base + MAX_LIGHTS * 4;
+        let camera_base = cone_base + MAX_LIGHTS * 4;
+        let ambient_base = camera_base + 4;
+        let fog_color_base = ambient_base + 4;
+        let fog_params_base = fog_color_base + 4;
+        let haze_color_base = fog_params_base + 4;
+        let haze_params_base = haze_color_base + 4;
+        let clear_color_base = haze_params_base + 4;
 
         for (index, (_, transform, light)) in lights.iter().take(MAX_LIGHTS).enumerate() {
             let direction = light_direction(transform.rotation_degrees);
@@ -33,30 +66,30 @@ impl Scene3dRuntime {
                 LightType::Area => 3.0,
             };
 
-            let meta = 40 + index * 4;
+            let meta = meta_base + index * 4;
             out[meta] = type_code;
             out[meta + 1] = light.intensity;
             out[meta + 2] = light.range.max(0.001);
             out[meta + 3] = if light.casts_shadows { 1.0 } else { 0.0 };
 
-            let pos = 56 + index * 4;
+            let pos = pos_base + index * 4;
             out[pos] = transform.position.x;
             out[pos + 1] = transform.position.y;
             out[pos + 2] = transform.position.z;
             out[pos + 3] = 1.0;
 
-            let dir = 72 + index * 4;
+            let dir = dir_base + index * 4;
             out[dir] = direction.x;
             out[dir + 1] = direction.y;
             out[dir + 2] = direction.z;
 
-            let color = 88 + index * 4;
+            let color = color_base + index * 4;
             out[color] = light.color[0];
             out[color + 1] = light.color[1];
             out[color + 2] = light.color[2];
             out[color + 3] = 1.0;
 
-            let cone = 104 + index * 4;
+            let cone = cone_base + index * 4;
             out[cone] = light.cone_inner_degrees.to_radians().cos();
             out[cone + 1] = light.cone_outer_degrees.to_radians().cos();
 
@@ -108,38 +141,37 @@ impl Scene3dRuntime {
         out[38] = shadow_resolution as f32;
         out[39] = 1.0;
 
-        out[120] = self.camera.position.x;
-        out[121] = self.camera.position.y;
-        out[122] = self.camera.position.z;
-        out[123] = 1.0;
+        out[camera_base] = self.camera.position.x;
+        out[camera_base + 1] = self.camera.position.y;
+        out[camera_base + 2] = self.camera.position.z;
+        out[camera_base + 3] = 1.0;
 
-        out[124] = self.scene_environment.ambient_color[0];
-        out[125] = self.scene_environment.ambient_color[1];
-        out[126] = self.scene_environment.ambient_color[2];
-        out[127] = self.scene_environment.ambient_intensity;
+        out[ambient_base] = self.scene_environment.ambient_color[0];
+        out[ambient_base + 1] = self.scene_environment.ambient_color[1];
+        out[ambient_base + 2] = self.scene_environment.ambient_color[2];
+        out[ambient_base + 3] = self.scene_environment.ambient_intensity;
 
-        out[128] = self.scene_environment.fog_color[0];
-        out[129] = self.scene_environment.fog_color[1];
-        out[130] = self.scene_environment.fog_color[2];
-        out[131] = if self.scene_environment.fog_enabled {
+        out[fog_color_base] = self.scene_environment.fog_color[0];
+        out[fog_color_base + 1] = self.scene_environment.fog_color[1];
+        out[fog_color_base + 2] = self.scene_environment.fog_color[2];
+        out[fog_color_base + 3] = if self.scene_environment.fog_enabled {
             self.scene_environment.fog_density
         } else {
             0.0
         };
 
-        out[132] = self.scene_environment.fog_start_distance;
-        out[133] = self.scene_environment.fog_height_falloff;
-        out[134] = self.scene_environment.fog_base_height;
-        out[135] = self.scene_environment.fog_max_opacity;
+        out[fog_params_base] = self.scene_environment.fog_start_distance;
+        out[fog_params_base + 1] = self.scene_environment.fog_height_falloff;
+        out[fog_params_base + 2] = self.scene_environment.fog_base_height;
+        out[fog_params_base + 3] = self.scene_environment.fog_max_opacity;
 
-        out[136] = self.scene_environment.haze_color[0];
-        out[137] = self.scene_environment.haze_color[1];
-        out[138] = self.scene_environment.haze_color[2];
-        out[139] = self.scene_environment.haze_density;
-        out[140] = self.scene_environment.haze_start_distance;
-        out[141] = 0.0;
-        out[142] = 0.0;
-        out[143] = 0.0;
+        out[haze_color_base] = self.scene_environment.haze_color[0];
+        out[haze_color_base + 1] = self.scene_environment.haze_color[1];
+        out[haze_color_base + 2] = self.scene_environment.haze_color[2];
+        out[haze_color_base + 3] = self.scene_environment.haze_density;
+        out[haze_params_base] = self.scene_environment.haze_start_distance;
+
+        out[clear_color_base..clear_color_base + 4].copy_from_slice(&self.clear_color);
 
         (out, shadow_light_index.is_some())
     }

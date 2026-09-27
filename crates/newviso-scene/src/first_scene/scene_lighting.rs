@@ -183,7 +183,7 @@ impl Scene3dRuntime {
             || desc.intensity < 0.0
             || !desc.scale.is_finite()
             || desc.scale <= 0.0
-            || desc.elements.len() > MAX_FLARE_ELEMENTS
+            || desc.elements.len() > self.render_policy.flare_element_capacity
             || desc.elements.iter().any(|element| {
                 !element.offset.is_finite()
                     || !element.size.is_finite()
@@ -198,9 +198,12 @@ impl Scene3dRuntime {
         {
             return Err("invalid generic LensFlareDesc parameters".to_owned());
         }
-        if self.lens_flares.len() >= MAX_LENS_FLARES && !self.lens_flares.contains_key(key) {
+        if self.lens_flares.len() >= self.render_policy.lens_flare_capacity
+            && !self.lens_flares.contains_key(key)
+        {
             return Err(format!(
-                "lens flare count exceeds generic limit of {MAX_LENS_FLARES}"
+                "lens flare count exceeds configured limit of {}",
+                self.render_policy.lens_flare_capacity
             ));
         }
         self.lens_flares.insert(key.to_owned(), desc);

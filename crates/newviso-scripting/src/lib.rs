@@ -42,12 +42,21 @@ struct LoadedModule {
     spec: ScriptModuleSpec,
 }
 
-const MAX_SCRIPT_EVENT_QUEUE: usize = 4096;
-
 #[derive(Default)]
 struct ScriptEventQueue {
+    capacity: usize,
     events: VecDeque<EventEnvelope>,
     dropped: u64,
+}
+
+impl ScriptEventQueue {
+    fn resize(&mut self, capacity: usize) {
+        self.capacity = capacity;
+        while self.events.len() > capacity {
+            self.events.pop_front();
+            self.dropped = self.dropped.saturating_add(1);
+        }
+    }
 }
 
 struct ScriptEventSink {
@@ -68,7 +77,7 @@ impl EventSinkV1 for ScriptEventSink {
             return;
         };
 
-        if queue.events.len() >= MAX_SCRIPT_EVENT_QUEUE {
+        if queue.events.len() >= queue.capacity {
             queue.events.pop_front();
             queue.dropped = queue.dropped.saturating_add(1);
         }
@@ -83,7 +92,13 @@ pub struct ScriptRuntime {
 }
 
 impl ScriptRuntime {
-    pub fn load(modules: Vec<ScriptModuleSpec>) -> Result<Self, String> {
+    pub fn load(
+        modules: Vec<ScriptModuleSpec>,
+        event_queue_capacity: usize,
+    ) -> Result<Self, String> {
+        if event_queue_capacity == 0 {
+            return Err("event queue capacity must be greater than zero".into());
+        }
         let assets = AssetClient::new();
         let scripting = ScriptClient::new();
         let mut loaded = Vec::with_capacity(modules.len());
@@ -102,7 +117,10 @@ impl ScriptRuntime {
             loaded.push(LoadedModule { spec });
         }
 
-        let event_queue = Arc::new(Mutex::new(ScriptEventQueue::default()));
+        let event_queue = Arc::new(Mutex::new(ScriptEventQueue {
+            capacity: event_queue_capacity,
+            ..Default::default()
+        }));
         let sink = EventSinkV1_TO::from_value(
             ScriptEventSink {
                 queue: Arc::downgrade(&event_queue),
@@ -116,6 +134,18 @@ impl ScriptRuntime {
             request_counter: 0,
             event_queue,
         })
+    }
+
+    pub fn configure_event_queue(&mut self, capacity: usize) -> Result<(), String> {
+        if capacity == 0 {
+            return Err("event queue capacity must be greater than zero".into());
+        }
+        let mut queue = self
+            .event_queue
+            .lock()
+            .map_err(|_| "script event queue lock poisoned")?;
+        queue.resize(capacity);
+        Ok(())
     }
 
     /// Rebuilds the complete script graph after any project script asset changes.
@@ -153,7 +183,11 @@ impl ScriptRuntime {
         self.start_with_runtime(project_context, &Value::Null)
     }
 
-    pub fn start_with_runtime(&mut self, project_context: &Value, runtime_state: &Value) -> Result<ScriptControl, String> {
+    pub fn start_with_runtime(
+        &mut self,
+        project_context: &Value,
+        runtime_state: &Value,
+    ) -> Result<ScriptControl, String> {
         let mut control = ScriptControl::default();
         for event in self.drain_events() {
             let event_control = self.invoke_event(&event)?;
@@ -226,6 +260,7 @@ impl ScriptRuntime {
             return Vec::new();
         };
 
+        let capacity = queue.capacity;
         let dropped = std::mem::take(&mut queue.dropped);
         let mut events = queue.events.drain(..).collect::<Vec<_>>();
         drop(queue);
@@ -237,7 +272,7 @@ impl ScriptRuntime {
                 "newviso.scripting",
                 json!({
                     "dropped": dropped,
-                    "queue_capacity": MAX_SCRIPT_EVENT_QUEUE
+                    "queue_capacity": capacity
                 }),
             )
             .expect("static scripting event topic must be valid");
@@ -422,6 +457,26 @@ fn merge_control(control: &mut ScriptControl, value: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resizing_event_queue_preserves_newest_events_and_accounts_drops() {
+        let mut queue = ScriptEventQueue {
+            capacity: 4,
+            ..Default::default()
+        };
+        for n in 0..4 {
+            queue
+                .events
+                .push_back(EventEnvelope::new(n, "test.event", "test", json!({})).unwrap());
+        }
+        queue.resize(2);
+        assert_eq!(queue.events.len(), 2);
+        assert_eq!(queue.events.front().unwrap().sequence, 2);
+        assert_eq!(queue.dropped, 2);
+        queue.resize(8);
+        assert_eq!(queue.events.len(), 2);
+        assert_eq!(queue.dropped, 2);
+    }
 
     #[test]
     fn control_merges_nested_exit_request() {

@@ -113,12 +113,66 @@ pub(super) fn append_overlay_vertex(out: &mut Vec<f32>, clip_x: f32, clip_y: f32
     out.extend_from_slice(&[clip_x, clip_y, 0.0001, 1.0]);
     out.extend_from_slice(&[0.0, 0.0, 1.0]);
     out.extend_from_slice(&color);
+    out.extend_from_slice(&[0.0, 0.0]);
+    out.extend_from_slice(&[1.0, 0.0, 0.0, 1.0]);
+}
+
+pub(super) fn append_local_asset_vertex(
+    out: &mut Vec<f32>,
+    position: Vec3,
+    normal: Vec3,
+    tangent: [f32; 4],
+    color: [f32; 4],
+    uv: [f32; 2],
+) {
+    append_world_vertex_uv_tangent(out, position, normal, color, uv, tangent);
+}
+
+/// Column-major model matrix matching transform_point exactly:
+/// scale -> Rx -> Ry -> Rz -> translation.
+pub(super) fn instance_model_matrix(
+    position: Vec3,
+    rotation_degrees: Vec3,
+    scale: Vec3,
+) -> [f32; 16] {
+    let origin = transform_point(Vec3::ZERO, scale, rotation_degrees, position);
+    let x =
+        transform_point(Vec3::new(1.0, 0.0, 0.0), scale, rotation_degrees, position).sub(origin);
+    let y =
+        transform_point(Vec3::new(0.0, 1.0, 0.0), scale, rotation_degrees, position).sub(origin);
+    let z =
+        transform_point(Vec3::new(0.0, 0.0, 1.0), scale, rotation_degrees, position).sub(origin);
+
+    [
+        x.x, x.y, x.z, 0.0, y.x, y.y, y.z, 0.0, z.x, z.y, z.z, 0.0, origin.x, origin.y, origin.z,
+        1.0,
+    ]
 }
 
 fn append_world_vertex(out: &mut Vec<f32>, position: Vec3, normal: Vec3, color: [f32; 4]) {
+    append_world_vertex_uv_tangent(
+        out,
+        position,
+        normal,
+        color,
+        [0.0, 0.0],
+        [1.0, 0.0, 0.0, 1.0],
+    );
+}
+
+fn append_world_vertex_uv_tangent(
+    out: &mut Vec<f32>,
+    position: Vec3,
+    normal: Vec3,
+    color: [f32; 4],
+    uv: [f32; 2],
+    tangent: [f32; 4],
+) {
     out.extend_from_slice(&[position.x, position.y, position.z, 0.0]);
     out.extend_from_slice(&[normal.x, normal.y, normal.z]);
     out.extend_from_slice(&color);
+    out.extend_from_slice(&uv);
+    out.extend_from_slice(&tangent);
 }
 
 fn sphere_normal(theta: f32, phi: f32) -> Vec3 {

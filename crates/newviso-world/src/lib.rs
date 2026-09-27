@@ -41,6 +41,8 @@ use std::collections::BTreeMap;
 pub struct WorldActorRuntimeView {
     pub id: String,
     pub position: [f32; 3],
+    pub velocity: [f32; 3],
+    pub travel_mode: Option<String>,
     pub representation: &'static str,
     pub enabled: bool,
 }
@@ -130,11 +132,34 @@ impl LivingWorldRuntime {
     pub fn actor_runtime_views(&self) -> Vec<WorldActorRuntimeView> {
         self.actors
             .values()
-            .map(|actor| WorldActorRuntimeView {
-                id: actor.desc.id.clone(),
-                position: actor.desc.position,
-                representation: representation_for_tier(actor.last_tier),
-                enabled: actor.desc.enabled,
+            .map(|actor| {
+                let travel = self.travel.get(&actor.desc.id);
+                let velocity = travel
+                    .and_then(|travel| {
+                        travel.route[travel.next_waypoint_index..]
+                            .iter()
+                            .find_map(|waypoint| {
+                                let target = self.nav_nodes.get(waypoint)?.position;
+                                let dx = target[0] - actor.desc.position[0];
+                                let dy = target[1] - actor.desc.position[1];
+                                let dz = target[2] - actor.desc.position[2];
+                                let length = (dx * dx + dy * dy + dz * dz).sqrt();
+                                (length > 1.0e-5).then_some([
+                                    dx / length * travel.speed,
+                                    dy / length * travel.speed,
+                                    dz / length * travel.speed,
+                                ])
+                            })
+                    })
+                    .unwrap_or([0.0; 3]);
+                WorldActorRuntimeView {
+                    id: actor.desc.id.clone(),
+                    position: actor.desc.position,
+                    velocity,
+                    travel_mode: travel.map(|travel| travel.mode.clone()),
+                    representation: representation_for_tier(actor.last_tier),
+                    enabled: actor.desc.enabled,
+                }
             })
             .collect()
     }
@@ -817,6 +842,7 @@ impl LivingWorldRuntime {
                 record.desc.position,
                 &persistent_observers,
                 transient_observers,
+                record.last_tier,
                 &policy,
             );
             let previous_tier = record.last_tier;
@@ -924,14 +950,12 @@ impl LivingWorldRuntime {
             })
             .collect::<Vec<_>>();
 
-        due.sort_by(|a, b| {
-            b.3.partial_cmp(&a.3)
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| a.1.rank().cmp(&b.1.rank()))
-                .then_with(|| a.2.partial_cmp(&b.2).unwrap_or(Ordering::Equal))
-                .then_with(|| a.0.cmp(&b.0))
-        });
-        due.truncate(policy.max_actor_updates_per_step as usize);
+        let budget = policy.max_actor_updates_per_step as usize;
+        if due.len() > budget {
+            due.select_nth_unstable_by(budget, compare_actor_update_candidates);
+            due.truncate(budget);
+        }
+        due.sort_by(compare_actor_update_candidates);
 
         for (id, tier, _, _) in due {
             let Some(record) = self.actors.get(&id) else {
@@ -1046,6 +1070,19 @@ impl LivingWorldRuntime {
     }
 
     pub fn runtime_state(&self) -> Value {
+        self.runtime_state_with_history(true)
+    }
+
+    /// Bounded hot-path snapshot for per-frame script execution. Historical
+    /// reality records remain authoritative in the world backend and in the
+    /// full runtime/persistence snapshot, but are not recopied through the
+    /// scripting ABI every rendered frame. Scripts receive frame_events for
+    /// current causality and can use event delivery for incremental history.
+    pub fn frame_state(&self) -> Value {
+        self.runtime_state_with_history(false)
+    }
+
+    fn runtime_state_with_history(&self, include_history: bool) -> Value {
         let population_channels = self
             .population_channels
             .values()
@@ -1238,25 +1275,28 @@ impl LivingWorldRuntime {
             })
             .collect::<Vec<_>>();
 
-        let reality_history = self
-            .reality_events
-            .iter()
-            .map(|record| {
-                json!({
-                    "sequence": record.sequence,
-                    "id": record.desc.id,
-                    "kind": record.desc.kind,
-                    "source": record.desc.source,
-                    "cause": record.desc.cause,
-                    "participants": record.desc.participants,
-                    "position": record.desc.position,
-                    "importance": record.desc.importance,
-                    "tags": record.desc.tags,
-                    "payload": record.desc.payload,
-                    "occurred_world_seconds": record.occurred_world_seconds,
+        let reality_history = if include_history {
+            self.reality_events
+                .iter()
+                .map(|record| {
+                    json!({
+                        "sequence": record.sequence,
+                        "id": record.desc.id,
+                        "kind": record.desc.kind,
+                        "source": record.desc.source,
+                        "cause": record.desc.cause,
+                        "participants": record.desc.participants,
+                        "position": record.desc.position,
+                        "importance": record.desc.importance,
+                        "tags": record.desc.tags,
+                        "payload": record.desc.payload,
+                        "occurred_world_seconds": record.occurred_world_seconds,
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
 
         let frame_reality = self
             .frame_reality_events
@@ -1454,6 +1494,7 @@ impl LivingWorldRuntime {
                 "policy": {
                     "transient_full_radius": self.simulation_policy.transient_full_radius,
                     "transient_reduced_radius": self.simulation_policy.transient_reduced_radius,
+                    "tier_hysteresis_radius": self.simulation_policy.tier_hysteresis_radius,
                     "full_interval_seconds": self.simulation_policy.full_interval_seconds,
                     "reduced_interval_seconds": self.simulation_policy.reduced_interval_seconds,
                     "background_interval_seconds": self.simulation_policy.background_interval_seconds,
@@ -1476,6 +1517,8 @@ impl LivingWorldRuntime {
             "facts": facts,
             "reality": {
                 "history": reality_history,
+                "history_available": include_history,
+                "history_count": self.reality_events.len(),
                 "frame_events": frame_reality,
                 "max_history": MAX_REALITY_HISTORY,
             },
@@ -1504,6 +1547,16 @@ impl LivingWorldRuntime {
             "stimuli": stimuli,
         })
     }
+}
+
+type ActorUpdateCandidate = (String, SimulationTier, f64, f64);
+
+fn compare_actor_update_candidates(a: &ActorUpdateCandidate, b: &ActorUpdateCandidate) -> Ordering {
+    b.3.partial_cmp(&a.3)
+        .unwrap_or(Ordering::Equal)
+        .then_with(|| a.1.rank().cmp(&b.1.rank()))
+        .then_with(|| a.2.partial_cmp(&b.2).unwrap_or(Ordering::Equal))
+        .then_with(|| a.0.cmp(&b.0))
 }
 
 fn representation_for_tier(tier: SimulationTier) -> &'static str {
@@ -1801,6 +1854,57 @@ mod tests {
             "physical"
         );
     }
+    #[test]
+    fn actor_runtime_view_exposes_travel_velocity_and_mode() {
+        let mut runtime = LivingWorldRuntime::default();
+        runtime
+            .upsert_actor(actor("walker-view", [0.0, 0.0, 0.0]))
+            .unwrap();
+        for (id, position) in [("a", [0.0, 0.0, 0.0]), ("b", [0.0, 0.0, 10.0])] {
+            runtime
+                .upsert_nav_node(WorldNavNodeDesc {
+                    id: id.to_owned(),
+                    position,
+                    tags: Vec::new(),
+                    parameters: BTreeMap::new(),
+                })
+                .unwrap();
+        }
+        runtime
+            .upsert_nav_edge(WorldNavEdgeDesc {
+                id: "ab-view".to_owned(),
+                from: "a".to_owned(),
+                to: "b".to_owned(),
+                bidirectional: true,
+                distance: None,
+                cost_scale: 1.0,
+                enabled: true,
+                tags: Vec::new(),
+                parameters: BTreeMap::new(),
+            })
+            .unwrap();
+        runtime
+            .start_travel(WorldTravelRequestDesc {
+                actor_id: "walker-view".to_owned(),
+                start_node: Some("a".to_owned()),
+                destination_node: "b".to_owned(),
+                speed: 2.5,
+                mode: "walk".to_owned(),
+                payload: Value::Null,
+            })
+            .unwrap();
+
+        let view = runtime
+            .actor_runtime_views()
+            .into_iter()
+            .find(|view| view.id == "walker-view")
+            .unwrap();
+        assert_eq!(view.travel_mode.as_deref(), Some("walk"));
+        assert!(view.velocity[0].abs() < 1.0e-6);
+        assert!(view.velocity[1].abs() < 1.0e-6);
+        assert!((view.velocity[2] - 2.5).abs() < 1.0e-6);
+    }
+
     #[test]
     fn background_actor_moves_over_route_without_observer() {
         let mut runtime = LivingWorldRuntime::default();

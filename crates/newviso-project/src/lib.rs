@@ -4,10 +4,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod runtime_settings;
+pub use runtime_settings::*;
 mod validation;
 mod world_persistence;
-pub use world_persistence::ProjectWorldPersistence;
 use validation::*;
+pub use world_persistence::ProjectWorldPersistence;
 
 pub const PROJECT_MANIFEST_NAME: &str = "project.json";
 pub const PROJECT_SCHEMA_V1: &str = "newviso.project.v1";
@@ -147,134 +149,6 @@ pub struct ProjectProviders {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ProjectRuntimeSettings {
-    pub schema: String,
-    #[serde(default)]
-    pub window: ProjectWindowSettings,
-    #[serde(default)]
-    pub camera: ProjectCameraSettings,
-    #[serde(default)]
-    pub streaming: ProjectStreamingSettings,
-    #[serde(default)]
-    pub world_persistence: ProjectWorldPersistence,
-}
-
-impl Default for ProjectRuntimeSettings {
-    fn default() -> Self {
-        Self {
-            schema: RUNTIME_SETTINGS_SCHEMA_V1.to_owned(),
-            window: ProjectWindowSettings::default(),
-            camera: ProjectCameraSettings::default(),
-            streaming: ProjectStreamingSettings::default(),
-            world_persistence: ProjectWorldPersistence::default(),
-        }
-    }
-}
-
-impl ProjectRuntimeSettings {
-    pub fn from_value(value: serde_json::Value) -> Result<Self, ProjectError> {
-        let settings: Self = serde_json::from_value(value).map_err(|error| {
-            ProjectError::Asset(format!("runtime settings decode failed: {error}"))
-        })?;
-        if settings.schema != RUNTIME_SETTINGS_SCHEMA_V1 {
-            return Err(ProjectError::Asset(format!(
-                "unsupported runtime settings schema '{}', expected '{}'",
-                settings.schema, RUNTIME_SETTINGS_SCHEMA_V1
-            )));
-        }
-        if settings.window.width == 0 || settings.window.height == 0 {
-            return Err(ProjectError::Asset(
-                "runtime window width and height must be greater than zero".to_owned(),
-            ));
-        }
-        if settings.camera.min_distance <= 0.0
-            || settings.camera.max_distance < settings.camera.min_distance
-        {
-            return Err(ProjectError::Asset(
-                "camera distance limits are invalid".to_owned(),
-            ));
-        }
-        if !settings.streaming.dependency_priority_scale.is_finite()
-            || !(0.0..=1.0).contains(&settings.streaming.dependency_priority_scale)
-        {
-            return Err(ProjectError::Asset(
-                "streaming dependency_priority_scale must be finite and in 0..=1".to_owned(),
-            ));
-        }
-        settings.world_persistence.validate().map_err(ProjectError::Asset)?;
-        Ok(settings)
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ProjectStreamingSettings {
-    /// Unique source-container residency budget in MiB. Zero disables the cap.
-    pub max_resident_mb: u64,
-    /// Maximum generic resources decoded by one streamer pump. Zero is unlimited.
-    pub max_loads_per_tick: usize,
-    /// Approximate source bytes decoded by one pump in MiB. Zero is unlimited.
-    pub max_source_mb_per_tick: u64,
-    /// Frames an unrequested resident resource is retained to prevent churn.
-    pub eviction_grace_frames: u64,
-    /// Frames before a requested failed resource is retried.
-    pub failed_retry_frames: u64,
-    /// Priority inherited by declared resource dependencies.
-    pub dependency_priority_scale: f32,
-}
-
-impl Default for ProjectStreamingSettings {
-    fn default() -> Self {
-        Self {
-            max_resident_mb: 512,
-            max_loads_per_tick: 8,
-            max_source_mb_per_tick: 32,
-            eviction_grace_frames: 120,
-            failed_retry_frames: 120,
-            dependency_priority_scale: 0.95,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ProjectWindowSettings {
-    pub title: Option<String>,
-    pub width: u32,
-    pub height: u32,
-}
-
-impl Default for ProjectWindowSettings {
-    fn default() -> Self {
-        Self {
-            title: None,
-            width: 1280,
-            height: 720,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ProjectCameraSettings {
-    pub rotate_sensitivity: f32,
-    pub zoom_sensitivity: f32,
-    pub min_distance: f32,
-    pub max_distance: f32,
-}
-
-impl Default for ProjectCameraSettings {
-    fn default() -> Self {
-        Self {
-            rotate_sensitivity: 0.005,
-            zoom_sensitivity: 0.0015,
-            min_distance: 2.0,
-            max_distance: 40.0,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProjectSkyClouds {
     pub enabled: bool,
@@ -323,6 +197,12 @@ impl Default for ProjectSkyClouds {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProjectSkyEnvironment {
     pub model: String,
+    #[serde(default)]
+    pub base_noise_texture: Option<String>,
+    #[serde(default)]
+    pub starfield_texture: Option<String>,
+    #[serde(default)]
+    pub detail_noise_texture: Option<String>,
     #[serde(default)]
     pub billboard_texture: Option<String>,
     #[serde(default)]
@@ -381,6 +261,29 @@ impl ProjectEnvironment {
                         "environment.sky.billboard_texture must address a specific semantic entry"
                             .to_owned(),
                     ));
+                }
+            }
+            for (label, texture) in [
+                (
+                    "environment.sky.base_noise_texture",
+                    sky.base_noise_texture.as_deref(),
+                ),
+                (
+                    "environment.sky.starfield_texture",
+                    sky.starfield_texture.as_deref(),
+                ),
+                (
+                    "environment.sky.detail_noise_texture",
+                    sky.detail_noise_texture.as_deref(),
+                ),
+            ] {
+                if let Some(texture) = texture {
+                    validate_logical_asset_path(label, texture)?;
+                    if !texture.contains('@') {
+                        return Err(ProjectError::Asset(format!(
+                            "{label} must address a specific semantic entry"
+                        )));
+                    }
                 }
             }
             let clouds = &sky.clouds;

@@ -28,6 +28,8 @@ pub enum VertexSemantic {
     Color(u8),
     JointIndices,
     JointWeights,
+    JointIndicesExtra,
+    JointWeightsExtra,
     Custom(String),
 }
 
@@ -69,9 +71,35 @@ pub struct MeshPrimitive {
 }
 
 #[derive(Clone, Debug)]
+pub enum ModelMaterialBinding {
+    /// Material data is resident inside the model asset and already normalized
+    /// into the same semantic resource used by external material dictionaries.
+    BuiltIn(Arc<MaterialResource>),
+    /// Material data is resolved as a separately streamable material resource.
+    External(AssetRef<MaterialResource>),
+}
+
+impl ModelMaterialBinding {
+    pub fn external_ref(&self) -> Option<&AssetRef<MaterialResource>> {
+        match self {
+            Self::BuiltIn(_) => None,
+            Self::External(reference) => Some(reference),
+        }
+    }
+
+    pub fn built_in(&self) -> Option<&Arc<MaterialResource>> {
+        match self {
+            Self::BuiltIn(material) => Some(material),
+            Self::External(_) => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct ModelMaterialSlot {
     pub name: String,
-    pub material: AssetRef<MaterialResource>,
+    /// Storage policy only. Consumers resolve both branches to MaterialResource.
+    pub material: ModelMaterialBinding,
 }
 
 #[derive(Clone, Debug)]
@@ -83,6 +111,62 @@ pub struct MeshResource {
     pub bounds: Bounds3,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelJoint {
+    pub name: String,
+    /// Authored skeleton tag used by animation clips. Unlike the dense runtime
+    /// index this survives source formats whose bone tags are sparse.
+    pub tag: u32,
+    pub parent: Option<u16>,
+    pub inverse_bind_matrix: [f32; 16],
+    pub bind_translation: [f32; 3],
+    pub bind_rotation: [f32; 4],
+    pub bind_scale: [f32; 3],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelSkeleton {
+    pub name: String,
+    pub joints: Vec<ModelJoint>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AnimationInterpolation {
+    Step,
+    Linear,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnimationVec3Key {
+    pub time_seconds: f32,
+    pub value: [f32; 3],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnimationQuatKey {
+    pub time_seconds: f32,
+    pub value: [f32; 4],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct JointAnimationTrack {
+    pub joint: u16,
+    pub translation_interpolation: AnimationInterpolation,
+    pub rotation_interpolation: AnimationInterpolation,
+    pub scale_interpolation: AnimationInterpolation,
+    pub translations: Vec<AnimationVec3Key>,
+    pub rotations: Vec<AnimationQuatKey>,
+    pub scales: Vec<AnimationVec3Key>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelAnimationClip {
+    pub name: String,
+    pub duration_seconds: f32,
+    pub looping: bool,
+    pub tracks: Vec<JointAnimationTrack>,
+}
+
 #[derive(Clone, Debug)]
 pub struct ModelResource {
     pub id: AssetId,
@@ -90,6 +174,11 @@ pub struct ModelResource {
     pub bounds: Bounds3,
     pub meshes: Vec<MeshResource>,
     pub material_slots: Vec<ModelMaterialSlot>,
+    /// Affine transform from authored skeleton/skin source space into model space.
+    /// Identity for ordinary/static models.
+    pub skin_source_to_model: [f32; 16],
+    pub skeleton: Option<ModelSkeleton>,
+    pub animations: Vec<ModelAnimationClip>,
 }
 
 impl AssetResource for ModelResource {
@@ -102,10 +191,20 @@ impl AssetResource for ModelResource {
     }
 
     fn dependencies(&self) -> Vec<AssetAddress> {
-        self.material_slots
-            .iter()
-            .map(|slot| slot.material.address().clone())
-            .collect()
+        let mut dependencies = Vec::new();
+        for slot in &self.material_slots {
+            match &slot.material {
+                ModelMaterialBinding::BuiltIn(material) => {
+                    dependencies.extend(material.dependencies());
+                }
+                ModelMaterialBinding::External(material) => {
+                    dependencies.push(material.address().clone());
+                }
+            }
+        }
+        dependencies.sort_by(|a, b| a.canonical().cmp(&b.canonical()));
+        dependencies.dedup_by(|a, b| a.canonical() == b.canonical());
+        dependencies
     }
 
     fn into_any_arc(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {

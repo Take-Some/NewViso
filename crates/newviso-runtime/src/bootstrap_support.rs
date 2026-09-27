@@ -306,6 +306,7 @@ pub(super) fn start_project_scripting(
     scripts: Option<&ProjectScripts>,
     providers: &[ProviderInfo],
     running_providers: &mut Vec<RunningProvider>,
+    event_queue_capacity: usize,
 ) -> Result<Option<ScriptRuntime>, String> {
     let Some(scripts) = scripts else {
         return Ok(None);
@@ -354,7 +355,7 @@ pub(super) fn start_project_scripting(
         })
         .collect();
 
-    let runtime = ScriptRuntime::load(modules)?;
+    let runtime = ScriptRuntime::load(modules, event_queue_capacity)?;
     host::info(
         "newviso.scripting",
         format!(

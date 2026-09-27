@@ -21,8 +21,18 @@ impl Default for BlendMode {
 #[derive(Clone, Debug)]
 pub struct MaterialTextureBinding {
     pub slot: String,
-    pub texture: AssetRef<TextureResource>,
+    /// Direct texture resource when the material owns a complete asset reference.
+    pub texture: Option<AssetRef<TextureResource>>,
+    /// Late-bound texture entry name for built-in model materials. The owning
+    /// scene/model binding may provide the texture dictionary at materialization time.
+    pub texture_name: Option<String>,
     pub required: bool,
+}
+
+impl MaterialTextureBinding {
+    pub fn direct_address(&self) -> Option<&AssetAddress> {
+        self.texture.as_ref().map(AssetRef::address)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -70,7 +80,7 @@ impl AssetResource for MaterialResource {
         let mut out = self
             .textures
             .iter()
-            .map(|binding| binding.texture.address().clone())
+            .filter_map(|binding| binding.direct_address().cloned())
             .collect::<Vec<_>>();
 
         for parameter in &self.params {

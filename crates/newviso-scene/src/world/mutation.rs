@@ -18,7 +18,9 @@ fn normalize_process_label(value: &str, field: &str) -> Result<String, String> {
 impl SceneWorld {
     fn refresh_process_membership(&mut self, id: SceneEntityId) {
         let active = self.entity(id).is_some_and(|entity| {
-            entity.lifecycle == SceneLifecycle::Active && entity.process_claims.active()
+            entity.lifecycle == SceneLifecycle::Active
+                && entity.residency == SceneResidency::Resident
+                && entity.process_claims.active()
         });
         if active {
             self.process_active.insert(id);
@@ -35,9 +37,14 @@ impl SceneWorld {
         let index = self.entities.len();
         let parent = entity.parent;
         let id = entity.id;
+        let static_renderable = entity.mobility == SceneMobility::Static;
         self.entities.push(entity);
         self.by_id.insert(id, index);
+        if static_renderable {
+            self.static_render_epoch = self.static_render_epoch.wrapping_add(1);
+        }
         self.refresh_process_membership(id);
+        self.index_spatial_entity(id);
 
         if let Some(parent_id) = parent {
             let parent_index = *self
@@ -60,6 +67,10 @@ impl SceneWorld {
         }
         let frame = self.frame;
         let process_active = self.process_active.contains(&id);
+        let process_reason_mask = self
+            .entity(id)
+            .map(|entity| entity.process_claims.mask().bits())
+            .unwrap_or(0);
         let mutation = {
             let entity = self
                 .entity_mut(id)
@@ -75,11 +86,29 @@ impl SceneWorld {
                 transform: entity.transform,
                 bounds: entity.bounds,
                 process_active,
+                process_reason_mask,
                 process_claims: entity.process_claims.snapshot(),
             }
         };
+        let static_renderable = self
+            .entity(id)
+            .is_some_and(|entity| entity.mobility == SceneMobility::Static);
+        if static_renderable
+            && (dirty.contains(SceneDirtyFlags::TRANSFORM)
+                || dirty.contains(SceneDirtyFlags::BOUNDS)
+                || dirty.contains(SceneDirtyFlags::VISIBILITY)
+                || dirty.contains(SceneDirtyFlags::HIERARCHY)
+                || dirty.contains(SceneDirtyFlags::LIFECYCLE)
+                || dirty.contains(SceneDirtyFlags::RESIDENCY))
+        {
+            self.static_render_epoch = self.static_render_epoch.wrapping_add(1);
+        }
         self.mutations.push(mutation);
         Ok(())
+    }
+
+    pub(crate) fn static_render_epoch(&self) -> u64 {
+        self.static_render_epoch
     }
 
     pub(crate) fn drain_mutations(&mut self) -> Vec<SceneMutation> {
@@ -98,7 +127,9 @@ impl SceneWorld {
             .entities
             .iter()
             .filter(|entity| {
-                entity.lifecycle == SceneLifecycle::Active && entity.process_claims.active()
+                entity.lifecycle == SceneLifecycle::Active
+                    && entity.residency == SceneResidency::Resident
+                    && entity.process_claims.active()
             })
             .map(|entity| entity.id)
             .collect();
@@ -125,6 +156,7 @@ impl SceneWorld {
         };
         if changed {
             self.refresh_process_membership(id);
+            self.reset_process_schedule(id);
             self.record_mutation(id, SceneMutationSource::Engine, SceneDirtyFlags::LIFECYCLE)?;
         }
         Ok(())
@@ -158,6 +190,7 @@ impl SceneWorld {
         };
         if changed {
             self.refresh_process_membership(id);
+            self.reset_process_schedule(id);
             self.record_mutation(id, SceneMutationSource::Engine, SceneDirtyFlags::LIFECYCLE)?;
         }
         Ok(())
@@ -173,10 +206,15 @@ impl SceneWorld {
             .entities
             .iter()
             .filter(|entity| {
-                entity.lifecycle == SceneLifecycle::Active && entity.process_claims.active()
+                entity.lifecycle == SceneLifecycle::Active
+                    && entity.residency == SceneResidency::Resident
+                    && entity.process_claims.active()
             })
             .map(|entity| entity.id)
             .collect();
+        self.process_last_due_seconds.clear();
+        self.process_tickets.clear();
+        self.static_render_epoch = 0;
     }
 
     pub(crate) fn request_remove(&mut self, id: SceneEntityId) -> Result<(), String> {
@@ -196,6 +234,9 @@ impl SceneWorld {
         };
         if changed {
             self.refresh_process_membership(id);
+            self.reset_process_schedule(id);
+            self.process_rates_hz.retain(|(entity, _), _| *entity != id);
+            self.remove_spatial_entity(id);
             let dirty = if cleared_process {
                 SceneDirtyFlags::LIFECYCLE.union(SceneDirtyFlags::PROCESS_CONTROL)
             } else {
@@ -281,8 +322,69 @@ impl SceneWorld {
         }
 
         self.refresh_process_membership(id);
+        self.reset_process_schedule(id);
         self.record_mutation(id, source, SceneDirtyFlags::PROCESS_CONTROL)?;
         Ok(true)
+    }
+
+    pub(crate) fn set_process_rate_hz(
+        &mut self,
+        id: SceneEntityId,
+        reason: &str,
+        hz: f32,
+    ) -> Result<(), String> {
+        if self.entity(id).is_none() {
+            return Err(format!("scene entity {} does not exist", id.0));
+        }
+        if !hz.is_finite() || !(0.0..=1_000.0).contains(&hz) {
+            return Err("scene process rate must be finite and within 0..=1000 Hz".to_owned());
+        }
+        let reason = normalize_process_label(reason, "reason")?;
+        let mask = SceneProcessReasons::from_reason_label(&reason);
+        if mask == SceneProcessReasons::CUSTOM {
+            return Err(format!(
+                "scene process rate requires a typed reason, got '{reason}'"
+            ));
+        }
+        if mask == SceneProcessReasons::PHYSICS && hz != 0.0 {
+            return Err(
+                "physics process cadence is wake/sleep driven; use 0 Hz to clear overrides"
+                    .to_owned(),
+            );
+        }
+
+        let key = (id, mask.bits());
+        if hz == 0.0 {
+            self.process_rates_hz.remove(&key);
+        } else {
+            self.process_rates_hz.insert(key, hz);
+        }
+        self.reset_process_schedule(id);
+        Ok(())
+    }
+
+    pub(crate) fn process_rate_hz(&self, id: SceneEntityId, reason: SceneProcessReasons) -> f32 {
+        self.process_rates_hz
+            .get(&(id, reason.bits()))
+            .copied()
+            .unwrap_or(0.0)
+    }
+
+    pub(crate) fn process_rate_snapshot(&self, id: SceneEntityId) -> BTreeMap<&'static str, f32> {
+        let mut rates = BTreeMap::new();
+        for reason in SceneProcessReasons::ALL {
+            let hz = self.process_rate_hz(id, reason);
+            if hz > 0.0 {
+                let label = reason.labels().into_iter().next().unwrap_or("custom");
+                rates.insert(label, hz);
+            }
+        }
+        rates
+    }
+
+    pub(crate) fn reset_process_schedule(&mut self, id: SceneEntityId) {
+        self.process_last_due_seconds
+            .retain(|(entity, _), _| *entity != id);
     }
 
     pub(crate) fn process_is_active(&self, id: SceneEntityId) -> bool {
@@ -376,6 +478,9 @@ impl SceneWorld {
                 entity.bounds = bounds;
                 dirty = dirty.union(SceneDirtyFlags::BOUNDS);
             }
+        }
+        if dirty.contains(SceneDirtyFlags::BOUNDS) || dirty.contains(SceneDirtyFlags::TRANSFORM) {
+            self.index_spatial_entity(id);
         }
         self.record_mutation(id, source, dirty)
     }
@@ -481,7 +586,12 @@ impl SceneWorld {
             }
         };
         if changed {
-            self.process_active.remove(&id);
+            if residency == SceneResidency::Resident {
+                self.refresh_process_membership(id);
+            } else {
+                self.process_active.remove(&id);
+            }
+            self.reset_process_schedule(id);
             self.record_mutation(
                 id,
                 SceneMutationSource::Streaming,

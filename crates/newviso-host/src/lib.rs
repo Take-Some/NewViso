@@ -27,7 +27,9 @@ const LOGGING_SERVICE_ID: &str = "logging.api";
 const LOGGING_WRITE_METHOD: &str = "write_json";
 
 mod asset_types;
+mod threading;
 pub use asset_types::ensure_asset_types_registry;
+pub use threading::ensure_threading_service;
 
 #[derive(Clone, Copy, Debug)]
 pub enum LogLevel {
@@ -318,6 +320,10 @@ extern "C" fn register_service_v1(service: ServiceV1Dyn<'static>) -> RResult<(),
             "asset.types.api" => {
                 host.aliases
                     .insert("engine.assets.types".into(), id.clone());
+            }
+            "threading.api" => {
+                host.aliases.insert("engine.threading".into(), id.clone());
+                host.aliases.insert("engine.jobs".into(), id.clone());
             }
             "asset_manager.api" => {
                 host.aliases.insert("engine.assets".into(), id.clone());

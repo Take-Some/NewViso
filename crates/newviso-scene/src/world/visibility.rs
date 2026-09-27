@@ -1,7 +1,129 @@
 use super::*;
 
 impl SceneWorld {
+    pub(crate) fn remove_spatial_entity(&mut self, id: SceneEntityId) {
+        if let Some(cells) = self.spatial_entity_cells.remove(&id) {
+            for cell in cells {
+                let remove_cell = if let Some(entities) = self.spatial_cells.get_mut(&cell) {
+                    entities.remove(&id);
+                    entities.is_empty()
+                } else {
+                    false
+                };
+                if remove_cell {
+                    self.spatial_cells.remove(&cell);
+                }
+            }
+        }
+        self.spatial_oversized.remove(&id);
+        self.spatial_always_stream.remove(&id);
+    }
+
+    pub(crate) fn index_spatial_entity(&mut self, id: SceneEntityId) {
+        let Some(entity) = self.entity(id) else {
+            self.remove_spatial_entity(id);
+            return;
+        };
+        let lifecycle = entity.lifecycle;
+        let bounds = entity.bounds;
+        let has_asset = entity.asset_ref.is_some();
+        let stream_distance = entity.lod.stream_distance;
+
+        self.remove_spatial_entity(id);
+        if matches!(
+            lifecycle,
+            SceneLifecycle::PendingRemove | SceneLifecycle::Removed
+        ) {
+            return;
+        }
+
+        match spatial_cells_for_bounds(bounds) {
+            Some(cells) => {
+                for cell in &cells {
+                    self.spatial_cells.entry(*cell).or_default().insert(id);
+                }
+                self.spatial_entity_cells.insert(id, cells);
+            }
+            None => {
+                self.spatial_oversized.insert(id);
+            }
+        }
+
+        if has_asset {
+            if stream_distance.is_finite() {
+                self.spatial_max_stream_distance = self
+                    .spatial_max_stream_distance
+                    .max(stream_distance.max(0.0));
+            } else {
+                self.spatial_always_stream.insert(id);
+            }
+        }
+    }
+
+    fn append_spatial_range(
+        &self,
+        center: Vec3,
+        radius: f32,
+        candidates: &mut BTreeSet<SceneEntityId>,
+    ) {
+        if !radius.is_finite() {
+            candidates.extend(
+                self.entities
+                    .iter()
+                    .filter(|entity| entity.lifecycle != SceneLifecycle::Removed)
+                    .map(|entity| entity.id),
+            );
+            return;
+        }
+        if radius <= 0.0 {
+            if let Some(entities) = self.spatial_cells.get(&spatial_cell_for_point(center)) {
+                candidates.extend(entities.iter().copied());
+            }
+            return;
+        }
+
+        let min = spatial_cell_for_point(Vec3::new(center.x - radius, center.y, center.z - radius));
+        let max = spatial_cell_for_point(Vec3::new(center.x + radius, center.y, center.z + radius));
+        for x in min.0..=max.0 {
+            for z in min.1..=max.1 {
+                if let Some(entities) = self.spatial_cells.get(&(x, z)) {
+                    candidates.extend(entities.iter().copied());
+                }
+            }
+        }
+    }
+
+    pub(crate) fn visibility_candidates(&self, view: SceneView) -> BTreeSet<SceneEntityId> {
+        let mut candidates = self.spatial_oversized.clone();
+        candidates.extend(self.spatial_always_stream.iter().copied());
+        self.append_spatial_range(view.position, view.far.max(0.0), &mut candidates);
+        self.append_spatial_range(
+            self.focus.position,
+            self.spatial_max_stream_distance,
+            &mut candidates,
+        );
+        candidates
+    }
+
+    pub(crate) fn spatial_cell_count(&self) -> usize {
+        self.spatial_cells.len()
+    }
+
+    pub(crate) fn spatial_oversized_count(&self) -> usize {
+        self.spatial_oversized.len()
+    }
+
+    #[cfg(test)]
     pub(crate) fn scan_visibility(&mut self, view: SceneView) -> SceneFramePlan {
+        let candidates = self.visibility_candidates(view);
+        self.scan_visibility_candidates(view, candidates)
+    }
+
+    pub(crate) fn scan_visibility_candidates(
+        &mut self,
+        view: SceneView,
+        candidate_ids: BTreeSet<SceneEntityId>,
+    ) -> SceneFramePlan {
         let forward = view.forward.normalized();
         let right = forward.cross(view.up).normalized();
         let up = right.cross(forward).normalized();
@@ -14,24 +136,28 @@ impl SceneWorld {
         let tan_y = cull_half_fov.tan().max(0.0001);
         let tan_x = (tan_y * view.aspect.max(0.0001)).max(0.0001);
 
+        let hierarchy_visible = candidate_ids
+            .iter()
+            .map(|id| (*id, self.hierarchy_allows(*id)))
+            .collect::<BTreeMap<_, _>>();
         let mut plan = SceneFramePlan {
             frame: self.frame,
+            spatial_candidate_count: candidate_ids.len(),
+            culled_count: self.entities.len().saturating_sub(candidate_ids.len()),
             ..Default::default()
         };
         let mut requested_by_priority = Vec::<(SceneEntityId, f32)>::new();
         let mut streaming_by_priority = Vec::<(SceneEntityId, f32)>::new();
-        let hierarchy_visible = self
-            .entities
-            .iter()
-            .map(|entity| self.hierarchy_allows(entity.id))
-            .collect::<Vec<_>>();
 
-        for (entity_index, entity) in self.entities.iter_mut().enumerate() {
+        for id in candidate_ids {
+            let Some(index) = self.by_id.get(&id).copied() else {
+                continue;
+            };
+            let Some(entity) = self.entities.get_mut(index) else {
+                continue;
+            };
             if entity.lifecycle != SceneLifecycle::Active
-                || !hierarchy_visible
-                    .get(entity_index)
-                    .copied()
-                    .unwrap_or(false)
+                || !hierarchy_visible.get(&id).copied().unwrap_or(false)
             {
                 plan.culled_count += 1;
                 continue;
@@ -83,16 +209,12 @@ impl SceneWorld {
             };
 
             let depth = to_center.dot(forward);
-            // Add a depth guard band for the same reason as the angular guard:
-            // coarse bounds should fail open rather than visibly pop.
             let depth_guard = (radius * 0.25).max(0.25);
             if depth + radius + depth_guard < view.near || depth - radius - depth_guard > view.far {
                 plan.culled_count += 1;
                 continue;
             }
 
-            // Objects surrounding the camera must not be rejected merely because
-            // their centre is behind the eye plane.
             if depth > 0.0 {
                 let horizontal = to_center.dot(right).abs();
                 let vertical = to_center.dot(up).abs();
@@ -171,14 +293,41 @@ impl SceneWorld {
                 .then_some(entity.bounds)
         })
     }
-    pub(crate) fn static_solid_bounds(&self) -> impl Iterator<Item = SceneBounds> + '_ {
-        self.entities.iter().filter_map(|entity| {
-            (entity.solid
-                && entity.mobility == SceneMobility::Static
-                && entity.lifecycle == SceneLifecycle::Active
-                && entity.residency == SceneResidency::Resident)
-                .then_some(entity.bounds)
-        })
+    pub(crate) fn static_solid_bounds_near(&self, interests: &[SceneBounds]) -> Vec<SceneBounds> {
+        if interests.is_empty() {
+            return Vec::new();
+        }
+
+        let mut candidates = self.spatial_oversized.clone();
+        for interest in interests {
+            let min = spatial_cell_for_point(interest.min);
+            let max = spatial_cell_for_point(interest.max);
+            for x in min.0..=max.0 {
+                for z in min.1..=max.1 {
+                    if let Some(entities) = self.spatial_cells.get(&(x, z)) {
+                        candidates.extend(entities.iter().copied());
+                    }
+                }
+            }
+        }
+
+        candidates
+            .into_iter()
+            .filter_map(|id| {
+                let entity = self.entity(id)?;
+                if !entity.solid
+                    || entity.mobility != SceneMobility::Static
+                    || entity.lifecycle != SceneLifecycle::Active
+                    || entity.residency != SceneResidency::Resident
+                    || !interests
+                        .iter()
+                        .any(|interest| bounds_intersect(entity.bounds, *interest))
+                {
+                    return None;
+                }
+                Some(entity.bounds)
+            })
+            .collect()
     }
 
     pub(crate) fn entity_count(&self) -> usize {
@@ -208,4 +357,13 @@ impl SceneWorld {
     pub(crate) fn focus(&self) -> SceneFocus {
         self.focus
     }
+}
+
+fn bounds_intersect(a: SceneBounds, b: SceneBounds) -> bool {
+    a.min.x <= b.max.x
+        && a.max.x >= b.min.x
+        && a.min.y <= b.max.y
+        && a.max.y >= b.min.y
+        && a.min.z <= b.max.z
+        && a.max.z >= b.min.z
 }

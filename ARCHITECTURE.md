@@ -37,6 +37,7 @@ Dependencies flow downward only. scripts/verify_boundaries.py enforces the allow
 - newviso-platform: platform runtime bridge and event loop. It knows only the generic PlatformApplication callback interface; it does not know about Vulkan, scenes, ECS, or rendering.
 - newviso-render-client: typed client facade over the provider-neutral engine.render service protocol.
 - newviso-resource-runtime: engine-wide, domain-neutral residency runtime. It owns canonical asset identity and generic streaming/residency policy (owner claims, priorities, dependency closure supplied by the asset service, budgets, churn grace, retry, eviction, and VFS-generation invalidation). It contains no file-format parser, magic table, extension dispatch, or codec registry.
+- newviso-semantic-assets: source-format-neutral materializer for stable AssetManager semantic payloads such as `model.runtime_v1` and `collision.runtime_v1`. It converts validated semantic wires into `ModelResource` / `CollisionMeshResource`; it must not parse source containers or branch on source extensions/magic.
 - newviso-scripting: project script lifecycle bridge. It forwards engine-neutral frame snapshots to `engine.scripting` and returns opaque generic command buffers; it contains no gameplay rules.
 - newviso-scene: scene/ECS extraction, world bounds, native editor/orbit navigation fallback, scene math, transient render primitives, and homogeneous clip-space render preparation. It contains no genre/player/controller logic and does not know the raw render service wire format.
 - newviso-world: engine-neutral autonomous world-simulation backend. It owns world clock/fixed stepping, background actors, multi-observer simulation LOD, recurring processes, scheduled events, persistent world facts, population metadata, zones, scenario points, relationships, and temporary stimuli. It contains no player-specific policy, NPC archetypes, factions, traffic rules, economy rules, or game-specific event meanings.
@@ -69,7 +70,7 @@ A replacement provider must satisfy the same runtime service/ABI contract expect
 11. Streaming is an engine resource policy. Consumers submit generic AssetAddress interests with owner + priority. AssetManager and its dynamically loaded codec DLLs own all file/container recognition and decoding; NewViso core must not contain format crates, extension tables, magic tables, or codec dispatch. Residency, retry, churn protection, and eviction stay in newviso-resource-runtime.
 12. Live runtime composition is project-driven. Engine crates may define generic validation bounds and neutral fallbacks, but may not contain demo/game policy, concrete project references, gameplay event names, artistic presets, physics-world tuning, or fixed gameplay visibility categories.
 13. Shared scripts may provide reusable libraries and capability adapters; concrete game/world behavior belongs under the project script graph.
-14. Base engine scripts under `assets/scripts/newviso` expose typed OOP APIs. Public behavior belongs on classes/instances with explicit interfaces/types; exported function bags and `any`-typed public contracts are not allowed.
+14. Shared engine scripts under `../Shared/Content/scripts/newviso` expose typed OOP APIs. Public behavior belongs on classes/instances with explicit interfaces/types; exported function bags and `any`-typed public contracts are not allowed.
 
 ## Script-owned gameplay
 
@@ -79,7 +80,7 @@ Project scripts return a generic command buffer. The runtime routes capability-l
 
 NewViso is project-driven. A live runtime launch requires `--project <project-root>` and loads the startup scene, environment, runtime policy, capabilities, providers, and script entrypoint from that project. There is no embedded demo scene fallback. Project scene assets own initial camera and primitive material data; missing required camera fields or primitive material colors are rejected rather than replaced with demo values.
 
-`projects/FirstFPS/project.json` declares one script entrypoint, `scripts/main.ysc`. That root module composes project-owned child modules through relative `.ysc` imports. The TypeScript scripting provider—not NewViso—resolves the import graph through `engine.assets`/VFS. The FPS scripts own physical input mapping, cursor capture policy, movement, look, sprint/FOV/head-bob, character collision, jump/reset/fire decisions, projectile body creation/destruction, physics-world tuning, visualization, and crosshair generation. `scripts/world/*` owns FirstFPS day/night, celestial light, shadow and visual policy. The external `engine.physics` provider owns rigid-body integration and contacts. Shared script assets contain reusable APIs/math only, not a game-specific world preset.
+`../Projects/FirstFPS/project.json` declares one script entrypoint, `scripts/main.ysc`. That root module composes project-owned child modules through relative `.ysc` imports. The TypeScript scripting provider—not NewViso—resolves the import graph through `engine.assets`/VFS. The FPS scripts own physical input mapping, cursor capture policy, movement, look, sprint/FOV/head-bob, character collision, jump/reset/fire decisions, projectile body creation/destruction, physics-world tuning, visualization, and crosshair generation. `scripts/world/*` owns FirstFPS day/night, celestial light, shadow and visual policy. The external `engine.physics` provider owns rigid-body integration and contacts. Shared script assets contain reusable APIs/math only, not a game-specific world preset.
 
 The living-world layer follows the same boundary. `newviso-world` advances on its own fixed world clock and does not require a player entity to exist. Background actors, recurring world processes, scheduled events, facts, zones, relationships, navigation routes, active travel, and stimuli continue to advance without player input. Observers—including the current scene focus when present—only raise simulation fidelity through full/reduced/background update tiers; they do not create the world, stop the world, or determine whether distant actors exist. Multiple persistent observers can be registered for settlements, cameras, simulations, or other project-defined interests.
 
@@ -121,3 +122,18 @@ scene / scripting / UI / gameplay / bootstrap consumers
 The streamer never branches on a filename extension, file magic, container type, scene entity class, renderer resource class, or gameplay class. Concrete formats exist only inside AssetManager codec DLLs. Engine consumers may know stable semantic contracts such as model, material, texture, UI surface, script module, or audio clip, but never the source format that produced them.
 
 Streaming policy is project runtime data (streaming in config/runtime.json): source-container residency budget, per-pump load count/byte budgets, unrequested grace frames, retry delay, and inherited dependency priority. Zero byte/load caps mean unlimited where documented.
+
+The concrete RSC7 YDR/YBN provider path, semantic wire layouts, deployment layout and fixture tests are documented in `docs/rage-asset-pipeline.md`.
+
+
+## Runtime policy configuration
+
+See `docs/runtime-configuration.md` for the configuration schema, lifecycle,
+script API and remaining coverage. Project runtime defaults are packaged data in
+`newviso-project/src/assets/runtime_defaults.json`. Live `runtime.configure`
+commands validate before applying camera, streaming, scripting, scheduling and
+project-variable patches. Effective values are exposed in script snapshots.
+Scene GPU allocation policy is configured using `scene.render.configure` before
+allocation, from startup commands or script `on_start`; scene renderer initialization
+therefore follows initial script command application. ABI and shader layouts
+remain compiled contracts.

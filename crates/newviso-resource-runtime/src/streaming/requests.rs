@@ -7,6 +7,10 @@ impl<S: AssetSource> AssetStreamer<S> {
     pub fn set_policy(&mut self, policy: StreamingPolicy) -> Result<(), String> {
         policy.validate()?;
         self.policy = policy;
+        let parents = self.entries.keys().cloned().collect::<Vec<_>>();
+        for parent in parents {
+            self.refresh_dependency_claims(&parent);
+        }
         Ok(())
     }
     pub fn resources(&self) -> &ResourceManager<S> {
@@ -27,12 +31,16 @@ impl<S: AssetSource> AssetStreamer<S> {
             .entries
             .entry(address.clone())
             .or_insert_with(|| StreamingEntry::new(address.clone(), frame));
-        entry.external_claims.insert(owner, claim);
+        let claim_changed = entry.external_claims.get(&owner) != Some(&claim);
         entry.last_touched_frame = frame;
         if entry.state == StreamingState::Unloaded {
             entry.state = StreamingState::Queued;
         }
+        if !claim_changed {
+            return Ok(AssetId::from_address(&address));
+        }
 
+        entry.external_claims.insert(owner, claim);
         self.refresh_dependency_claims(&address);
         Ok(AssetId::from_address(&address))
     }

@@ -4,7 +4,7 @@ pub use streaming::*;
 use newviso_assets_client::{normalize_logical_path, AssetClient};
 use std::{any::Any, collections::HashMap, marker::PhantomData, sync::Arc};
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct AssetAddress {
     path: String,
     entry: Option<String>,
@@ -16,11 +16,33 @@ impl AssetAddress {
         if value.is_empty() {
             return Err("asset address is empty".to_owned());
         }
-        let (path, entry) = match value.rsplit_once('@') {
-            Some((path, entry)) if !entry.trim().is_empty() => {
-                (path, Some(entry.trim().to_owned()))
+        // '@' is an entry selector only after the filename extension:
+        //   model.asset@entry  -> selector
+        //   hi@district.ybn  -> literal filename
+        // RAGE uses '@' inside real basenames, so splitting on every final '@'
+        // corrupts valid YBN/YDR paths before they reach AssetManager.
+        let last_at = value.rfind('@');
+        let last_sep = value
+            .rfind(|character| character == '/' || character == '\\')
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        let last_dot = value[last_sep..].rfind('.').map(|index| last_sep + index);
+        let selector_at = last_at.filter(|at| {
+            *at >= last_sep
+                && match last_dot {
+                    Some(dot) => *at > dot,
+                    None => true,
+                }
+        });
+        let (path, entry) = match selector_at {
+            Some(at) => {
+                let path = &value[..at];
+                let entry = value[at + 1..].trim();
+                if entry.is_empty() {
+                    return Err(format!("asset address has empty @entry: '{value}'"));
+                }
+                (path, Some(entry.to_owned()))
             }
-            Some(_) => return Err(format!("asset address has empty @entry: '{value}'")),
             None => (value, None),
         };
         Ok(Self {
@@ -98,6 +120,19 @@ pub trait AssetResource: Any + Send + Sync {
         Vec::new()
     }
     fn into_any_arc(self: Arc<Self>) -> Arc<dyn Any + Send + Sync>;
+}
+
+/// Format adapters live outside ResourceRuntime. A decoder may recognize a
+/// source container and replace the generic ResidentAsset with an engine
+/// semantic resource (model, texture, collision, ...). Returning Ok(None)
+/// means "not my format" and lets the next decoder/fallback handle the bytes.
+pub trait ResourceDecoder: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn decode(
+        &self,
+        address: &AssetAddress,
+        bytes: &[u8],
+    ) -> Result<Option<Arc<dyn AssetResource>>, String>;
 }
 
 pub const RESIDENT_ASSET_DOMAIN: AssetDomain = AssetDomain::new("engine.assets.resident");
@@ -201,6 +236,7 @@ struct ResourceCacheKey {
 pub struct ResourceManager<S: AssetSource> {
     source: S,
     vfs_generation: u64,
+    decoders: Vec<Arc<dyn ResourceDecoder>>,
     resources: HashMap<ResourceCacheKey, Arc<dyn AssetResource>>,
     states: HashMap<AssetAddress, ResourceRecord>,
 }
@@ -210,9 +246,24 @@ impl<S: AssetSource> ResourceManager<S> {
         Self {
             source,
             vfs_generation: 1,
+            decoders: Vec::new(),
             resources: HashMap::new(),
             states: HashMap::new(),
         }
+    }
+
+    pub fn register_decoder<D>(&mut self, decoder: D)
+    where
+        D: ResourceDecoder + 'static,
+    {
+        self.decoders.push(Arc::new(decoder));
+        // Decoder order is part of semantic resolution. Existing cached
+        // fallbacks must not survive a registry change.
+        self.bump_vfs_generation();
+    }
+
+    pub fn decoder_names(&self) -> Vec<&'static str> {
+        self.decoders.iter().map(|decoder| decoder.name()).collect()
     }
 
     pub fn bump_vfs_generation(&mut self) {
@@ -254,11 +305,17 @@ impl<S: AssetSource> ResourceManager<S> {
                 error: None,
             },
         );
+        let prepared = self.prepare_erased_with_info(address);
+        self.commit_prepared_load(address, prepared)
+    }
 
-        let resolved = match self.source.resolve(address.logical_path()) {
-            Ok(value) => value,
-            Err(error) => return self.fail(address, error),
-        };
+    /// Resolve and decode a resource without mutating ResourceManager state.
+    ///
+    /// AssetStreamer uses this to run independent source I/O + semantic decode
+    /// concurrently. The resulting load is committed on the owning thread so
+    /// cache/state mutation remains deterministic.
+    pub fn prepare_erased_with_info(&self, address: &AssetAddress) -> Result<ResourceLoad, String> {
+        let resolved = self.source.resolve(address.logical_path())?;
         let source_size_bytes = resolved.bytes.len() as u64;
         let cache_key = ResourceCacheKey {
             address: address.clone(),
@@ -267,17 +324,6 @@ impl<S: AssetSource> ResourceManager<S> {
         };
 
         if let Some(resource) = self.resources.get(&cache_key).cloned() {
-            let dependencies = resource.dependencies();
-            self.states.insert(
-                address.clone(),
-                ResourceRecord {
-                    state: ResourceState::Ready,
-                    dependencies,
-                    source: Some(resolved.source.clone()),
-                    source_size_bytes,
-                    error: None,
-                },
-            );
             return Ok(ResourceLoad {
                 resource,
                 source: resolved.source,
@@ -285,29 +331,68 @@ impl<S: AssetSource> ResourceManager<S> {
             });
         }
 
-        let resource: Arc<dyn AssetResource> = Arc::new(ResidentAsset {
-            id: AssetId::from_address(address),
-            address: address.clone(),
-            bytes: Arc::from(resolved.bytes),
-            dependency_refs: resolved.dependencies,
+        let mut decoded: Option<Arc<dyn AssetResource>> = None;
+        for decoder in &self.decoders {
+            match decoder.decode(address, &resolved.bytes) {
+                Ok(Some(resource)) => {
+                    decoded = Some(resource);
+                    break;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    return Err(format!(
+                        "resource decoder '{}' failed asset '{}': {error}",
+                        decoder.name(),
+                        address.canonical()
+                    ));
+                }
+            }
+        }
+
+        let resource: Arc<dyn AssetResource> = decoded.unwrap_or_else(|| {
+            Arc::new(ResidentAsset {
+                id: AssetId::from_address(address),
+                address: address.clone(),
+                bytes: Arc::from(resolved.bytes),
+                dependency_refs: resolved.dependencies,
+            })
         });
-        let dependencies = resource.dependencies();
-        self.states.insert(
-            address.clone(),
-            ResourceRecord {
-                state: ResourceState::Ready,
-                dependencies,
-                source: Some(resolved.source.clone()),
-                source_size_bytes,
-                error: None,
-            },
-        );
-        self.resources.insert(cache_key, resource.clone());
+
         Ok(ResourceLoad {
             resource,
             source: resolved.source,
             source_size_bytes,
         })
+    }
+
+    /// Commit a prepared parallel load on the ResourceManager owner thread.
+    pub fn commit_prepared_load(
+        &mut self,
+        address: &AssetAddress,
+        prepared: Result<ResourceLoad, String>,
+    ) -> Result<ResourceLoad, String> {
+        let load = match prepared {
+            Ok(load) => load,
+            Err(error) => return self.fail(address, error),
+        };
+        let dependencies = load.resource.dependencies();
+        let cache_key = ResourceCacheKey {
+            address: address.clone(),
+            vfs_generation: self.vfs_generation,
+            source_revision: load.source.source_revision,
+        };
+        self.states.insert(
+            address.clone(),
+            ResourceRecord {
+                state: ResourceState::Ready,
+                dependencies,
+                source: Some(load.source.clone()),
+                source_size_bytes: load.source_size_bytes,
+                error: None,
+            },
+        );
+        self.resources.insert(cache_key, load.resource.clone());
+        Ok(load)
     }
 
     pub fn unload(&mut self, address: &AssetAddress) -> bool {
@@ -366,9 +451,23 @@ mod tests {
 
     #[test]
     fn selector_is_part_of_asset_identity_without_interpreting_file_type() {
-        let body = AssetAddress::parse("assets/vehicle@body").unwrap();
-        let wheel = AssetAddress::parse("assets/vehicle@wheel_fl").unwrap();
+        let body = AssetAddress::parse("assets/vehicle.asset@body").unwrap();
+        let wheel = AssetAddress::parse("assets/vehicle.asset@wheel_fl").unwrap();
         assert_ne!(body, wheel);
         assert_ne!(AssetId::from_address(&body), AssetId::from_address(&wheel));
+    }
+
+    #[test]
+    fn at_sign_before_extension_is_a_literal_filename_character() {
+        let address = AssetAddress::parse("maps/import/ybn/hi@bh1_06_0.ybn").unwrap();
+        assert_eq!(address.logical_path(), "maps/import/ybn/hi@bh1_06_0.ybn");
+        assert_eq!(address.entry(), None);
+    }
+
+    #[test]
+    fn at_sign_after_extension_is_an_entry_selector() {
+        let address = AssetAddress::parse("models/world.asset@building_high").unwrap();
+        assert_eq!(address.logical_path(), "models/world.asset");
+        assert_eq!(address.entry(), Some("building_high"));
     }
 }

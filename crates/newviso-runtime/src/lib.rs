@@ -1,6 +1,7 @@
 use newviso_assets_client::AssetClient;
 use newviso_bugtrap as bugtrap;
 use newviso_capabilities::{resolve_capabilities, CapabilityNeed, ResolvedCapability};
+use newviso_collision::CollisionMeshResource;
 use newviso_compat_abi::platform::{
     PlatformCursorGrabModeV1, PlatformCursorPollV1, PlatformCursorStateV1,
     PlatformSurfaceMetricsV1, PlatformWindowReadyV1,
@@ -11,10 +12,16 @@ use newviso_core::{EngineState, RuntimePhase};
 use newviso_events::{topic as event_topic, EventPhase};
 use newviso_host as host;
 use newviso_input_client::InputSnapshot;
+use newviso_model::{
+    IndexBuffer as ModelIndexBuffer, IndexFormat as ModelIndexFormat, ModelAnimationClip,
+    ModelResource, VertexFormat as ModelVertexFormat, VertexSemantic,
+    VertexStream as ModelVertexStream,
+};
 use newviso_physics_client::{
-    CollisionShape, PhysicsBodyActivityUpdate, PhysicsBodyFlags, PhysicsBodyKind,
-    PhysicsBodyPoseUpdate, PhysicsBodySnapshot, PhysicsClient, PhysicsCommand, PhysicsCommandKind,
-    PhysicsFeature, PhysicsFrameInput, PhysicsFrameOutput, PhysicsMaterial,
+    CollisionShape, MeshCollider, PhysicsBodyActivityUpdate, PhysicsBodyFlags, PhysicsBodyKind,
+    PhysicsBodyPoseUpdate, PhysicsBodySnapshot, PhysicsClient, PhysicsCollider, PhysicsCommand,
+    PhysicsCommandKind, PhysicsFeature, PhysicsFrameColliderSnapshot, PhysicsFrameInput,
+    PhysicsFrameOutput, PhysicsMaterial,
 };
 use newviso_platform::{run_platform, PlatformApplication, PlatformRunConfig, PlatformRunReport};
 use newviso_project::{
@@ -37,6 +44,10 @@ use newviso_scene::{
     SkyVisualDesc, SkyVisualKind,
 };
 use newviso_scripting::{ScriptModuleSpec, ScriptPermission, ScriptRuntime};
+use newviso_semantic_assets::{
+    load_model_animation_clip, SemanticCollisionDecoder, SemanticMaterialDecoder,
+    SemanticModelDecoder, SemanticTextureDecoder,
+};
 use newviso_ui_client::UiClient;
 use newviso_world::{
     AmbientModelSetDesc, LivingWorldRuntime, LivingWorldZoneDesc, PopulationChannelDesc,
@@ -48,14 +59,17 @@ use newviso_world::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env, fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
+mod application_animation;
 mod application_content;
 mod application_events;
 mod application_physics;
+mod application_settings;
 use application_physics::PhysicsRuntime;
 mod application_platform;
 mod application_script_commands;
@@ -68,7 +82,12 @@ mod bootstrap_support;
 pub use bootstrap::run;
 
 pub fn builtin_resource_manager() -> ResourceManager<AssetClientSource> {
-    ResourceManager::new(AssetClientSource)
+    let mut resources = ResourceManager::new(AssetClientSource);
+    resources.register_decoder(SemanticModelDecoder);
+    resources.register_decoder(SemanticMaterialDecoder);
+    resources.register_decoder(SemanticTextureDecoder);
+    resources.register_decoder(SemanticCollisionDecoder);
+    resources
 }
 
 pub fn builtin_asset_streamer(
@@ -82,6 +101,7 @@ fn streaming_policy_from_project(settings: &ProjectStreamingSettings) -> Streami
     StreamingPolicy {
         max_resident_bytes: settings.max_resident_mb.saturating_mul(MIB),
         max_loads_per_tick: settings.max_loads_per_tick,
+        parallel_loads: settings.parallel_loads,
         max_source_bytes_per_tick: settings.max_source_mb_per_tick.saturating_mul(MIB),
         eviction_grace_frames: settings.eviction_grace_frames,
         failed_retry_frames: settings.failed_retry_frames,
@@ -93,136 +113,73 @@ fn load_environment_sky(config: &ProjectSkyEnvironment) -> Result<SkyDomeResourc
     let assets = AssetClient::new();
     let model_address = AssetAddress::parse(&config.model)
         .map_err(|error| format!("invalid environment sky model address: {error}"))?;
-    let model_entry = model_address
-        .entry()
-        .ok_or_else(|| "environment sky model requires @entry".to_owned())?;
-    let model = assets.decode_json(
-        model_address.logical_path(),
-        "model.runtime_json_v1",
-        json!({"entry": model_entry}),
-    )?;
-    if model.get("schema").and_then(Value::as_str) != Some("engine.model.runtime_json.v1") {
-        return Err(format!(
-            "sky model semantic output has unexpected schema: {model}"
-        ));
+    if model_address.entry().is_none() {
+        return Err("environment sky model requires @entry".to_owned());
     }
 
-    let model_name = required_string(&model, "name", "sky model")?;
-    let bounds = model
-        .get("bounds")
-        .ok_or_else(|| "sky model semantic output has no bounds".to_owned())?;
-    let bounds_min = required_vec3(bounds, "aabb_min", "sky model bounds")?;
-    let bounds_max = required_vec3(bounds, "aabb_max", "sky model bounds")?;
-
+    let mut resources = builtin_resource_manager();
+    let model = resources.load::<ModelResource>(&model_address)?;
     let mesh = model
-        .get("meshes")
-        .and_then(Value::as_array)
-        .and_then(|meshes| meshes.first())
-        .ok_or_else(|| "sky model semantic output has no meshes".to_owned())?;
-    let mesh_name = required_string(mesh, "name", "sky mesh")?;
-    let material_slot = required_string(mesh, "material_slot", "sky mesh")?;
-    let index_format = match required_string(mesh, "index_format", "sky mesh")?.as_str() {
-        "u16" | "U16" => SkyIndexFormat::U16,
-        "u32" | "U32" => SkyIndexFormat::U32,
-        other => return Err(format!("sky mesh unsupported index format '{other}'")),
-    };
-
-    let vertices = mesh
-        .get("vertices")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "sky mesh has no vertices".to_owned())?
+        .meshes
+        .first()
+        .ok_or_else(|| format!("sky model '{}' contains no meshes", model.name))?;
+    let position = mesh
+        .vertex_streams
         .iter()
-        .map(|vertex| {
-            Ok(SkyVertex {
-                position: required_vec3(vertex, "pos", "sky vertex")?,
-                uv: required_vec2(vertex, "uv", "sky vertex")?,
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    let indices = mesh
-        .get("indices")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "sky mesh has no indices".to_owned())?
+        .find(|stream| stream.semantic == VertexSemantic::Position)
+        .ok_or_else(|| format!("sky mesh '{}' has no position stream", mesh.name))?;
+    let uv = mesh
+        .vertex_streams
         .iter()
-        .enumerate()
-        .map(|(index, value)| {
-            value
-                .as_u64()
-                .and_then(|value| u32::try_from(value).ok())
-                .ok_or_else(|| format!("sky index[{index}] is not a valid u32"))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-
-    let material_ref = model
-        .get("material_slots")
-        .and_then(Value::as_array)
-        .and_then(|slots| {
-            slots.iter().find(|slot| {
-                slot.get("slot_name")
-                    .and_then(Value::as_str)
-                    .is_some_and(|name| name == material_slot)
-            })
-        })
-        .or_else(|| {
-            model
-                .get("material_slots")
-                .and_then(Value::as_array)
-                .and_then(|slots| slots.first())
-        })
-        .and_then(|slot| slot.get("material_ref"))
-        .and_then(Value::as_str)
-        .filter(|reference| !reference.trim().is_empty())
-        .ok_or_else(|| format!("sky mesh material slot '{material_slot}' has no material_ref"))?;
-
-    let material_address = AssetAddress::parse(material_ref)
-        .map_err(|error| format!("invalid sky material address '{material_ref}': {error}"))?;
-    let material_entry = material_address
-        .entry()
-        .ok_or_else(|| format!("sky material '{material_ref}' requires @entry"))?;
-    let material = assets.decode_json(
-        material_address.logical_path(),
-        "material.runtime_json_v1",
-        json!({"material": material_entry}),
-    )?;
-    if material.get("schema").and_then(Value::as_str) != Some("engine.material.runtime_json.v1") {
+        .find(|stream| stream.semantic == VertexSemantic::TexCoord(0))
+        .ok_or_else(|| format!("sky mesh '{}' has no texcoord0 stream", mesh.name))?;
+    if position.vertex_count != uv.vertex_count {
         return Err(format!(
-            "sky material semantic output has unexpected schema: {material}"
+            "sky mesh '{}' position vertex_count={} differs from texcoord0 vertex_count={}",
+            mesh.name, position.vertex_count, uv.vertex_count
         ));
     }
-    let material_name = required_string(&material, "name", "sky material")?;
-    let texture_ref = |slot: &str| -> Result<String, String> {
-        material
-            .get("textures")
-            .and_then(Value::as_array)
-            .and_then(|textures| {
-                textures.iter().find(|binding| {
-                    binding
-                        .get("slot")
-                        .and_then(Value::as_str)
-                        .is_some_and(|name| name == slot)
-                })
-            })
-            .and_then(|binding| binding.get("ref"))
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .ok_or_else(|| format!("sky material '{material_name}' has no texture slot '{slot}'"))
-    };
 
-    let base_noise = load_sky_texture(&assets, &texture_ref("base_color")?, false)?;
-    let starfield = load_sky_texture(&assets, &texture_ref("emissive")?, true)?;
-    let detail_noise = load_sky_texture(&assets, &texture_ref("normal")?, false)?;
+    let vertices = (0..position.vertex_count as usize)
+        .map(|index| {
+            Ok(SkyVertex {
+                position: read_sky_vec3(position, index)?,
+                uv: read_sky_vec2(uv, index)?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let (index_format, indices) = decode_sky_indices(&mesh.index_buffer)?;
+
+    let base_noise_ref = config
+        .base_noise_texture
+        .as_deref()
+        .unwrap_or("textures/skydome.ytd@baseperlinnoise3channel");
+    let starfield_ref = config
+        .starfield_texture
+        .as_deref()
+        .unwrap_or("textures/skydome.ytd@starfield");
+    let detail_noise_ref = config
+        .detail_noise_texture
+        .as_deref()
+        .unwrap_or("textures/skydome.ytd@noise16_p");
+
+    let base_noise = load_sky_texture(&assets, base_noise_ref, false)?;
+    let starfield = load_sky_texture(&assets, starfield_ref, true)?;
+    let detail_noise = load_sky_texture(&assets, detail_noise_ref, false)?;
     let billboard_texture = config
         .billboard_texture
         .as_deref()
         .map(|reference| load_sky_texture(&assets, reference, true))
         .transpose()?;
 
+    let model_name = model.name.clone();
+    let mesh_name = mesh.name.clone();
+    let material_name = "environment.sky".to_owned();
     host::info(
         "newviso.scene",
         format!(
-            "sky semantic closure ready model='{}' material='{}' mesh='{}' vertices={} indices={} textures=[{},{},{}] billboard={}",
+            "sky semantic closure ready model='{}' mesh='{}' vertices={} indices={} textures=[{},{},{}] billboard={}",
             model_name,
-            material_name,
             mesh_name,
             vertices.len(),
             indices.len(),
@@ -241,8 +198,8 @@ fn load_environment_sky(config: &ProjectSkyEnvironment) -> Result<SkyDomeResourc
         material_name,
         mesh: SkyMeshResources {
             name: mesh_name,
-            bounds_min,
-            bounds_max,
+            bounds_min: model.bounds.min,
+            bounds_max: model.bounds.max,
             vertices,
             indices,
             index_format,
@@ -271,6 +228,108 @@ fn load_environment_sky(config: &ProjectSkyEnvironment) -> Result<SkyDomeResourc
             seed_offset: config.clouds.seed_offset,
         },
     })
+}
+
+fn read_sky_vec3(stream: &ModelVertexStream, index: usize) -> Result<[f32; 3], String> {
+    if stream.format != ModelVertexFormat::Float32x3 {
+        return Err(format!(
+            "sky vertex stream {:?} must be Float32x3, actual={:?}",
+            stream.semantic, stream.format
+        ));
+    }
+    let bytes = sky_stream_record(stream, index, 12)?;
+    Ok([
+        f32::from_le_bytes(bytes[0..4].try_into().expect("four bytes")),
+        f32::from_le_bytes(bytes[4..8].try_into().expect("four bytes")),
+        f32::from_le_bytes(bytes[8..12].try_into().expect("four bytes")),
+    ])
+}
+
+fn read_sky_vec2(stream: &ModelVertexStream, index: usize) -> Result<[f32; 2], String> {
+    if stream.format != ModelVertexFormat::Float32x2 {
+        return Err(format!(
+            "sky vertex stream {:?} must be Float32x2, actual={:?}",
+            stream.semantic, stream.format
+        ));
+    }
+    let bytes = sky_stream_record(stream, index, 8)?;
+    Ok([
+        f32::from_le_bytes(bytes[0..4].try_into().expect("four bytes")),
+        f32::from_le_bytes(bytes[4..8].try_into().expect("four bytes")),
+    ])
+}
+
+fn sky_stream_record<'a>(
+    stream: &'a ModelVertexStream,
+    index: usize,
+    record_bytes: usize,
+) -> Result<&'a [u8], String> {
+    if index >= stream.vertex_count as usize {
+        return Err(format!(
+            "sky vertex index {index} exceeds stream vertex_count={}",
+            stream.vertex_count
+        ));
+    }
+    let stride = usize::try_from(stream.stride)
+        .map_err(|_| "sky vertex stream stride exceeds usize".to_owned())?;
+    if stride < record_bytes {
+        return Err(format!(
+            "sky vertex stream {:?} stride={} is smaller than record bytes={record_bytes}",
+            stream.semantic, stride
+        ));
+    }
+    let offset = index
+        .checked_mul(stride)
+        .ok_or_else(|| "sky vertex stream offset overflow".to_owned())?;
+    let end = offset
+        .checked_add(record_bytes)
+        .ok_or_else(|| "sky vertex stream range overflow".to_owned())?;
+    stream.data.get(offset..end).ok_or_else(|| {
+        format!(
+            "sky vertex stream {:?} record[{index}] range={}..{} exceeds bytes={}",
+            stream.semantic,
+            offset,
+            end,
+            stream.data.len()
+        )
+    })
+}
+
+fn decode_sky_indices(buffer: &ModelIndexBuffer) -> Result<(SkyIndexFormat, Vec<u32>), String> {
+    match buffer.format {
+        ModelIndexFormat::U16 => {
+            let expected = buffer.index_count as usize * 2;
+            if buffer.data.len() < expected {
+                return Err(format!(
+                    "sky U16 index buffer bytes={} expected={expected}",
+                    buffer.data.len()
+                ));
+            }
+            Ok((
+                SkyIndexFormat::U16,
+                buffer.data[..expected]
+                    .chunks_exact(2)
+                    .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]) as u32)
+                    .collect(),
+            ))
+        }
+        ModelIndexFormat::U32 => {
+            let expected = buffer.index_count as usize * 4;
+            if buffer.data.len() < expected {
+                return Err(format!(
+                    "sky U32 index buffer bytes={} expected={expected}",
+                    buffer.data.len()
+                ));
+            }
+            Ok((
+                SkyIndexFormat::U32,
+                buffer.data[..expected]
+                    .chunks_exact(4)
+                    .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("four bytes")))
+                    .collect(),
+            ))
+        }
+    }
 }
 
 fn load_sky_texture(
@@ -415,6 +474,13 @@ fn command_u32(value: &Value, key: &str, index: usize) -> Result<u32, String> {
         .map_err(|_| format!("script command item[{index}] '{key}' is out of u32 range"))
 }
 
+fn command_u64(value: &Value, key: &str, index: usize) -> Result<u64, String> {
+    value
+        .get(key)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("script command item[{index}] '{key}' must be an unsigned integer"))
+}
+
 fn command_i32(value: &Value, key: &str, index: usize) -> Result<i32, String> {
     let number = value
         .get(key)
@@ -464,48 +530,6 @@ fn command_float_map(
         out.insert(name.clone(), number);
     }
     Ok(out)
-}
-
-fn required_string(value: &Value, key: &str, context: &str) -> Result<String, String> {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| format!("{context} missing string '{key}'"))
-}
-
-fn required_vector<const N: usize>(
-    value: &Value,
-    key: &str,
-    context: &str,
-) -> Result<[f32; N], String> {
-    let array = value
-        .get(key)
-        .and_then(Value::as_array)
-        .ok_or_else(|| format!("{context} missing vec{N} '{key}'"))?;
-    if array.len() != N {
-        return Err(format!("{context} '{key}' must have {N} values"));
-    }
-
-    let mut out = [0.0; N];
-    for (index, item) in array.iter().enumerate() {
-        out[index] = item
-            .as_f64()
-            .ok_or_else(|| format!("{context} '{key}[{index}]' must be numeric"))?
-            as f32;
-        if !out[index].is_finite() {
-            return Err(format!("{context} '{key}[{index}]' must be finite"));
-        }
-    }
-    Ok(out)
-}
-
-fn required_vec3(value: &Value, key: &str, context: &str) -> Result<[f32; 3], String> {
-    required_vector(value, key, context)
-}
-
-fn required_vec2(value: &Value, key: &str, context: &str) -> Result<[f32; 2], String> {
-    required_vector(value, key, context)
 }
 
 pub struct RuntimeReport {
@@ -575,6 +599,40 @@ struct LoadedProjectFiles {
     context: Value,
 }
 
+fn default_npc_walk_threshold() -> f32 {
+    0.15
+}
+
+fn default_npc_run_threshold() -> f32 {
+    3.5
+}
+
+fn default_npc_animation_rate_hz() -> f32 {
+    30.0
+}
+
+fn default_npc_face_velocity() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+struct WorldActorLocomotionBinding {
+    #[serde(default)]
+    idle_clip: Option<String>,
+    #[serde(default)]
+    walk_clip: Option<String>,
+    #[serde(default)]
+    run_clip: Option<String>,
+    #[serde(default = "default_npc_walk_threshold")]
+    walk_speed_threshold: f32,
+    #[serde(default = "default_npc_run_threshold")]
+    run_speed_threshold: f32,
+    #[serde(default = "default_npc_animation_rate_hz")]
+    animation_rate_hz: f32,
+    #[serde(default = "default_npc_face_velocity")]
+    face_velocity: bool,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct WorldActorPresentationBinding {
     scene_key: String,
@@ -592,12 +650,22 @@ struct WorldActorPresentationBinding {
     stream_distance: f32,
     fade_range: f32,
     materialized_representations: Vec<String>,
+    #[serde(default)]
+    locomotion: Option<WorldActorLocomotionBinding>,
+}
+
+#[derive(Clone, Debug)]
+struct SceneAnimationBinding {
+    clip_ref: String,
+    playback_rate: f32,
+    restart_if_same: bool,
 }
 
 struct EngineApplication {
     renderer_path: PathBuf,
     renderer: Option<RunningProvider>,
     scene: Scene3dRuntime,
+    settings: ProjectRuntimeSettings,
     living_world: LivingWorldRuntime,
     world_actor_presentations: BTreeMap<String, WorldActorPresentationBinding>,
     world_presentation_states: BTreeMap<String, application_world::PresentationState>,
@@ -612,6 +680,9 @@ struct EngineApplication {
     content_manager: Option<ContentManager>,
     asset_streamer: AssetStreamer<AssetClientSource>,
     scene_stream_claims: BTreeMap<u64, AssetAddress>,
+    scene_stream_aux_claims: BTreeMap<u64, BTreeSet<AssetAddress>>,
+    scene_animation_bindings: BTreeMap<u64, SceneAnimationBinding>,
+    animation_clip_cache: BTreeMap<(u64, String), Arc<ModelAnimationClip>>,
     last_content_surfaces: Vec<Value>,
     ui_frame_index: u64,
     elapsed_seconds: f64,
@@ -630,10 +701,13 @@ impl EngineApplication {
         project_context: Value,
         ui_template: Option<Value>,
         content_manager: Option<ContentManager>,
-        streaming_policy: StreamingPolicy,
+        settings: ProjectRuntimeSettings,
         world_startup: WorldStartup,
     ) -> Result<Self, String> {
+        settings.validate().map_err(|error| error.to_string())?;
+        let streaming_policy = streaming_policy_from_project(&settings.streaming);
         Ok(Self {
+            settings,
             renderer_path,
             renderer: None,
             scene,
@@ -651,6 +725,9 @@ impl EngineApplication {
             content_manager,
             asset_streamer: builtin_asset_streamer(streaming_policy)?,
             scene_stream_claims: BTreeMap::new(),
+            scene_stream_aux_claims: BTreeMap::new(),
+            scene_animation_bindings: BTreeMap::new(),
+            animation_clip_cache: BTreeMap::new(),
             last_content_surfaces: Vec::new(),
             ui_frame_index: 0,
             elapsed_seconds: 0.0,
@@ -662,6 +739,37 @@ impl EngineApplication {
     }
 
     fn runtime_state(&self) -> Value {
+        self.compose_runtime_state(self.living_world.runtime_state())
+    }
+
+    fn script_frame_state(&self) -> Value {
+        let mut runtime_state = self.scene.script_frame_state();
+        let root = runtime_state
+            .as_object_mut()
+            .expect("scene script frame state must be a JSON object");
+
+        root.insert("living_world".to_owned(), self.living_world.frame_state());
+        if let Some(physics) = self.physics.as_ref() {
+            root.insert("physics".to_owned(), physics.runtime_state());
+        }
+
+        let streaming = self.asset_streamer.stats();
+        root.insert(
+            "asset_streaming".to_owned(),
+            json!({
+                "frame": streaming.frame,
+                "queued": streaming.queued,
+                "loading": streaming.loading,
+                "waiting_dependencies": streaming.waiting_dependencies,
+                "resident": streaming.resident,
+                "failed": streaming.failed,
+                "resident_bytes": streaming.resident_bytes
+            }),
+        );
+        runtime_state
+    }
+
+    fn compose_runtime_state(&self, mut living_world_state: Value) -> Value {
         let actor_views = self.living_world.actor_runtime_views();
         let presentations = self
             .world_actor_presentations
@@ -680,7 +788,6 @@ impl EngineApplication {
             })
             .collect::<Vec<_>>();
 
-        let mut living_world_state = self.living_world.runtime_state();
         living_world_state
             .as_object_mut()
             .expect("living world runtime state must be a JSON object")
@@ -690,12 +797,41 @@ impl EngineApplication {
         let root = runtime_state
             .as_object_mut()
             .expect("scene runtime state must be a JSON object");
-        living_world_state["persistence"] = self.world_persistence.as_ref().map(WorldPersistence::runtime_state).unwrap_or_else(|| json!({"enabled": false, "restored": false}));
+        living_world_state["persistence"] = self
+            .world_persistence
+            .as_ref()
+            .map(WorldPersistence::runtime_state)
+            .unwrap_or_else(|| json!({"enabled": false, "restored": false}));
         living_world_state["presentation_transitions"] = self.world_presentations_state();
+        root.insert(
+            "settings".to_owned(),
+            serde_json::to_value(&self.settings).expect("validated runtime settings"),
+        );
         root.insert("living_world".to_owned(), living_world_state);
         if let Some(physics) = self.physics.as_ref() {
             root.insert("physics".to_owned(), physics.runtime_state());
         }
+        let streaming = self.asset_streamer.stats();
+        root.insert(
+            "asset_streaming".to_owned(),
+            json!({
+                "frame": streaming.frame,
+                "entries": streaming.entries,
+                "queued": streaming.queued,
+                "loading": streaming.loading,
+                "waiting_dependencies": streaming.waiting_dependencies,
+                "resident": streaming.resident,
+                "failed": streaming.failed,
+                "resident_sources": streaming.resident_sources,
+                "resident_bytes": streaming.resident_bytes,
+                "external_claims": streaming.external_claims,
+                "dependency_claims": streaming.dependency_claims,
+                "total_loads": streaming.total_loads,
+                "total_evictions": streaming.total_evictions,
+                "total_failures": streaming.total_failures,
+                "over_budget": streaming.over_budget
+            }),
+        );
         runtime_state
     }
 }

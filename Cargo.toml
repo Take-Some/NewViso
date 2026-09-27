@@ -13,6 +13,7 @@ members = [
     "crates/newviso-capabilities",
     "crates/newviso-compat-abi",
     "crates/newviso-config",
+    "crates/newviso-collision",
     "crates/newviso-content-manager",
     "crates/newviso-core",
     "crates/newviso-events",
@@ -29,6 +30,7 @@ members = [
     "crates/newviso-textures",
     "crates/newviso-materials",
     "crates/newviso-model",
+    "crates/newviso-rage-import",
     "crates/newviso-scene",
     "crates/newviso-world",
 ]
@@ -50,6 +52,7 @@ newviso-assets-client = { path = "crates/newviso-assets-client" }
 newviso-capabilities = { path = "crates/newviso-capabilities" }
 newviso-compat-abi = { path = "crates/newviso-compat-abi" }
 newviso-config = { path = "crates/newviso-config" }
+newviso-collision = { path = "crates/newviso-collision" }
 newviso-content-manager = { path = "crates/newviso-content-manager" }
 newviso-core = { path = "crates/newviso-core" }
 newviso-events = { path = "crates/newviso-events" }
@@ -66,6 +69,7 @@ newviso-resource-runtime = { path = "crates/newviso-resource-runtime" }
 newviso-textures = { path = "crates/newviso-textures" }
 newviso-materials = { path = "crates/newviso-materials" }
 newviso-model = { path = "crates/newviso-model" }
+newviso-semantic-assets = { path = "crates/newviso-rage-import" }
 newviso-scene = { path = "crates/newviso-scene" }
 newviso-world = { path = "crates/newviso-world" }
 

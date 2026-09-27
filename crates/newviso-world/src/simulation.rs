@@ -7,10 +7,16 @@ use crate::data::{invalid_float_map, valid_json_payload, valid_label, validate_i
 pub struct WorldSimulationPolicyDesc {
     pub transient_full_radius: f32,
     pub transient_reduced_radius: f32,
+    #[serde(default = "default_tier_hysteresis_radius")]
+    pub tier_hysteresis_radius: f32,
     pub full_interval_seconds: f32,
     pub reduced_interval_seconds: f32,
     pub background_interval_seconds: f32,
     pub max_actor_updates_per_step: u32,
+}
+
+fn default_tier_hysteresis_radius() -> f32 {
+    8.0
 }
 
 impl Default for WorldSimulationPolicyDesc {
@@ -18,6 +24,7 @@ impl Default for WorldSimulationPolicyDesc {
         Self {
             transient_full_radius: 80.0,
             transient_reduced_radius: 260.0,
+            tier_hysteresis_radius: default_tier_hysteresis_radius(),
             full_interval_seconds: 0.05,
             reduced_interval_seconds: 0.25,
             background_interval_seconds: 2.0,
@@ -32,6 +39,8 @@ impl WorldSimulationPolicyDesc {
             || self.transient_full_radius < 0.0
             || !self.transient_reduced_radius.is_finite()
             || self.transient_reduced_radius < self.transient_full_radius
+            || !self.tier_hysteresis_radius.is_finite()
+            || !(0.0..=10_000.0).contains(&self.tier_hysteresis_radius)
             || !self.full_interval_seconds.is_finite()
             || !(0.001..=86_400.0).contains(&self.full_interval_seconds)
             || !self.reduced_interval_seconds.is_finite()
@@ -156,26 +165,39 @@ pub(crate) fn actor_tier(
     position: [f32; 3],
     observers: &[WorldObserverDesc],
     transient_observers: &[[f32; 3]],
+    previous_tier: SimulationTier,
     policy: &WorldSimulationPolicyDesc,
 ) -> SimulationTier {
     let mut tier = SimulationTier::Background;
 
     for observer in observers {
-        let distance_sq = distance_squared(position, observer.position);
-        if distance_sq <= observer.full_radius * observer.full_radius {
+        let candidate = classify_distance(
+            distance_squared(position, observer.position),
+            observer.full_radius,
+            observer.reduced_radius,
+            previous_tier,
+            policy.tier_hysteresis_radius,
+        );
+        if candidate == SimulationTier::Full {
             return SimulationTier::Full;
         }
-        if distance_sq <= observer.reduced_radius * observer.reduced_radius {
+        if candidate == SimulationTier::Reduced {
             tier = SimulationTier::Reduced;
         }
     }
 
     for observer in transient_observers {
-        let distance_sq = distance_squared(position, *observer);
-        if distance_sq <= policy.transient_full_radius * policy.transient_full_radius {
+        let candidate = classify_distance(
+            distance_squared(position, *observer),
+            policy.transient_full_radius,
+            policy.transient_reduced_radius,
+            previous_tier,
+            policy.tier_hysteresis_radius,
+        );
+        if candidate == SimulationTier::Full {
             return SimulationTier::Full;
         }
-        if distance_sq <= policy.transient_reduced_radius * policy.transient_reduced_radius {
+        if candidate == SimulationTier::Reduced {
             tier = SimulationTier::Reduced;
         }
     }
@@ -183,9 +205,142 @@ pub(crate) fn actor_tier(
     tier
 }
 
+fn classify_distance(
+    distance_sq: f32,
+    full_radius: f32,
+    reduced_radius: f32,
+    previous_tier: SimulationTier,
+    hysteresis: f32,
+) -> SimulationTier {
+    let (full_threshold, reduced_threshold) = match previous_tier {
+        SimulationTier::Full => (full_radius + hysteresis, reduced_radius + hysteresis),
+        SimulationTier::Reduced => (
+            (full_radius - hysteresis).max(0.0),
+            reduced_radius + hysteresis,
+        ),
+        SimulationTier::Background => (
+            (full_radius - hysteresis).max(0.0),
+            (reduced_radius - hysteresis).max(0.0),
+        ),
+    };
+
+    if distance_sq <= full_threshold * full_threshold {
+        SimulationTier::Full
+    } else if distance_sq <= reduced_threshold * reduced_threshold {
+        SimulationTier::Reduced
+    } else {
+        SimulationTier::Background
+    }
+}
+
 fn distance_squared(a: [f32; 3], b: [f32; 3]) -> f32 {
     let dx = a[0] - b[0];
     let dy = a[1] - b[1];
     let dz = a[2] - b[2];
     dx * dx + dy * dy + dz * dz
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_policy_without_hysteresis_uses_default() {
+        let policy: WorldSimulationPolicyDesc = serde_json::from_value(serde_json::json!({
+            "transient_full_radius": 12.0,
+            "transient_reduced_radius": 24.0,
+            "full_interval_seconds": 0.05,
+            "reduced_interval_seconds": 0.25,
+            "background_interval_seconds": 2.0,
+            "max_actor_updates_per_step": 256
+        }))
+        .unwrap();
+
+        assert_eq!(
+            policy.tier_hysteresis_radius,
+            default_tier_hysteresis_radius()
+        );
+    }
+
+    #[test]
+    fn hysteresis_keeps_full_tier_stable_at_boundary() {
+        let policy = WorldSimulationPolicyDesc {
+            transient_full_radius: 80.0,
+            transient_reduced_radius: 260.0,
+            tier_hysteresis_radius: 10.0,
+            ..WorldSimulationPolicyDesc::default()
+        };
+
+        assert_eq!(
+            actor_tier(
+                [85.0, 0.0, 0.0],
+                &[],
+                &[[0.0, 0.0, 0.0]],
+                SimulationTier::Full,
+                &policy,
+            ),
+            SimulationTier::Full
+        );
+        assert_eq!(
+            actor_tier(
+                [85.0, 0.0, 0.0],
+                &[],
+                &[[0.0, 0.0, 0.0]],
+                SimulationTier::Background,
+                &policy,
+            ),
+            SimulationTier::Reduced
+        );
+        assert_eq!(
+            actor_tier(
+                [91.0, 0.0, 0.0],
+                &[],
+                &[[0.0, 0.0, 0.0]],
+                SimulationTier::Full,
+                &policy,
+            ),
+            SimulationTier::Reduced
+        );
+    }
+
+    #[test]
+    fn hysteresis_delays_background_promotion_and_reduced_demotion() {
+        let policy = WorldSimulationPolicyDesc {
+            transient_full_radius: 80.0,
+            transient_reduced_radius: 260.0,
+            tier_hysteresis_radius: 10.0,
+            ..WorldSimulationPolicyDesc::default()
+        };
+
+        assert_eq!(
+            actor_tier(
+                [255.0, 0.0, 0.0],
+                &[],
+                &[[0.0, 0.0, 0.0]],
+                SimulationTier::Background,
+                &policy,
+            ),
+            SimulationTier::Background
+        );
+        assert_eq!(
+            actor_tier(
+                [269.0, 0.0, 0.0],
+                &[],
+                &[[0.0, 0.0, 0.0]],
+                SimulationTier::Reduced,
+                &policy,
+            ),
+            SimulationTier::Reduced
+        );
+        assert_eq!(
+            actor_tier(
+                [271.0, 0.0, 0.0],
+                &[],
+                &[[0.0, 0.0, 0.0]],
+                SimulationTier::Reduced,
+                &policy,
+            ),
+            SimulationTier::Background
+        );
+    }
 }

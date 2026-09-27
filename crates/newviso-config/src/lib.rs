@@ -41,11 +41,12 @@ impl Default for PathConfig {
     fn default() -> Self {
         Self {
             base: PathBuf::from("."),
-            providers: PathBuf::from("runtime/providers"),
-            assets: PathBuf::from("assets"),
-            content: PathBuf::from("content"),
+            providers: PathBuf::from("../pluginsRuntime"),
+            // Workspace-owned runtime assets live outside the engine repository.
+            assets: PathBuf::from("../Shared/Content"),
+            content: PathBuf::from("../Shared/Content"),
             cache: PathBuf::from("cache"),
-            codecs: PathBuf::from("runtime/providers/codecs"),
+            codecs: PathBuf::from("../pluginsRuntime/codecs"),
         }
     }
 }
@@ -399,7 +400,7 @@ mod tests {
 
         assert_eq!(config.executable_dir, root.join("bin"));
         assert!(!config.config_loaded);
-        assert!(config.provider_dir.ends_with("runtime/providers"));
+        assert!(config.provider_dir.ends_with("pluginsRuntime"));
 
         let _ = fs::remove_dir_all(root);
     }

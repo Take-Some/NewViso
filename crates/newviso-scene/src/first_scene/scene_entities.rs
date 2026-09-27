@@ -67,6 +67,11 @@ impl Scene3dRuntime {
         {
             return Err("runtime dynamic entity asset_ref is invalid".to_owned());
         }
+        for (label, value) in [("texture_dictionary", desc.texture_dictionary.as_deref())] {
+            if value.is_some_and(|value| value.trim().is_empty() || value.len() > 2048) {
+                return Err(format!("runtime dynamic entity {label} is invalid"));
+            }
+        }
         if desc.visual == SceneRuntimeVisualKind::Cube && desc.asset_ref.is_some() {
             return Err(
                 "runtime dynamic entity cannot combine cube visual with asset_ref; use one representation source"
@@ -209,6 +214,12 @@ impl Scene3dRuntime {
                 SceneMutationSource::Engine,
             )?;
             self.world.activate_entity(id)?;
+            self.asset_binding_contexts.insert(
+                id.0,
+                SceneAssetBindingContext {
+                    texture_dictionary: desc.texture_dictionary.clone(),
+                },
+            );
             self.runtime_entity_ids.insert(key.to_owned(), id.0);
             return Ok(id.0);
         }
@@ -259,6 +270,9 @@ impl Scene3dRuntime {
             ),
         };
 
+        let binding_context = SceneAssetBindingContext {
+            texture_dictionary: desc.texture_dictionary.clone(),
+        };
         let id = SceneEntityId(self.next_runtime_entity_id);
         self.next_runtime_entity_id = self.next_runtime_entity_id.wrapping_add(1);
         self.world.add_entity(SceneEntity {
@@ -291,6 +305,7 @@ impl Scene3dRuntime {
             last_process_frame: None,
         })?;
         self.world.activate_entity(id)?;
+        self.asset_binding_contexts.insert(id.0, binding_context);
         self.runtime_entity_ids.insert(key.to_owned(), id.0);
         Ok(id.0)
     }
@@ -345,8 +360,15 @@ impl Scene3dRuntime {
         self.set_entity_transform(id.0, p, r, s)
     }
     pub fn runtime_entity_exists(&self, key: &str) -> bool {
+        self.runtime_entity_stable_id(key).is_some()
+    }
+
+    pub fn runtime_entity_stable_id(&self, key: &str) -> Option<u64> {
         let key = key.trim();
-        self.runtime_entity_ids.contains_key(key) || self.world.entity_id_by_name(key).is_some()
+        self.runtime_entity_ids
+            .get(key)
+            .copied()
+            .or_else(|| self.world.entity_id_by_name(key).map(|id| id.0))
     }
 
     pub fn remove_runtime_entity(&mut self, key: &str) -> Result<(), String> {
@@ -361,7 +383,9 @@ impl Scene3dRuntime {
         self.world.request_remove(id)?;
         self.sky_visuals.remove(key);
         self.lens_flares.retain(|_, flare| flare.source != key);
+        self.asset_binding_contexts.remove(&id.0);
         self.runtime_entity_ids.remove(key);
+        self.main_view_mesh_visibility.remove(id.0);
         Ok(())
     }
 
@@ -391,7 +415,9 @@ impl Scene3dRuntime {
             .set_visibility(SceneEntityId(stable_id), channel, visible)
     }
     pub fn request_remove_entity(&mut self, stable_id: u64) -> Result<(), String> {
-        self.world.request_remove(SceneEntityId(stable_id))
+        self.world.request_remove(SceneEntityId(stable_id))?;
+        self.main_view_mesh_visibility.remove(stable_id);
+        Ok(())
     }
 
     pub fn set_entity_process_claim(
@@ -408,6 +434,16 @@ impl Scene3dRuntime {
             active,
             SceneMutationSource::Script,
         )
+    }
+
+    pub fn set_entity_process_rate_hz(
+        &mut self,
+        stable_id: u64,
+        reason: &str,
+        hz: f32,
+    ) -> Result<(), String> {
+        self.world
+            .set_process_rate_hz(SceneEntityId(stable_id), reason, hz)
     }
 
     pub fn set_physics_process_active(
@@ -442,6 +478,16 @@ impl Scene3dRuntime {
             SceneMutationSource::Animation,
         )
     }
+    pub fn entity_asset_binding_context(
+        &self,
+        stable_id: u64,
+    ) -> SceneAssetBindingContext {
+        self.asset_binding_contexts
+            .get(&stable_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     pub fn pending_stream_requests(&self) -> Vec<SceneStreamRequest> {
         self.frame_plan
             .requested_entities
@@ -583,7 +629,9 @@ impl Scene3dRuntime {
         };
 
         self.world
-            .update_spatial_from(id, transform, bounds, source)
+            .update_spatial_from(id, transform, bounds, source)?;
+        self.mark_entity_model_transform_dirty(stable_id);
+        Ok(())
     }
 
     pub fn apply_physics_pose(
@@ -643,7 +691,24 @@ impl Scene3dRuntime {
 
         self.world
             .update_spatial_from(id, transform, bounds, SceneMutationSource::Physics)?;
+        self.mark_entity_model_transform_dirty(stable_id);
         Ok(true)
+    }
+
+    pub fn process_work_state(&self) -> Vec<Value> {
+        self.world
+            .process_tickets()
+            .iter()
+            .map(|ticket| {
+                json!({
+                    "entity": ticket.entity.0,
+                    "frame": ticket.frame,
+                    "elapsed_seconds": ticket.elapsed_seconds,
+                    "reason_mask": ticket.reasons.bits(),
+                    "reason_labels": ticket.reasons.labels()
+                })
+            })
+            .collect()
     }
 
     pub fn drain_entity_mutations(&mut self) -> Vec<Value> {
@@ -680,6 +745,8 @@ impl Scene3dRuntime {
                     },
                     "process_control": {
                         "active": mutation.process_active,
+                        "reason_mask": mutation.process_reason_mask,
+                        "reason_labels": SceneProcessReasons::from_bits(mutation.process_reason_mask).labels(),
                         "claims": mutation.process_claims
                     }
                 })
@@ -695,6 +762,30 @@ impl Scene3dRuntime {
             .map(SceneEntityId)
             .or_else(|| self.world.entity_id_by_name(key.trim()))?;
         self.entity_state(id.0)
+    }
+
+    pub fn entity_transform_values(
+        &self,
+        stable_id: u64,
+    ) -> Option<([f32; 3], [f32; 3], [f32; 3])> {
+        let entity = self.world.entity(SceneEntityId(stable_id))?;
+        Some((
+            [
+                entity.transform.position.x,
+                entity.transform.position.y,
+                entity.transform.position.z,
+            ],
+            [
+                entity.transform.rotation_degrees.x,
+                entity.transform.rotation_degrees.y,
+                entity.transform.rotation_degrees.z,
+            ],
+            [
+                entity.transform.scale.x,
+                entity.transform.scale.y,
+                entity.transform.scale.z,
+            ],
+        ))
     }
 
     pub fn entity_state(&self, stable_id: u64) -> Option<Value> {
@@ -744,7 +835,10 @@ impl Scene3dRuntime {
                 "active": self.world.process_is_active(entity.id),
                 "requested": entity.process_claims.active(),
                 "reasons": entity.process_claims.reasons(),
+                "reason_mask": entity.process_claims.mask().bits(),
+                "reason_labels": entity.process_claims.mask().labels(),
                 "claims": entity.process_claims.snapshot(),
+                "rates_hz": self.world.process_rate_snapshot(entity.id),
                 "last_process_frame": entity.last_process_frame
             },
             "transform": {

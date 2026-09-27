@@ -15,17 +15,25 @@ ALLOWED: dict[str, set[str]] = {
     "newviso-capabilities": {"newviso-provider-runtime"},
     "newviso-compat-abi": set(),
     "newviso-config": set(),
+    "newviso-collision": {"newviso-resource-runtime"},
     "newviso-content-manager": {"newviso-assets-client"},
     "newviso-core": set(),
     "newviso-events": set(),
     "newviso-host": {"newviso-compat-abi", "newviso-events"},
     "newviso-input-client": {"newviso-host"},
+    "newviso-noise-api": set(),
     "newviso-platform": {"newviso-compat-abi", "newviso-host"},
     "newviso-physics-client": {"newviso-host"},
     "newviso-provider-runtime": {"newviso-compat-abi", "newviso-host"},
     "newviso-project": set(),
     "newviso-render-client": {"newviso-host"},
     "newviso-resource-runtime": {"newviso-assets-client"},
+    "newviso-semantic-assets": {
+        "newviso-assets-client",
+        "newviso-collision",
+        "newviso-model",
+        "newviso-resource-runtime",
+    },
     "newviso-textures": {"newviso-resource-runtime"},
     "newviso-materials": {"newviso-resource-runtime", "newviso-textures"},
     "newviso-model": {"newviso-materials", "newviso-resource-runtime"},
@@ -48,9 +56,13 @@ ALLOWED: dict[str, set[str]] = {
         "newviso-textures",
         "newviso-assets-client",
         "newviso-capabilities",
+        "newviso-collision",
+        "newviso-physics-client",
         "newviso-render-client",
+        "newviso-semantic-assets",
         "newviso-scripting",
         "newviso-ui-client",
+        "newviso-world",
     },
     "newviso-scene": {
         "newviso-host",
@@ -70,6 +82,7 @@ ALLOWED: dict[str, set[str]] = {
         "newviso-script-client",
     },
     "newviso-ui-client": {"newviso-host"},
+    "newviso-world": set(),
 }
 
 DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
@@ -154,6 +167,20 @@ def main() -> int:
     missing_rules = sorted(set(ALLOWED) - seen)
     if missing_rules:
         errors.append("architecture rules reference missing packages: " + ", ".join(missing_rules))
+    # Asset namespace contract: .ymt is model/definition metadata, never a material dictionary.
+    workspace_root = ROOT.parent
+    material_roots = [workspace_root / "Shared" / "Content" / "materials"]
+    projects_root = workspace_root / "Projects"
+    if projects_root.is_dir():
+        material_roots.extend(path for path in projects_root.glob("*/assets/materials") if path.is_dir())
+    for material_root in material_roots:
+        if not material_root.is_dir():
+            continue
+        for asset in material_root.rglob("*.ymt"):
+            errors.append(
+                f"{asset.relative_to(ROOT)}: .ymt is metadata; material dictionaries must use .ymat"
+            )
+
     if errors:
         print("NewViso architecture boundary check: FAILED")
         for error in errors:

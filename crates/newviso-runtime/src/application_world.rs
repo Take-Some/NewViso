@@ -4,6 +4,11 @@ use super::*;
 pub(super) struct PresentationState {
     materialized: bool,
     position: [f32; 3],
+    rotation_degrees: [f32; 3],
+    velocity: [f32; 3],
+    speed: f32,
+    locomotion_state: String,
+    animation_clip: Option<String>,
     entity_id: Option<u64>,
     materializations: u64,
     dematerializations: u64,
@@ -35,6 +40,25 @@ impl WorldActorPresentationBinding {
                 "world presentation requires physical, proxy or abstract representations".into(),
             );
         }
+        if let Some(locomotion) = &self.locomotion {
+            if !locomotion.walk_speed_threshold.is_finite()
+                || locomotion.walk_speed_threshold < 0.0
+                || !locomotion.run_speed_threshold.is_finite()
+                || locomotion.run_speed_threshold < locomotion.walk_speed_threshold
+                || !locomotion.animation_rate_hz.is_finite()
+                || !(1.0..=240.0).contains(&locomotion.animation_rate_hz)
+                || [
+                    locomotion.idle_clip.as_deref(),
+                    locomotion.walk_clip.as_deref(),
+                    locomotion.run_clip.as_deref(),
+                ]
+                .into_iter()
+                .flatten()
+                .any(|clip| clip.trim().is_empty() || clip.len() > 256)
+            {
+                return Err("invalid world presentation locomotion parameters".into());
+            }
+        }
         if self
             .position_offset
             .iter()
@@ -57,8 +81,49 @@ impl WorldActorPresentationBinding {
     }
 }
 
+fn sample_locomotion(
+    binding: &WorldActorPresentationBinding,
+    velocity: [f32; 3],
+) -> (f32, f32, &'static str, Option<String>) {
+    let horizontal_speed = (velocity[0] * velocity[0] + velocity[2] * velocity[2]).sqrt();
+    let heading = if horizontal_speed > 1.0e-5 {
+        velocity[0].atan2(velocity[2]).to_degrees()
+    } else {
+        0.0
+    };
+    let Some(locomotion) = &binding.locomotion else {
+        return (horizontal_speed, heading, "none", None);
+    };
+    if horizontal_speed >= locomotion.run_speed_threshold {
+        (
+            horizontal_speed,
+            heading,
+            "run",
+            locomotion
+                .run_clip
+                .clone()
+                .or_else(|| locomotion.walk_clip.clone()),
+        )
+    } else if horizontal_speed >= locomotion.walk_speed_threshold {
+        (
+            horizontal_speed,
+            heading,
+            "walk",
+            locomotion.walk_clip.clone(),
+        )
+    } else {
+        (
+            horizontal_speed,
+            heading,
+            "idle",
+            locomotion.idle_clip.clone(),
+        )
+    }
+}
+
 impl EngineApplication {
     pub(super) fn sync_world_actor_presentations(&mut self) -> Result<(), String> {
+        const ANIMATION_OWNER: &str = "engine.animation.world_actor";
         let actor_views = self.living_world.actor_runtime_views();
         for (actor_id, binding) in &self.world_actor_presentations {
             let view = actor_views.iter().find(|view| &view.id == actor_id);
@@ -75,23 +140,53 @@ impl EngineApplication {
                 .or_default();
             if !active {
                 if state.materialized && self.scene.runtime_entity_exists(&binding.scene_key) {
+                    if let Some(entity_id) = state.entity_id {
+                        let _ = self.scene.set_animation_process_active(
+                            entity_id,
+                            ANIMATION_OWNER,
+                            false,
+                        )?;
+                    }
                     self.scene
                         .set_runtime_entity_materialized(&binding.scene_key, false)?;
                     state.dematerializations += 1;
                 }
                 state.materialized = false;
+                state.velocity = [0.0; 3];
+                state.speed = 0.0;
+                state.locomotion_state = "abstract".to_owned();
+                state.animation_clip = None;
                 continue;
             }
+
             let view = view.expect("active presentation has an actor");
             let position = std::array::from_fn(|i| view.position[i] + binding.position_offset[i]);
-            if state.entity_id.is_none() || !self.scene.runtime_entity_exists(&binding.scene_key) {
+            let (speed, heading, locomotion_state, animation_clip) =
+                sample_locomotion(binding, view.velocity);
+            let mut rotation_degrees = binding.rotation_degrees;
+            if binding
+                .locomotion
+                .as_ref()
+                .is_some_and(|locomotion| locomotion.face_velocity)
+            {
+                if speed > 1.0e-5 {
+                    rotation_degrees[1] += heading;
+                } else if state.materialized {
+                    rotation_degrees[1] = state.rotation_degrees[1];
+                }
+            }
+
+            let created =
+                state.entity_id.is_none() || !self.scene.runtime_entity_exists(&binding.scene_key);
+            if created {
                 state.entity_id = Some(self.scene.upsert_runtime_dynamic_entity(
                     &binding.scene_key,
                     SceneRuntimeEntityDesc {
                         visual: binding.visual,
                         asset_ref: binding.asset_ref.clone(),
+                        texture_dictionary: None,
                         position,
-                        rotation_degrees: binding.rotation_degrees,
+                        rotation_degrees,
                         scale: binding.scale,
                         bounds_half_extent: binding.bounds_half_extent,
                         base_color: binding.base_color,
@@ -101,20 +196,49 @@ impl EngineApplication {
                         fade_range: binding.fade_range,
                     },
                 )?);
-            } else if state.position != position {
+            } else if state.position != position || state.rotation_degrees != rotation_degrees {
                 self.scene.set_runtime_entity_transform(
                     &binding.scene_key,
                     Some(position),
-                    None,
+                    Some(rotation_degrees),
                     None,
                 )?;
             }
+
+            if let Some(entity_id) = state.entity_id {
+                if let Some(locomotion) = &binding.locomotion {
+                    if created || !state.materialized {
+                        self.scene.set_entity_process_rate_hz(
+                            entity_id,
+                            "animation",
+                            locomotion.animation_rate_hz,
+                        )?;
+                    }
+                    let _ = self.scene.set_animation_process_active(
+                        entity_id,
+                        ANIMATION_OWNER,
+                        true,
+                    )?;
+                } else {
+                    let _ = self.scene.set_animation_process_active(
+                        entity_id,
+                        ANIMATION_OWNER,
+                        false,
+                    )?;
+                }
+            }
+
             if !state.materialized {
                 self.scene
                     .set_runtime_entity_materialized(&binding.scene_key, true)?;
                 state.materializations += 1;
             }
             state.position = position;
+            state.rotation_degrees = rotation_degrees;
+            state.velocity = view.velocity;
+            state.speed = speed;
+            state.locomotion_state = locomotion_state.to_owned();
+            state.animation_clip = animation_clip;
             state.materialized = true;
         }
         Ok(())
@@ -129,6 +253,12 @@ impl EngineApplication {
                     json!({"actor_id": actor, "scene_key": binding.scene_key,
                 "materialized": state.is_some_and(|s| s.materialized),
                 "entity_id": state.and_then(|s| s.entity_id),
+                "velocity": state.map_or([0.0; 3], |s| s.velocity),
+                "speed": state.map_or(0.0, |s| s.speed),
+                "heading_degrees": state.map_or(0.0, |s| s.rotation_degrees[1]),
+                "locomotion_state": state.map_or("none", |s| s.locomotion_state.as_str()),
+                "animation_clip": state.and_then(|s| s.animation_clip.as_deref()),
+                "animation_rate_hz": binding.locomotion.as_ref().map(|v| v.animation_rate_hz),
                 "materializations": state.map_or(0, |s| s.materializations),
                 "dematerializations": state.map_or(0, |s| s.dematerializations)})
                 })
@@ -151,6 +281,17 @@ impl EngineApplication {
         }
         if let Some(previous) = self.world_actor_presentations.get(&actor_id) {
             if self.scene.runtime_entity_exists(&previous.scene_key) {
+                if let Some(entity_id) = self
+                    .world_presentation_states
+                    .get(&actor_id)
+                    .and_then(|state| state.entity_id)
+                {
+                    let _ = self.scene.set_animation_process_active(
+                        entity_id,
+                        "engine.animation.world_actor",
+                        false,
+                    )?;
+                }
                 self.scene
                     .set_runtime_entity_materialized(&previous.scene_key, false)?;
             }
@@ -163,11 +304,85 @@ impl EngineApplication {
     pub(super) fn unbind_world_actor_presentation(&mut self, actor_id: &str) -> Result<(), String> {
         if let Some(binding) = self.world_actor_presentations.remove(actor_id.trim()) {
             if self.scene.runtime_entity_exists(&binding.scene_key) {
+                if let Some(entity_id) = self
+                    .world_presentation_states
+                    .get(actor_id.trim())
+                    .and_then(|state| state.entity_id)
+                {
+                    let _ = self.scene.set_animation_process_active(
+                        entity_id,
+                        "engine.animation.world_actor",
+                        false,
+                    )?;
+                }
                 self.scene
                     .set_runtime_entity_materialized(&binding.scene_key, false)?;
             }
         }
         self.world_presentation_states.remove(actor_id.trim());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn locomotion_binding() -> WorldActorPresentationBinding {
+        WorldActorPresentationBinding {
+            scene_key: "npc.test".to_owned(),
+            visual: SceneRuntimeVisualKind::None,
+            asset_ref: Some("models/npc.ydd".to_owned()),
+            position_offset: [0.0; 3],
+            rotation_degrees: [0.0; 3],
+            scale: [1.0; 3],
+            bounds_half_extent: [0.4, 0.9, 0.4],
+            base_color: [1.0; 4],
+            solid: false,
+            visible_distance: 100.0,
+            stream_distance: 120.0,
+            fade_range: 10.0,
+            materialized_representations: vec!["physical".to_owned(), "proxy".to_owned()],
+            locomotion: Some(WorldActorLocomotionBinding {
+                idle_clip: Some("idle".to_owned()),
+                walk_clip: Some("walk".to_owned()),
+                run_clip: Some("run".to_owned()),
+                walk_speed_threshold: 0.15,
+                run_speed_threshold: 3.5,
+                animation_rate_hz: 30.0,
+                face_velocity: true,
+            }),
+        }
+    }
+
+    #[test]
+    fn locomotion_selects_idle_walk_run_and_heading() {
+        let binding = locomotion_binding();
+
+        let (speed, heading, state, clip) = sample_locomotion(&binding, [0.0, 0.0, 0.0]);
+        assert_eq!(speed, 0.0);
+        assert_eq!(heading, 0.0);
+        assert_eq!(state, "idle");
+        assert_eq!(clip.as_deref(), Some("idle"));
+
+        let (speed, heading, state, clip) = sample_locomotion(&binding, [2.0, 0.0, 0.0]);
+        assert!((speed - 2.0).abs() < 1.0e-6);
+        assert!((heading - 90.0).abs() < 1.0e-5);
+        assert_eq!(state, "walk");
+        assert_eq!(clip.as_deref(), Some("walk"));
+
+        let (speed, _, state, clip) = sample_locomotion(&binding, [0.0, 0.0, -4.0]);
+        assert!((speed - 4.0).abs() < 1.0e-6);
+        assert_eq!(state, "run");
+        assert_eq!(clip.as_deref(), Some("run"));
+    }
+
+    #[test]
+    fn legacy_presentation_binding_without_locomotion_deserializes() {
+        let mut value = serde_json::to_value(locomotion_binding()).unwrap();
+        value.as_object_mut().unwrap().remove("locomotion");
+        let binding: WorldActorPresentationBinding = serde_json::from_value(value).unwrap();
+        assert!(binding.locomotion.is_none());
+        binding.validate("npc.legacy").unwrap();
     }
 }

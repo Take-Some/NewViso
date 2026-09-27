@@ -4,6 +4,7 @@ const STATIC_COLLIDER_ID_BASE: u64 = 1_u64 << 63;
 const MIN_PHYSICS_HZ: f32 = 10.0;
 const MAX_PHYSICS_HZ: f32 = 1000.0;
 const MAX_PHYSICS_STEPS_LIMIT: usize = 64;
+const SCENE_COLLIDER_BROADPHASE_MARGIN: f32 = 32.0;
 
 #[derive(Clone, Copy, Debug)]
 struct PhysicsWorldSettings {
@@ -46,6 +47,9 @@ impl PhysicsWorldSettings {
 pub(super) struct PhysicsRuntime {
     client: PhysicsClient,
     bodies: BTreeMap<u64, PhysicsBodySnapshot>,
+    streamed_colliders: BTreeMap<u64, PhysicsFrameColliderSnapshot>,
+    camera_collision_meshes: BTreeMap<u64, newviso_collision::SphereSweepMesh>,
+    pending_streamed_colliders: BTreeMap<u64, PhysicsFrameColliderSnapshot>,
     pending_commands: Vec<PhysicsCommand>,
     frame_index: u64,
     fixed_tick: u64,
@@ -62,6 +66,7 @@ impl PhysicsRuntime {
             vec![
                 PhysicsFeature::StaticColliders,
                 PhysicsFeature::DynamicBodies,
+                PhysicsFeature::MeshColliders,
             ],
             vec![
                 PhysicsFeature::Contacts,
@@ -84,6 +89,9 @@ impl PhysicsRuntime {
         Ok(Self {
             client,
             bodies: BTreeMap::new(),
+            streamed_colliders: BTreeMap::new(),
+            camera_collision_meshes: BTreeMap::new(),
+            pending_streamed_colliders: BTreeMap::new(),
             pending_commands: Vec::new(),
             frame_index: 0,
             fixed_tick: 0,
@@ -92,6 +100,36 @@ impl PhysicsRuntime {
             settings: PhysicsWorldSettings::default(),
             last_output: PhysicsFrameOutput::default(),
         })
+    }
+
+    pub(super) fn scene_collider_interests(&self) -> Option<Vec<([f32; 3], [f32; 3])>> {
+        if !self.settings.scene_colliders_enabled {
+            return None;
+        }
+
+        let horizon =
+            (self.settings.fixed_dt() * self.settings.max_steps_per_frame as f32).clamp(0.0, 0.25);
+        Some(
+            self.bodies
+                .values()
+                .filter(|body| {
+                    body.kind != PhysicsBodyKind::Static
+                        && body.flags.casts_contacts
+                        && !body.flags.is_trigger
+                })
+                .map(|body| {
+                    let mut min = body.bounds_min;
+                    let mut max = body.bounds_max;
+                    for axis in 0..3 {
+                        let swept = body.linear_velocity[axis].abs() * horizon;
+                        let margin = SCENE_COLLIDER_BROADPHASE_MARGIN + swept;
+                        min[axis] -= margin;
+                        max[axis] += margin;
+                    }
+                    (min, max)
+                })
+                .collect(),
+        )
     }
 
     pub(super) fn step(
@@ -104,7 +142,7 @@ impl PhysicsRuntime {
         }
 
         self.frame_index = self.frame_index.wrapping_add(1);
-        self.accumulator += dt.min(0.05);
+        self.accumulator += dt;
 
         let fixed_dt = self.settings.fixed_dt();
         let max_steps = self.settings.max_steps_per_frame;
@@ -124,18 +162,40 @@ impl PhysicsRuntime {
             } else {
                 Vec::new()
             };
+            let colliders = if steps == 0 {
+                std::mem::take(&mut self.pending_streamed_colliders)
+                    .into_values()
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
 
-            let output = self.client.step_frame(PhysicsFrameInput {
+            let input = PhysicsFrameInput {
                 frame_index: self.frame_index,
                 fixed_tick: self.fixed_tick,
                 dt: fixed_dt,
                 gravity: self.settings.gravity,
                 contact_skin: self.settings.contact_skin,
                 bodies,
-                colliders: Vec::new(),
+                colliders,
                 commands,
                 queries: Vec::new(),
-            })?;
+            };
+            let retry_colliders = input.colliders.clone();
+            let retry_commands = input.commands.clone();
+            let output = match self.client.step_frame(input) {
+                Ok(output) => output,
+                Err(error) => {
+                    for collider in retry_colliders {
+                        self.pending_streamed_colliders
+                            .insert(collider.entity, collider);
+                    }
+                    if !retry_commands.is_empty() {
+                        self.pending_commands.splice(0..0, retry_commands);
+                    }
+                    return Err(error);
+                }
+            };
 
             self.apply_output(&output);
             self.last_output = output;
@@ -169,6 +229,95 @@ impl PhysicsRuntime {
         }
     }
 
+    pub(super) fn install_streamed_collision(
+        &mut self,
+        entity: u64,
+        collision: &CollisionMeshResource,
+        position: [f32; 3],
+        rotation_degrees: [f32; 3],
+        scale: [f32; 3],
+    ) -> Result<bool, String> {
+        collision.validate()?;
+        if position
+            .iter()
+            .chain(rotation_degrees.iter())
+            .chain(scale.iter())
+            .any(|value| !value.is_finite())
+        {
+            return Err(format!(
+                "streamed collision '{}' has non-finite placement transform",
+                collision.name
+            ));
+        }
+
+        let vertices = collision
+            .vertices
+            .iter()
+            .copied()
+            .map(|vertex| transform_collision_vertex(vertex, scale, rotation_degrees))
+            .collect::<Vec<_>>();
+        let collider = MeshCollider {
+            vertices,
+            triangles: collision.triangles.clone(),
+            // RAGE surface ids remain preserved on CollisionMeshResource. The current
+            // Jolt packet ABI has no mesh-material table, so every physics triangle must
+            // resolve to the single collider material until surface mapping is added.
+            material_indices: vec![0; collision.triangles.len()],
+        };
+        collider.validate()?;
+        let (local_min, local_max) = collider_bounds(&collider)?;
+        let snapshot = PhysicsFrameColliderSnapshot {
+            entity,
+            collider: PhysicsCollider::Mesh(collider),
+            flags: PhysicsBodyFlags {
+                is_trigger: false,
+                participates_in_queries: true,
+                casts_contacts: true,
+                continuous_collision: false,
+            },
+            material: self.settings.scene_material,
+            position,
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            bounds_min: [
+                local_min[0] + position[0],
+                local_min[1] + position[1],
+                local_min[2] + position[2],
+            ],
+            bounds_max: [
+                local_max[0] + position[0],
+                local_max[1] + position[1],
+                local_max[2] + position[2],
+            ],
+        };
+
+        if self.streamed_colliders.get(&entity) == Some(&snapshot) {
+            return Ok(false);
+        }
+        let PhysicsCollider::Mesh(mesh) = &snapshot.collider;
+        self.camera_collision_meshes.insert(
+            entity,
+            newviso_collision::SphereSweepMesh::new(&mesh.vertices, &mesh.triangles)?,
+        );
+        self.streamed_colliders.insert(entity, snapshot.clone());
+        self.pending_streamed_colliders.insert(entity, snapshot);
+        Ok(true)
+    }
+
+    pub(super) fn remove_streamed_collision(&mut self, entity: u64) -> bool {
+        self.pending_streamed_colliders.remove(&entity);
+        self.camera_collision_meshes.remove(&entity);
+        let removed = self.streamed_colliders.remove(&entity).is_some();
+        if removed {
+            let seq = self.next_command_seq;
+            self.next_command_seq = self.next_command_seq.wrapping_add(1).max(1);
+            self.pending_commands.push(PhysicsCommand {
+                seq,
+                kind: PhysicsCommandKind::DestroyBody { entity },
+            });
+        }
+        removed
+    }
+
     pub(super) fn scene_activity_updates(&self) -> Vec<PhysicsBodyActivityUpdate> {
         self.last_output
             .activity_updates
@@ -196,6 +345,55 @@ impl PhysicsRuntime {
                     .is_some_and(|body| body.kind == PhysicsBodyKind::Dynamic)
             })
             .collect()
+    }
+
+    /// Resolve against this frame's resident physical geometry before camera submission.
+    /// No extra physics step, delayed query result, or render-geometry approximation.
+    pub(super) fn constrain_camera(
+        &self,
+        origin: [f32; 3],
+        desired: [f32; 3],
+        radius: f32,
+        ignore_entity: Option<u64>,
+        scene_solids: &[([f32; 3], [f32; 3])],
+    ) -> [f32; 3] {
+        let delta = std::array::from_fn(|i| desired[i] - origin[i]);
+        let distance = delta.iter().map(|v| v*v).sum::<f32>().sqrt();
+        if distance < 1.0e-6 { return desired; }
+        let mut fraction = 1.0_f32;
+        for (id, mesh) in &self.camera_collision_meshes {
+            let Some(collider) = self.streamed_colliders.get(id) else { continue; };
+            if Some(*id) == ignore_entity || collider.flags.is_trigger
+                || !collider.flags.participates_in_queries { continue; }
+            let local_origin = std::array::from_fn(|i| origin[i] - collider.position[i]);
+            if let Some(hit) = mesh.sweep(local_origin, delta, radius) {
+                fraction = fraction.min(hit);
+            }
+        }
+        for body in self.bodies.values() {
+            if Some(body.entity) == ignore_entity || body.flags.is_trigger
+                || !body.flags.participates_in_queries { continue; }
+            // A sphere swept through conservative local primitive bounds also covers
+            // rotated dynamic objects without relying on their axis-aligned snapshot.
+            let local_origin = inverse_rotate_camera_vector(
+                std::array::from_fn(|i| origin[i] - body.position[i]), body.rotation);
+            let local_delta = inverse_rotate_camera_vector(delta, body.rotation);
+            let (min, max) = shape_bounds(body.shape, [0.0; 3]);
+            if let Some(hit) = newviso_collision::sweep_sphere_aabb(
+                local_origin, local_delta, radius, min, max) {
+                fraction = fraction.min(hit);
+            }
+        }
+        if self.settings.scene_colliders_enabled && self.settings.scene_participates_in_queries {
+            for (min, max) in scene_solids {
+                if let Some(hit) = newviso_collision::sweep_sphere_aabb(origin, delta, radius, *min, *max) {
+                    fraction = fraction.min(hit);
+                }
+            }
+        }
+        // Leave a small numerical skin in addition to the camera volume.
+        if fraction < 1.0 { fraction = (fraction - 0.01 / distance).max(0.0); }
+        std::array::from_fn(|i| origin[i] + delta[i] * fraction)
     }
 
     pub(super) fn runtime_state(&self) -> Value {
@@ -226,6 +424,8 @@ impl PhysicsRuntime {
             "contact_skin": self.settings.contact_skin,
             "scene_colliders_enabled": self.settings.scene_colliders_enabled,
             "fixed_tick": self.fixed_tick,
+            "streamed_mesh_colliders": self.streamed_colliders.len(),
+            "pending_streamed_mesh_colliders": self.pending_streamed_colliders.len(),
             "bodies": bodies,
             "events": self.last_output.events,
             "report": self.last_output.report,
@@ -470,6 +670,57 @@ impl PhysicsRuntime {
         Ok(())
     }
 
+    pub(super) fn set_body_velocity_from_script(
+        &mut self,
+        command: &Value,
+        command_index: usize,
+    ) -> Result<(), String> {
+        let entity = command_u64(command, "entity", command_index)?;
+        if !self.bodies.contains_key(&entity) {
+            return Err(format!(
+                "script command[{command_index}] physics.body.velocity.set references unknown body {entity}"
+            ));
+        }
+        let velocity = command_vec3(command, "velocity", command_index)?;
+        let seq = self.next_command_seq;
+        self.next_command_seq = self.next_command_seq.wrapping_add(1).max(1);
+        self.pending_commands.push(PhysicsCommand {
+            seq,
+            kind: PhysicsCommandKind::SetLinearVelocity { entity, velocity },
+        });
+        Ok(())
+    }
+
+    pub(super) fn set_body_pose_from_script(
+        &mut self,
+        command: &Value,
+        command_index: usize,
+    ) -> Result<(), String> {
+        let entity = command_u64(command, "entity", command_index)?;
+        if !self.bodies.contains_key(&entity) {
+            return Err(format!(
+                "script command[{command_index}] physics.body.pose.set references unknown body {entity}"
+            ));
+        }
+        let position = command_vec3(command, "position", command_index)?;
+        let rotation = command
+            .get("rotation")
+            .map(|_| command_vec4(command, "rotation", command_index))
+            .transpose()?
+            .unwrap_or([0.0, 0.0, 0.0, 1.0]);
+        let seq = self.next_command_seq;
+        self.next_command_seq = self.next_command_seq.wrapping_add(1).max(1);
+        self.pending_commands.push(PhysicsCommand {
+            seq,
+            kind: PhysicsCommandKind::SetBodyPose {
+                entity,
+                position,
+                rotation,
+            },
+        });
+        Ok(())
+    }
+
     pub(super) fn apply_impulse_from_script(
         &mut self,
         command: &Value,
@@ -500,6 +751,64 @@ impl PhysicsRuntime {
         });
         Ok(())
     }
+}
+
+fn inverse_rotate_camera_vector(v: [f32; 3], q: [f32; 4]) -> [f32; 3] {
+    let norm = q.iter().map(|x| x*x).sum::<f32>().sqrt();
+    if norm < 1.0e-8 { return v; }
+    let [x, y, z, w] = [-q[0]/norm, -q[1]/norm, -q[2]/norm, q[3]/norm];
+    let t = [2.0*(y*v[2]-z*v[1]), 2.0*(z*v[0]-x*v[2]), 2.0*(x*v[1]-y*v[0])];
+    [
+        v[0]+w*t[0]+y*t[2]-z*t[1],
+        v[1]+w*t[1]+z*t[0]-x*t[2],
+        v[2]+w*t[2]+x*t[1]-y*t[0],
+    ]
+}
+
+fn transform_collision_vertex(
+    vertex: [f32; 3],
+    scale: [f32; 3],
+    rotation_degrees: [f32; 3],
+) -> [f32; 3] {
+    let mut x = vertex[0] * scale[0];
+    let mut y = vertex[1] * scale[1];
+    let mut z = vertex[2] * scale[2];
+
+    let rx = rotation_degrees[0].to_radians();
+    let (sin_x, cos_x) = rx.sin_cos();
+    let next_y = y * cos_x - z * sin_x;
+    let next_z = y * sin_x + z * cos_x;
+    y = next_y;
+    z = next_z;
+
+    let ry = rotation_degrees[1].to_radians();
+    let (sin_y, cos_y) = ry.sin_cos();
+    let next_x = x * cos_y + z * sin_y;
+    let next_z = -x * sin_y + z * cos_y;
+    x = next_x;
+    z = next_z;
+
+    let rz = rotation_degrees[2].to_radians();
+    let (sin_z, cos_z) = rz.sin_cos();
+    let next_x = x * cos_z - y * sin_z;
+    let next_y = x * sin_z + y * cos_z;
+    [next_x, next_y, z]
+}
+
+fn collider_bounds(collider: &MeshCollider) -> Result<([f32; 3], [f32; 3]), String> {
+    let first = *collider
+        .vertices
+        .first()
+        .ok_or_else(|| "physics mesh collider is empty".to_owned())?;
+    let mut min = first;
+    let mut max = first;
+    for vertex in collider.vertices.iter().skip(1) {
+        for axis in 0..3 {
+            min[axis] = min[axis].min(vertex[axis]);
+            max[axis] = max[axis].max(vertex[axis]);
+        }
+    }
+    Ok((min, max))
 }
 
 fn static_scene_bodies(
@@ -619,6 +928,174 @@ fn optional_bool(value: &Value, key: &str, default: bool) -> Result<bool, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streamed_mesh_colliders_are_sent_once_then_persist_backend_side() {
+        // Lifecycle invariant: large static geometry is staged for one packet
+        // after install/change, then omitted from steady-state frame packets.
+        let mut runtime = PhysicsRuntime {
+            client: PhysicsClient::new(),
+            bodies: BTreeMap::new(),
+            streamed_colliders: BTreeMap::new(),
+            camera_collision_meshes: BTreeMap::new(),
+            pending_streamed_colliders: BTreeMap::new(),
+            pending_commands: Vec::new(),
+            frame_index: 0,
+            fixed_tick: 0,
+            next_command_seq: 1,
+            accumulator: 0.0,
+            settings: PhysicsWorldSettings::default(),
+            last_output: PhysicsFrameOutput::default(),
+        };
+        let collision = CollisionMeshResource {
+            id: newviso_resource_runtime::AssetId(1),
+            name: "ground".to_owned(),
+            bounds: newviso_collision::CollisionBounds {
+                min: [-1.0, 0.0, -1.0],
+                max: [1.0, 0.0, 1.0],
+            },
+            vertices: vec![
+                [-1.0, 0.0, -1.0],
+                [1.0, 0.0, -1.0],
+                [1.0, 0.0, 1.0],
+                [-1.0, 0.0, 1.0],
+            ],
+            triangles: vec![[0, 2, 1], [0, 3, 2]],
+            material_indices: vec![0, 0],
+        };
+        runtime
+            .install_streamed_collision(
+                42,
+                &collision,
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 1.0],
+            )
+            .expect("install");
+        assert_eq!(runtime.streamed_colliders.len(), 1);
+        assert_eq!(runtime.pending_streamed_colliders.len(), 1);
+
+        // Reinstalling byte-identical placement does not restage geometry.
+        let changed = runtime
+            .install_streamed_collision(
+                42,
+                &collision,
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+                [1.0, 1.0, 1.0],
+            )
+            .expect("reinstall");
+        assert!(!changed);
+        assert_eq!(runtime.pending_streamed_colliders.len(), 1);
+
+        assert!(runtime.remove_streamed_collision(42));
+        assert!(runtime.pending_streamed_colliders.is_empty());
+        assert!(runtime.pending_commands.iter().any(|command| {
+            matches!(command.kind, PhysicsCommandKind::DestroyBody { entity: 42 })
+        }));
+    }
+
+    #[test]
+    fn camera_sphere_sweep_stops_before_streamed_mesh_and_can_ignore_owner() {
+        let mut runtime = PhysicsRuntime {
+            client: PhysicsClient::new(),
+            bodies: BTreeMap::new(),
+            streamed_colliders: BTreeMap::new(),
+            camera_collision_meshes: BTreeMap::new(),
+            pending_streamed_colliders: BTreeMap::new(),
+            pending_commands: Vec::new(),
+            frame_index: 0,
+            fixed_tick: 0,
+            next_command_seq: 1,
+            accumulator: 0.0,
+            settings: PhysicsWorldSettings::default(),
+            last_output: PhysicsFrameOutput::default(),
+        };
+        let wall = CollisionMeshResource {
+            id: newviso_resource_runtime::AssetId(2),
+            name: "camera_wall".to_owned(),
+            bounds: newviso_collision::CollisionBounds {
+                min: [-2.0, -2.0, 0.0],
+                max: [2.0, 2.0, 0.0],
+            },
+            vertices: vec![
+                [-2.0, -2.0, 0.0],
+                [2.0, -2.0, 0.0],
+                [2.0, 2.0, 0.0],
+                [-2.0, 2.0, 0.0],
+            ],
+            triangles: vec![[0, 1, 2], [0, 2, 3]],
+            material_indices: vec![0, 0],
+        };
+        runtime
+            .install_streamed_collision(42, &wall, [0.0, 0.0, -2.0], [0.0; 3], [1.0; 3])
+            .expect("install wall");
+
+        let constrained =
+            runtime.constrain_camera([0.0, 0.0, 0.0], [0.0, 0.0, -4.0], 0.25, None, &[]);
+        assert!((constrained[2] + 1.74).abs() < 1.0e-4, "{constrained:?}");
+
+        let ignored =
+            runtime.constrain_camera([0.0, 0.0, 0.0], [0.0, 0.0, -4.0], 0.25, Some(42), &[]);
+        assert_eq!(ignored, [0.0, 0.0, -4.0]);
+    }
+
+    #[test]
+    fn scene_collider_interests_are_disabled_or_swept_around_dynamic_bodies() {
+        let mut runtime = PhysicsRuntime {
+            client: PhysicsClient::new(),
+            bodies: BTreeMap::new(),
+            streamed_colliders: BTreeMap::new(),
+            camera_collision_meshes: BTreeMap::new(),
+            pending_streamed_colliders: BTreeMap::new(),
+            pending_commands: Vec::new(),
+            frame_index: 0,
+            fixed_tick: 0,
+            next_command_seq: 1,
+            accumulator: 0.0,
+            settings: PhysicsWorldSettings::default(),
+            last_output: PhysicsFrameOutput::default(),
+        };
+        assert!(runtime.scene_collider_interests().is_none());
+
+        runtime.settings.scene_colliders_enabled = true;
+        runtime.bodies.insert(
+            99,
+            PhysicsBodySnapshot {
+                entity: 99,
+                kind: PhysicsBodyKind::Dynamic,
+                shape: CollisionShape::Box {
+                    half_extents: [1.0, 1.0, 1.0],
+                },
+                flags: PhysicsBodyFlags {
+                    is_trigger: false,
+                    participates_in_queries: true,
+                    casts_contacts: true,
+                    continuous_collision: false,
+                },
+                material: PhysicsMaterial {
+                    friction: 0.5,
+                    restitution: 0.0,
+                    density: 1.0,
+                },
+                position: [0.0, 0.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                linear_velocity: [12.0, 0.0, 0.0],
+                angular_velocity: [0.0; 3],
+                linear_damping: None,
+                angular_damping: None,
+                bounds_min: [-1.0, -1.0, -1.0],
+                bounds_max: [1.0, 1.0, 1.0],
+            },
+        );
+
+        let interests = runtime.scene_collider_interests().unwrap();
+        assert_eq!(interests.len(), 1);
+        assert!(interests[0].0[0] <= -33.0);
+        assert!(interests[0].1[0] >= 34.5);
+        assert!(interests[0].0[1] <= -33.0);
+        assert!(interests[0].1[1] >= 33.0);
+    }
 
     #[test]
     fn static_scene_body_uses_reserved_id_and_box_bounds() {

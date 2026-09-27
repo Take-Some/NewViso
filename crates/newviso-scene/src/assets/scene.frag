@@ -5,28 +5,52 @@ layout(set = 0, binding = 0, std140) uniform SceneFrame {
     mat4 shadow_view_proj;
     vec4 globals;
     vec4 shadow_params;
-    vec4 light_meta[4];
-    vec4 light_pos[4];
-    vec4 light_dir[4];
-    vec4 light_color[4];
-    vec4 light_cone[4];
+    vec4 light_meta[16];
+    vec4 light_pos[16];
+    vec4 light_dir[16];
+    vec4 light_color[16];
+    vec4 light_cone[16];
     vec4 camera_position;
     vec4 environment_ambient;
     vec4 environment_fog_color_density;
     vec4 environment_fog_params;
     vec4 environment_haze_color_density;
     vec4 environment_haze_params;
+    vec4 environment_clear_color;
 } frame;
 
 layout(set = 0, binding = 1) uniform texture2D t_shadow;
 layout(set = 0, binding = 2) uniform sampler s_shadow;
+
+layout(set = 1, binding = 0) uniform texture2D t_base_color;
+layout(set = 1, binding = 1) uniform texture2D t_normal;
+layout(set = 1, binding = 2) uniform texture2D t_specular;
+layout(set = 1, binding = 3) uniform texture2D t_emissive;
+layout(set = 1, binding = 4) uniform texture2D t_environment;
+layout(set = 1, binding = 5) uniform sampler s_material;
+layout(set = 1, binding = 6, std140) uniform MaterialParams {
+    vec4 shading0; // x bumpiness, y spec intensity, z spec falloff, w spec fresnel
+    vec4 shading1; // x emissive multiplier, y alpha cutoff, z flags, w opacity
+    vec4 shading2; // x environment reflection strength
+} material;
 
 layout(location = 0) in vec4 v_color;
 layout(location = 1) in vec3 v_normal;
 layout(location = 2) in vec3 v_world_position;
 layout(location = 3) in vec4 v_shadow_coord;
 layout(location = 4) flat in float v_overlay;
+layout(location = 5) in vec2 v_uv;
+layout(location = 6) in vec4 v_tangent;
 layout(location = 0) out vec4 out_color;
+
+const int MATERIAL_HAS_NORMAL = 1;
+const int MATERIAL_HAS_SPECULAR = 2;
+const int MATERIAL_HAS_EMISSIVE = 4;
+const int MATERIAL_ALPHA_TEST = 8;
+const int MATERIAL_ALPHA_BLEND = 16;
+const int MATERIAL_ENVIRONMENT_REFLECTION = 32;
+const int MATERIAL_USE_VERTEX_COLOR = 64;
+const int MATERIAL_HAS_ENVIRONMENT_TEXTURE = 128;
 
 float sample_shadow(vec3 normal, float n_dot_l) {
     if (frame.globals.w < 0.5) {
@@ -63,17 +87,75 @@ float sample_shadow(vec3 normal, float n_dot_l) {
     return occluded / 9.0;
 }
 
+vec3 rage_surface_normal(int flags) {
+    vec3 n = normalize(v_normal);
+    if ((flags & MATERIAL_HAS_NORMAL) == 0) {
+        return n;
+    }
+
+    vec3 tangent = v_tangent.xyz - n * dot(v_tangent.xyz, n);
+    if (dot(tangent, tangent) < 1e-8) {
+        vec3 axis = abs(n.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+        tangent = cross(axis, n);
+    }
+    tangent = normalize(tangent);
+    vec3 bitangent = normalize(cross(n, tangent)) * (v_tangent.w < 0.0 ? -1.0 : 1.0);
+
+    vec3 encoded = texture(sampler2D(t_normal, s_material), v_uv).rgb;
+    vec3 tangent_normal;
+    if (encoded.b < 0.01) {
+        vec2 xy = encoded.rg * 2.0 - 1.0;
+        tangent_normal = vec3(xy, sqrt(max(1.0 - dot(xy, xy), 0.0)));
+    } else {
+        tangent_normal = encoded * 2.0 - 1.0;
+    }
+    tangent_normal.xy *= max(material.shading0.x, 0.0);
+    tangent_normal = normalize(tangent_normal);
+
+    return normalize(mat3(tangent, bitangent, n) * tangent_normal);
+}
+
 void main() {
     if (v_overlay > 0.5) {
         out_color = v_color;
         return;
     }
 
-    vec3 n = normalize(v_normal);
-    vec3 lighting =
+    int flags = int(material.shading1.z + 0.5);
+    vec4 base_texel = texture(sampler2D(t_base_color, s_material), v_uv);
+    // COLOR0 is not implicitly an albedo tint. Imported RAGE shaders often
+    // use vertex-colour channels as masks/AO/auxiliary data; direct colour
+    // modulation is therefore an explicit material capability.
+    vec4 base_color = base_texel;
+    if ((flags & MATERIAL_USE_VERTEX_COLOR) != 0) {
+        base_color *= v_color;
+    }
+    base_color.a *= clamp(material.shading1.w, 0.0, 1.0);
+
+    if ((flags & MATERIAL_ALPHA_TEST) != 0 && base_color.a < material.shading1.y) {
+        discard;
+    }
+    if ((flags & MATERIAL_ALPHA_BLEND) != 0 && base_color.a <= 0.002) {
+        discard;
+    }
+
+    vec3 n = rage_surface_normal(flags);
+    vec3 v = normalize(frame.camera_position.xyz - v_world_position);
+    vec3 diffuse_lighting =
         max(frame.environment_ambient.rgb, vec3(0.0))
         * max(frame.environment_ambient.a, 0.0);
-    int light_count = clamp(int(frame.globals.x + 0.5), 0, 4);
+    vec3 specular_lighting = vec3(0.0);
+
+    vec3 specular_map = (flags & MATERIAL_HAS_SPECULAR) != 0
+        ? texture(sampler2D(t_specular, s_material), v_uv).rgb
+        : vec3(1.0);
+    float specular_intensity = max(material.shading0.y, 0.0);
+    float specular_falloff = clamp(material.shading0.z, 1.0, 512.0);
+    float authored_fresnel = clamp(material.shading0.w, 0.0, 1.0);
+    float view_fresnel = pow(1.0 - max(dot(n, v), 0.0), 5.0);
+    float fresnel_gain = mix(1.0, 0.25 + 0.75 * view_fresnel, authored_fresnel);
+
+    int light_count = clamp(int(frame.globals.x + 0.5), 0, 16);
     int shadow_light_index = int(frame.globals.z + 0.5);
 
     for (int i = 0; i < light_count; ++i) {
@@ -94,7 +176,7 @@ void main() {
             }
             l = to_light / distance_to_light;
             float normalized_distance = distance_to_light / range;
-            attenuation = (1.0 - normalized_distance);
+            attenuation = 1.0 - normalized_distance;
             attenuation *= attenuation;
 
             if (light_type == 2) {
@@ -113,14 +195,79 @@ void main() {
             continue;
         }
 
-        float shadow = 0.0;
-        if (i == shadow_light_index) {
-            shadow = sample_shadow(n, n_dot_l);
+        float shadow = i == shadow_light_index ? sample_shadow(n, n_dot_l) : 0.0;
+        float visibility = 1.0 - shadow;
+        vec3 radiance = color * intensity * attenuation * visibility;
+        diffuse_lighting += radiance * n_dot_l;
+
+        if (specular_intensity > 0.0) {
+            vec3 h = normalize(l + v);
+            float n_dot_h = max(dot(n, h), 0.0);
+            float specular_power = pow(n_dot_h, specular_falloff);
+            specular_lighting += radiance
+                * specular_map
+                * specular_intensity
+                * specular_power
+                * fresnel_gain;
         }
-        lighting += color * intensity * attenuation * n_dot_l * (1.0 - shadow);
     }
 
-    vec3 surface_color = v_color.rgb * lighting;
+    vec3 emissive = vec3(0.0);
+    if ((flags & MATERIAL_HAS_EMISSIVE) != 0) {
+        emissive = texture(sampler2D(t_emissive, s_material), v_uv).rgb
+            * max(material.shading1.x, 0.0);
+    }
+
+    vec3 environment_reflection = vec3(0.0);
+    if ((flags & MATERIAL_ENVIRONMENT_REFLECTION) != 0) {
+        vec3 reflected = normalize(reflect(-v, n));
+        const float PI = 3.14159265359;
+        vec2 env_uv = vec2(
+            atan(reflected.z, reflected.x) / (2.0 * PI) + 0.5,
+            asin(clamp(reflected.y, -1.0, 1.0)) / PI + 0.5
+        );
+        vec3 environment_color;
+        if ((flags & MATERIAL_HAS_ENVIRONMENT_TEXTURE) != 0) {
+            environment_color = texture(sampler2D(t_environment, s_material), env_uv).rgb;
+        } else {
+            // RAGE glass_env/glass_pv_env can reference the global scene
+            // environment without a material-local sampler. Approximate that
+            // source-neutrally from the active NewViso environment instead of
+            // sampling the intentionally black missing-texture fallback.
+            float sky_factor = clamp(reflected.y * 0.5 + 0.5, 0.0, 1.0);
+            vec3 ambient_env = max(
+                frame.environment_ambient.rgb * max(frame.environment_ambient.a, 0.0),
+                vec3(0.0)
+            );
+            vec3 background_env = max(frame.environment_clear_color.rgb, vec3(0.0));
+            vec3 atmospheric_env = max(
+                mix(
+                    frame.environment_fog_color_density.rgb,
+                    frame.environment_haze_color_density.rgb,
+                    sky_factor
+                ),
+                background_env
+            );
+            environment_color = max(
+                mix(background_env, atmospheric_env, 0.65),
+                ambient_env
+            );
+        }
+        float facing = max(dot(n, v), 0.0);
+        float glass_fresnel = 0.08 + 0.92 * pow(1.0 - facing, 5.0);
+        float reflection_gain =
+            max(material.shading0.y, 0.20)
+            * max(material.shading2.x, 0.0)
+            * mix(0.45, 1.0, 1.0 - base_color.a);
+        environment_reflection =
+            environment_color * glass_fresnel * reflection_gain;
+    }
+
+    vec3 surface_color =
+        base_color.rgb * diffuse_lighting
+        + specular_lighting
+        + environment_reflection
+        + emissive;
     float camera_distance = length(v_world_position - frame.camera_position.xyz);
 
     float haze_distance = max(
@@ -162,5 +309,5 @@ void main() {
         fog
     );
 
-    out_color = vec4(surface_color, v_color.a);
+    out_color = vec4(surface_color, base_color.a);
 }

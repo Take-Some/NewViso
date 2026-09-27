@@ -4,24 +4,31 @@ use crate::{
     world::{
         LightComponent, LightType, SceneBounds, SceneEntity, SceneEntityId, SceneEntityKind,
         SceneFocusSource, SceneFramePlan, SceneLifecycle, SceneLodPolicy, SceneMobility,
-        SceneMutationSource, SceneProcessClaims, SceneResidency, SceneTransform, SceneView,
-        SceneWorld, VisibilityMask,
+        SceneMutationSource, SceneProcessClaims, SceneProcessReasons, SceneResidency,
+        SceneTransform, SceneView, SceneWorld, VisibilityMask,
     },
 };
 use newviso_host as host_runtime;
 use newviso_input_client::InputSnapshot;
 use newviso_render_client::{
-    GraphicsPipelineDesc, RenderClient, ShaderStage, TextureMipUpload, VertexAttribute,
-    VertexFormat,
+    GraphicsPipelineDesc, RenderClient, ShaderStage, TextureMipUpload, TextureResidencyState,
+    VertexAttribute, VertexFormat, VertexLayoutDesc, VertexStepMode,
 };
+use newviso_textures::{TextureFormat, TextureResource};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 #[path = "geometry.rs"]
 mod geometry;
 
+mod animation_skinning;
+mod asset_models;
+mod mesh_visibility;
+mod gpu_instance_table;
 mod parse_helpers;
+mod portal_visibility;
 mod render_math;
+mod render_policy;
 mod renderer_frame;
 mod renderer_geometry;
 mod renderer_init;
@@ -30,6 +37,12 @@ mod scene_entities;
 mod scene_lighting;
 mod scene_load;
 mod scene_state;
+pub use asset_models::SceneResolvedMaterial;
+use asset_models::{
+    AssetAlphaMode, AssetDrawRange, AssetTriangleVertex, CpuAssetMaterial, CpuAssetMesh,
+};
+use portal_visibility::PortalVisibilityGraph;
+use render_policy::RenderPolicy;
 mod sky_gpu;
 
 use parse_helpers::*;
@@ -39,13 +52,15 @@ use sky_gpu::*;
 const SCENE_SERVICE: &str = "engine.scene";
 const ASSET_SERVICE: &str = "engine.assets";
 const ECS_SERVICE: &str = "engine.ecs";
-const PRIMARY_MOUSE_BUTTON: u64 = 1;
 
 const VERTEX_SHADER: &[u8] = include_bytes!("assets/scene.vert.spv");
+const ASSET_INSTANCED_VERTEX_SHADER: &[u8] = include_bytes!("assets/scene_instanced.vert.spv");
 const FRAGMENT_SHADER: &[u8] = include_bytes!("assets/scene.frag.spv");
 const SKY_VERTEX_SHADER: &[u8] = include_bytes!("assets/sky.vert.spv");
 const SKY_FRAGMENT_SHADER: &[u8] = include_bytes!("assets/sky.frag.spv");
 const SHADOW_VERTEX_SHADER: &[u8] = include_bytes!("assets/shadow.vert.spv");
+const ASSET_INSTANCED_SHADOW_VERTEX_SHADER: &[u8] =
+    include_bytes!("assets/shadow_instanced.vert.spv");
 const SHADOW_FRAGMENT_SHADER: &[u8] = include_bytes!("assets/shadow.frag.spv");
 const FLARE_VERTEX_SHADER: &[u8] = include_bytes!("assets/flare.vert.spv");
 const FLARE_FRAGMENT_SHADER: &[u8] = include_bytes!("assets/flare.frag.spv");
@@ -55,17 +70,27 @@ const SKY_UNIFORM_FLOATS: usize = 176;
 const MAX_SKY_VISUALS: usize = 4;
 const FLARE_FLOATS_PER_VERTEX: usize = 12;
 const FLARE_VERTEX_STRIDE: u64 = (FLARE_FLOATS_PER_VERTEX * std::mem::size_of::<f32>()) as u64;
-const MAX_LENS_FLARES: usize = 16;
-const MAX_FLARE_ELEMENTS: usize = 16;
 const CUBE_VERTEX_COUNT: u32 = 36;
-const MAX_RUNTIME_CUBES: usize = 4096;
-const FLOATS_PER_VERTEX: usize = 11;
-const MAX_LIGHTS: usize = 4;
-const SCENE_FRAME_UNIFORM_FLOATS: usize = 144;
+const FLOATS_PER_VERTEX: usize = 17;
+const MAX_LIGHTS: usize = 16;
+const SCENE_FRAME_UNIFORM_FLOATS: usize = 68 + MAX_LIGHTS * 20;
 const DEFAULT_SHADOW_RESOLUTION: u32 = 2048;
-const MAX_TRANSIENT_SPHERES: usize = 256;
-const MAX_OVERLAY_QUADS: usize = 256;
 const VERTEX_STRIDE: u64 = (FLOATS_PER_VERTEX * std::mem::size_of::<f32>()) as u64;
+const INSTANCE_FLOATS: usize = 16;
+const INSTANCE_STRIDE: u64 = (INSTANCE_FLOATS * std::mem::size_of::<f32>()) as u64;
+const DEFAULT_ASSET_INSTANCE_CAPACITY: u32 = 16_384;
+const DEFAULT_ASSET_VERTEX_CAPACITY: u32 = 2_097_152;
+const ASSET_INSTANCE_CELL_SIZE: f32 = 16.0;
+const ENABLE_ASSET_HIZ_OCCLUSION: bool = true;
+const MAX_HIZ_DRAW_CANDIDATES: u32 = 4_096;
+const MAX_STREAMED_TEXTURE_UPLOADS_PER_FRAME: usize = 1;
+const MAX_STREAMED_MATERIAL_CREATIONS_PER_FRAME: usize = 8;
+const MAX_STREAMED_TEXTURE_DIMENSION: u32 = 2_048;
+const STREAMED_TEXTURE_UPLOAD_BUDGET_BYTES: u64 = 4 * 1024 * 1024;
+const STREAMED_TEXTURE_UPLOAD_BUDGET_JOBS: u32 = 1;
+const STREAMED_TEXTURE_UPLOAD_BLOCKING_MS: f32 = 1.5;
+const HIZ_CANDIDATE_STRIDE: u64 = 32;
+const HIZ_INDIRECT_STRIDE: u64 = 20;
 
 #[derive(Clone, Debug)]
 pub(super) struct Cube {
@@ -108,6 +133,9 @@ pub enum SceneRuntimeVisualKind {
 pub struct SceneRuntimeEntityDesc {
     pub visual: SceneRuntimeVisualKind,
     pub asset_ref: Option<String>,
+    /// Optional texture dictionary used to resolve texture bindings that carry
+    /// a semantic texture name but no fully-qualified AssetRef.
+    pub texture_dictionary: Option<String>,
     pub position: [f32; 3],
     pub rotation_degrees: [f32; 3],
     pub scale: [f32; 3],
@@ -124,6 +152,7 @@ impl Default for SceneRuntimeEntityDesc {
         Self {
             visual: SceneRuntimeVisualKind::None,
             asset_ref: None,
+            texture_dictionary: None,
             position: [0.0; 3],
             rotation_degrees: [0.0; 3],
             scale: [1.0; 3],
@@ -383,13 +412,63 @@ impl Default for SceneEnvironmentDesc {
 }
 
 #[derive(Clone, Copy, Debug)]
+struct GpuAssetMaterial {
+    uniform_buffer: u32,
+    bind_group: u32,
+}
+
+type GpuInstanceBatchKey = (u64, i32, i32, i32, u8);
+
+#[derive(Clone, Debug)]
+struct GpuResidentInstanceBatch {
+    model_id: u64,
+    first_instance: u32,
+    instance_count: u32,
+    stable_ids: Vec<u64>,
+    sphere: [f32; 4],
+}
+
+#[derive(Clone, Debug, Default)]
+struct GpuInstanceTable {
+    source_render_epoch: u64,
+    source_asset_epoch: u64,
+    instance_data: Vec<f32>,
+    batches: BTreeMap<GpuInstanceBatchKey, GpuResidentInstanceBatch>,
+    entity_slots: BTreeMap<u64, u32>,
+    entity_batches: BTreeMap<u64, GpuInstanceBatchKey>,
+    uploaded: bool,
+    rebuild_count: u64,
+    upload_count: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
 struct GpuScene {
     vertex_buffer: u32,
+    vertex_capacity: u32,
     cube_capacity: usize,
     shadow_vertex_buffer: u32,
+    shadow_vertex_capacity: u32,
+    asset_vertex_buffer: u32,
+    asset_vertex_capacity: u32,
+    asset_vertex_count: u32,
+    asset_index_buffer: u32,
+    asset_index_capacity: u32,
+    asset_instance_buffer: u32,
+    asset_instance_capacity: u32,
+    visibility_candidate_buffer: u32,
+    visibility_indirect_buffer: u32,
     frame_uniform: u32,
     bind_group_layout: u32,
     bind_group: u32,
+    material_bind_group_layout: u32,
+    default_base_color_texture: u32,
+    default_normal_texture: u32,
+    default_specular_texture: u32,
+    default_emissive_texture: u32,
+    default_environment_texture: u32,
+    default_material_uniform: u32,
+    material_sampler: u32,
+    default_material_bind_group: u32,
     shadow_bind_group_layout: u32,
     shadow_bind_group: u32,
     shadow_render_target: u32,
@@ -397,9 +476,15 @@ struct GpuScene {
     vertex_shader: u32,
     fragment_shader: u32,
     pipeline: u32,
+    alpha_pipeline: u32,
+    asset_pipeline: u32,
+    asset_alpha_pipeline: u32,
     shadow_vertex_shader: u32,
     shadow_fragment_shader: u32,
     shadow_pipeline: u32,
+    asset_shadow_pipeline: u32,
+    asset_vertex_shader: u32,
+    asset_shadow_vertex_shader: u32,
     shadow_resolution: u32,
     flare_vertex_buffer: u32,
     flare_vertex_shader: u32,
@@ -511,7 +596,24 @@ pub struct Scene3dRuntime {
     camera_entity_id: u64,
     camera: Camera,
     orbit: OrbitCamera,
+    render_policy: RenderPolicy,
     cubes: Vec<Cube>,
+    asset_meshes: BTreeMap<u64, CpuAssetMesh>,
+    skinned_entities: BTreeMap<u64, animation_skinning::SkinnedEntityAnimationState>,
+    main_view_mesh_visibility: mesh_visibility::MainViewMeshVisibility,
+    static_asset_instance_epoch: u64,
+    asset_model_cache: BTreeMap<u64, std::sync::Arc<[AssetTriangleVertex]>>,
+    asset_draw_range_cache: BTreeMap<u64, std::sync::Arc<[AssetDrawRange]>>,
+    asset_model_gpu_ranges: BTreeMap<u64, (u32, u32)>,
+    asset_gpu_textures: BTreeMap<u64, u32>,
+    asset_gpu_pending_textures: BTreeMap<u64, u32>,
+    asset_gpu_materials: BTreeMap<(u64, u32), GpuAssetMaterial>,
+    asset_binding_contexts: BTreeMap<u64, SceneAssetBindingContext>,
+    asset_vertex_data: Vec<f32>,
+    asset_upload_from_float: Option<usize>,
+    asset_skin_upload_ranges: Vec<(usize, usize)>,
+    asset_geometry_full_rebuild: bool,
+    retired_asset_vertex_buffers: Vec<u32>,
     transient_spheres: Vec<SceneTransientSphere>,
     overlay_quads: Vec<SceneOverlayQuad>,
     sky_visuals: BTreeMap<String, SkyVisualDesc>,
@@ -527,6 +629,8 @@ pub struct Scene3dRuntime {
     next_runtime_entity_id: u64,
     world: SceneWorld,
     frame_plan: SceneFramePlan,
+    portal_visibility: Option<PortalVisibilityGraph>,
+    gpu_instance_table: GpuInstanceTable,
     clear_color: [f32; 4],
     gpu: Option<GpuScene>,
     sky: Option<SkyDomeResources>,
@@ -540,6 +644,11 @@ pub struct Scene3dLoadReport {
     pub entity_count: usize,
     pub camera_name: String,
     pub mesh_name: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SceneAssetBindingContext {
+    pub texture_dictionary: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -665,6 +774,21 @@ mod tests {
     }
 
     #[test]
+    fn instance_matrix_matches_cpu_transform_order() {
+        let position = Vec3::new(7.0, -2.0, 11.0);
+        let rotation = Vec3::new(21.0, -37.0, 13.0);
+        let scale = Vec3::new(1.5, 0.75, -2.0);
+        let point = Vec3::new(3.0, -4.0, 2.0);
+        let matrix = geometry::instance_model_matrix(position, rotation, scale);
+        let gpu = mul_mat4_vec4(matrix, [point.x, point.y, point.z, 1.0]);
+        let cpu = transform_point(point, scale, rotation, position);
+        assert!((gpu[0] - cpu.x).abs() < 1.0e-5);
+        assert!((gpu[1] - cpu.y).abs() < 1.0e-5);
+        assert!((gpu[2] - cpu.z).abs() < 1.0e-5);
+        assert!((gpu[3] - 1.0).abs() < 1.0e-5);
+    }
+
+    #[test]
     fn sky_visual_direction_is_opposite_directional_light_ray_for_same_rotation() {
         let rotation = Vec3::new(-35.0, 115.0, 0.0);
         let light_ray = light_direction(rotation);
@@ -716,11 +840,13 @@ mod tests {
         let mut out = Vec::new();
         cube.append_vertices(&mut out);
         assert_eq!(out.len(), CUBE_VERTEX_COUNT as usize * FLOATS_PER_VERTEX);
-        assert_eq!(VERTEX_STRIDE, 44);
+        assert_eq!(VERTEX_STRIDE, 68);
         assert_eq!(cube.bounds().min, [0.0, 0.0, -6.0]);
         assert_eq!(cube.bounds().max, [4.0, 2.0, 0.0]);
         assert_eq!(out[3], 0.0);
         assert_eq!(&out[4..7], &[0.0, 0.0, 1.0]);
         assert_eq!(&out[7..11], &[1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(&out[11..13], &[0.0, 0.0]);
+        assert_eq!(&out[13..17], &[1.0, 0.0, 0.0, 1.0]);
     }
 }

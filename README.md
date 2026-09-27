@@ -4,10 +4,23 @@ NewViso is a lightweight modular 3D engine host written in Rust. The host stays 
 
 The current build opens a real 3D scene with a perspective camera and Vulkan rendering. Hold the left mouse button to orbit around the scene and use the mouse wheel to zoom.
 
+## Workspace command plane
+
+The canonical operational entrypoints live outside the engine repository under `../Scripts`:
+
+```bat
+..\Scripts\Build\BuildPlugins.cmd release
+..\Scripts\Sync\SyncPlugins.cmd dev
+..\Scripts\Run\RunEngine.cmd FirstFPS release
+..\Scripts\Verify\VerifyWorkspace.cmd
+```
+
+`NewViso/Play-*.cmd` files are compatibility wrappers only. Workspace assets, projects and deployed provider DLLs are owned by `../Shared`, `../Projects` and `../pluginsRuntime`.
+
 ## First FPS demo
 
-Double-click `Play-FPS.cmd`, or run `cargo run -p newviso -j1 -- --project projects/FirstFPS`.
-Click to capture the mouse, walk with WASD, look with the mouse, hold Shift to sprint, press Esc to release, and R to reset. The project contains a simple yard with solid walls and obstacles. See [FirstFPS](projects/FirstFPS/README.md) for tuning and limitations.
+Double-click `Play-FPS.cmd`, or run `cargo run -p newviso -j1 -- --project ../Projects/FirstFPS`.
+Click to capture the mouse, walk with WASD, look with the mouse, hold Shift to sprint, press Esc to release, and R to reset. The project contains a simple yard with solid walls and obstacles. See [FirstFPS](../Projects/FirstFPS/README.md) for tuning and limitations.
 
 ## Build
 
@@ -39,11 +52,11 @@ Start from `config.example.json`:
 {
   "paths": {
     "base": ".",
-    "providers": "runtime/providers",
-    "assets": "assets",
-    "content": "content",
+    "providers": "../pluginsRuntime",
+    "assets": "../Shared/Content",
+    "content": "../Shared/Content",
     "cache": "cache",
-    "codecs": "runtime/providers/codecs"
+    "codecs": "../pluginsRuntime/codecs"
   },
   "providers": {
     "logging": "engine.logging.chronicle",
@@ -97,12 +110,12 @@ NewViso.exe --project C:\Projects\MyProject\project.json
 
 `newviso.project.v1` manifests define project identity, project-local paths, the startup scene/window and optional provider overrides. Project paths are constrained to the project root.
 
-NewViso mounts the engine `paths.assets` directory as **Shared Assets** at the VFS root first, then mounts the project root and finally the project's `assets` directory as the highest-priority overlay. The built-in policy is `Shared Assets=100`, `project root=1000`, `project assets=1100`, so a project can override any shared logical path without copying the rest of the engine content.
+NewViso mounts the workspace-owned `paths.assets` directory (`../Shared/Content` by default) as **Shared Assets** at the VFS root first, then mounts the project root and finally the project's `assets` directory as the highest-priority overlay. The built-in policy is `Shared Assets=100`, `project root=1000`, `project assets=1100`, so a project can override any shared logical path without copying the rest of the engine content.
 
-See `projects/First3D` for a minimal working project.
+See `../Projects/First3D` for a minimal working project.
 ## Runtime layout
 
-Provider binaries are loaded from `runtime/providers` by default. They are not committed to this repository.
+Provider binaries are loaded from the workspace-owned `../pluginsRuntime` directory by default. Provider source remains under `../PluginsSrc`; deployable DLLs are not engine source.
 
 NewViso routes subsystem communication through host services rather than linking old engine source crates into the workspace. Logging also goes through the configured logging provider; engine code does not write directly to stdout or stderr.
 

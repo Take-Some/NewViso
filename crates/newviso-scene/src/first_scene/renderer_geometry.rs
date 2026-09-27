@@ -58,7 +58,11 @@ impl Scene3dRuntime {
                 continue;
             }
 
-            for element in flare.elements.iter().take(MAX_FLARE_ELEMENTS) {
+            for element in flare
+                .elements
+                .iter()
+                .take(self.render_policy.flare_element_capacity)
+            {
                 let center = [
                     source_x * (1.0 - element.offset),
                     source_y * (1.0 - element.offset),
@@ -91,13 +95,13 @@ impl Scene3dRuntime {
     }
 
     pub(super) fn vertex_capacity(&self) -> u32 {
-        (self.cubes.len() + MAX_RUNTIME_CUBES) as u32 * CUBE_VERTEX_COUNT
-            + MAX_TRANSIENT_SPHERES as u32 * geometry::SPHERE_VERTEX_COUNT
-            + MAX_OVERLAY_QUADS as u32 * 6
+        (self.cubes.len() + self.render_policy.runtime_cube_capacity) as u32 * CUBE_VERTEX_COUNT
+            + self.render_policy.transient_sphere_capacity as u32 * geometry::SPHERE_VERTEX_COUNT
+            + self.render_policy.overlay_quad_capacity as u32 * 6
     }
     pub(super) fn shadow_vertex_capacity(&self) -> u32 {
-        (self.cubes.len() + MAX_RUNTIME_CUBES) as u32 * CUBE_VERTEX_COUNT
-            + MAX_TRANSIENT_SPHERES as u32 * geometry::SPHERE_VERTEX_COUNT
+        (self.cubes.len() + self.render_policy.runtime_cube_capacity) as u32 * CUBE_VERTEX_COUNT
+            + self.render_policy.transient_sphere_capacity as u32 * geometry::SPHERE_VERTEX_COUNT
     }
     pub(super) fn vertex_count(&self) -> u32 {
         self.frame_plan.visible_render_slots.len() as u32 * CUBE_VERTEX_COUNT

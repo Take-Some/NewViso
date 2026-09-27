@@ -1,6 +1,15 @@
 use crate::math::Vec3;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+const SPATIAL_CELL_SIZE: f32 = 32.0;
+const MAX_ENTITY_SPATIAL_CELLS: usize = 128;
+const PROCESS_TARGET_FRAME_SECONDS: f32 = 1.0 / 60.0;
+const PROCESS_BASE_UPDATES_PER_FRAME: usize = 256;
+const PROCESS_MIN_UPDATES_PER_FRAME: usize = 32;
+const PROCESS_MAX_UPDATES_PER_FRAME: usize = 512;
+
+type SpatialCell = (i32, i32);
+
 mod lifecycle;
 mod mutation;
 mod visibility;
@@ -243,6 +252,112 @@ impl SceneDirtyFlags {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SceneProcessReasons(u32);
+
+impl SceneProcessReasons {
+    pub(crate) const EMPTY: Self = Self(0);
+    pub(crate) const PHYSICS: Self = Self(1 << 0);
+    pub(crate) const INTELLIGENCE: Self = Self(1 << 1);
+    pub(crate) const ANIMATION: Self = Self(1 << 2);
+    pub(crate) const SCRIPT: Self = Self(1 << 3);
+    pub(crate) const NETWORK: Self = Self(1 << 4);
+    pub(crate) const STREAMING: Self = Self(1 << 5);
+    pub(crate) const DESTRUCTION: Self = Self(1 << 6);
+    pub(crate) const MOVER: Self = Self(1 << 7);
+    pub(crate) const EXPLICIT: Self = Self(1 << 8);
+    pub(crate) const CUSTOM: Self = Self(1 << 9);
+
+    pub(crate) const ALL: [Self; 10] = [
+        Self::PHYSICS,
+        Self::INTELLIGENCE,
+        Self::ANIMATION,
+        Self::SCRIPT,
+        Self::NETWORK,
+        Self::STREAMING,
+        Self::DESTRUCTION,
+        Self::MOVER,
+        Self::EXPLICIT,
+        Self::CUSTOM,
+    ];
+
+    pub(crate) const fn bits(self) -> u32 {
+        self.0
+    }
+
+    pub(crate) const fn from_bits(bits: u32) -> Self {
+        Self(bits)
+    }
+
+    pub(crate) const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    pub(crate) const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    pub(crate) const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    pub(crate) fn labels(self) -> Vec<&'static str> {
+        [
+            (Self::PHYSICS, "physics"),
+            (Self::INTELLIGENCE, "intelligence"),
+            (Self::ANIMATION, "animation"),
+            (Self::SCRIPT, "script"),
+            (Self::NETWORK, "network"),
+            (Self::STREAMING, "streaming"),
+            (Self::DESTRUCTION, "destruction"),
+            (Self::MOVER, "mover"),
+            (Self::EXPLICIT, "explicit"),
+            (Self::CUSTOM, "custom"),
+        ]
+        .into_iter()
+        .filter_map(|(flag, label)| self.contains(flag).then_some(label))
+        .collect()
+    }
+
+    pub(crate) fn from_reason_label(reason: &str) -> Self {
+        let reason = reason.trim().to_ascii_lowercase();
+        match reason.as_str() {
+            "physics" | "physics_awake" | "collision" => Self::PHYSICS,
+            "ai" | "intelligence" | "perception" => Self::INTELLIGENCE,
+            "animation" | "anim" => Self::ANIMATION,
+            "script" | "scripting" | "gameplay_script" => Self::SCRIPT,
+            "network" | "networking" | "replication" => Self::NETWORK,
+            "streaming" | "residency" | "collision_streaming" => Self::STREAMING,
+            "destruction" | "damage" | "breakable" => Self::DESTRUCTION,
+            "mover" | "movement" | "moving_platform" => Self::MOVER,
+            "explicit" | "force" | "force_update" => Self::EXPLICIT,
+            _ => Self::CUSTOM,
+        }
+    }
+
+    fn from_claim(owner: &str, reason: &str) -> Self {
+        let classified = Self::from_reason_label(reason);
+        if classified != Self::CUSTOM {
+            return classified;
+        }
+
+        let owner = owner.trim().to_ascii_lowercase();
+        if owner.starts_with("engine.physics") {
+            Self::PHYSICS
+        } else if owner.starts_with("engine.animation") {
+            Self::ANIMATION
+        } else if owner.starts_with("engine.streaming") {
+            Self::STREAMING
+        } else if owner.starts_with("engine.network") {
+            Self::NETWORK
+        } else if owner.starts_with("project.script") || owner.starts_with("engine.scripting") {
+            Self::SCRIPT
+        } else {
+            Self::CUSTOM
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SceneProcessClaims {
     claims: BTreeMap<String, BTreeSet<String>>,
@@ -281,12 +396,30 @@ impl SceneProcessClaims {
         self.claims.keys().cloned().collect()
     }
 
+    pub(crate) fn mask(&self) -> SceneProcessReasons {
+        let mut mask = SceneProcessReasons::EMPTY;
+        for (reason, owners) in &self.claims {
+            for owner in owners {
+                mask = mask.union(SceneProcessReasons::from_claim(owner, reason));
+            }
+        }
+        mask
+    }
+
     pub(crate) fn snapshot(&self) -> BTreeMap<String, Vec<String>> {
         self.claims
             .iter()
             .map(|(reason, owners)| (reason.clone(), owners.iter().cloned().collect()))
             .collect()
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SceneProcessTicket {
+    pub(crate) entity: SceneEntityId,
+    pub(crate) frame: u64,
+    pub(crate) reasons: SceneProcessReasons,
+    pub(crate) elapsed_seconds: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -299,6 +432,7 @@ pub(crate) struct SceneMutation {
     pub(crate) transform: SceneTransform,
     pub(crate) bounds: SceneBounds,
     pub(crate) process_active: bool,
+    pub(crate) process_reason_mask: u32,
     pub(crate) process_claims: BTreeMap<String, Vec<String>>,
 }
 
@@ -331,7 +465,13 @@ pub(crate) struct SceneEntity {
 
 impl SceneEntity {
     pub(crate) fn is_renderable(&self) -> bool {
-        self.render_slot.is_some()
+        let has_visual = self.render_slot.is_some()
+            || (self.asset_ref.is_some()
+                && matches!(
+                    self.kind,
+                    SceneEntityKind::StaticMesh | SceneEntityKind::DynamicMesh
+                ));
+        has_visual
             && self.lifecycle == SceneLifecycle::Active
             && self.residency == SceneResidency::Resident
     }
@@ -373,6 +513,7 @@ pub(crate) struct SceneFramePlan {
     pub(crate) culled_count: usize,
     pub(crate) resident_count: usize,
     pub(crate) dynamic_count: usize,
+    pub(crate) spatial_candidate_count: usize,
 }
 
 #[derive(Debug)]
@@ -384,7 +525,20 @@ pub(crate) struct SceneWorld {
     last_focus_position: Vec3,
     last_dt: f32,
     mutations: Vec<SceneMutation>,
+    static_render_epoch: u64,
     process_active: BTreeSet<SceneEntityId>,
+    process_elapsed_seconds: f64,
+    process_rates_hz: BTreeMap<(SceneEntityId, u32), f32>,
+    process_last_due_seconds: BTreeMap<(SceneEntityId, u32), f64>,
+    process_tickets: Vec<SceneProcessTicket>,
+    process_scan_cursor: usize,
+    process_effective_budget: usize,
+    process_scanned_count: usize,
+    spatial_cells: HashMap<SpatialCell, BTreeSet<SceneEntityId>>,
+    spatial_entity_cells: HashMap<SceneEntityId, Vec<SpatialCell>>,
+    spatial_oversized: BTreeSet<SceneEntityId>,
+    spatial_always_stream: BTreeSet<SceneEntityId>,
+    spatial_max_stream_distance: f32,
 }
 
 impl SceneWorld {
@@ -401,9 +555,48 @@ impl SceneWorld {
             last_focus_position: initial_focus,
             last_dt: 0.0,
             mutations: Vec::new(),
+            static_render_epoch: 0,
             process_active: BTreeSet::new(),
+            process_elapsed_seconds: 0.0,
+            process_rates_hz: BTreeMap::new(),
+            process_last_due_seconds: BTreeMap::new(),
+            process_tickets: Vec::new(),
+            process_scan_cursor: 0,
+            process_effective_budget: PROCESS_BASE_UPDATES_PER_FRAME,
+            process_scanned_count: 0,
+            spatial_cells: HashMap::new(),
+            spatial_entity_cells: HashMap::new(),
+            spatial_oversized: BTreeSet::new(),
+            spatial_always_stream: BTreeSet::new(),
+            spatial_max_stream_distance: 0.0,
         }
     }
+}
+
+fn spatial_cell_for_point(point: Vec3) -> SpatialCell {
+    (
+        (point.x / SPATIAL_CELL_SIZE).floor() as i32,
+        (point.z / SPATIAL_CELL_SIZE).floor() as i32,
+    )
+}
+
+fn spatial_cells_for_bounds(bounds: SceneBounds) -> Option<Vec<SpatialCell>> {
+    let min = spatial_cell_for_point(bounds.min);
+    let max = spatial_cell_for_point(bounds.max);
+    let x_count = i64::from(max.0) - i64::from(min.0) + 1;
+    let z_count = i64::from(max.1) - i64::from(min.1) + 1;
+    let total = x_count.saturating_mul(z_count);
+    if total <= 0 || total as usize > MAX_ENTITY_SPATIAL_CELLS {
+        return None;
+    }
+
+    let mut cells = Vec::with_capacity(total as usize);
+    for x in min.0..=max.0 {
+        for z in min.1..=max.1 {
+            cells.push((x, z));
+        }
+    }
+    Some(cells)
 }
 
 fn stream_priority(radius: f32, distance: f32, mobility: SceneMobility) -> f32 {
@@ -541,6 +734,138 @@ mod tests {
         let static_score = stream_priority(1.0, 10.0, SceneMobility::Static);
         let dynamic_score = stream_priority(1.0, 10.0, SceneMobility::Dynamic);
         assert!(dynamic_score > static_score);
+    }
+
+    #[test]
+    fn static_render_epoch_ignores_dynamic_and_process_only_mutations() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        let static_id = SceneEntityId(80);
+        let dynamic_id = SceneEntityId(81);
+        world.add_entity(entity(static_id.0, -8.0, 0)).unwrap();
+
+        let mut dynamic = entity(dynamic_id.0, -8.0, 1);
+        dynamic.mobility = SceneMobility::Dynamic;
+        dynamic.kind = SceneEntityKind::DynamicMesh;
+        world.add_entity(dynamic).unwrap();
+        world.activate_all();
+        world.seal_initial_state();
+        assert_eq!(world.static_render_epoch(), 0);
+
+        let dynamic_transform = SceneTransform {
+            position: Vec3::new(2.0, 0.0, -8.0),
+            rotation_degrees: Vec3::ZERO,
+            scale: Vec3::ONE,
+        };
+        let dynamic_bounds =
+            SceneBounds::from_center_half_extent(dynamic_transform.position, Vec3::ONE);
+        world
+            .update_spatial_from(
+                dynamic_id,
+                dynamic_transform,
+                dynamic_bounds,
+                SceneMutationSource::Animation,
+            )
+            .unwrap();
+        assert_eq!(world.static_render_epoch(), 0);
+
+        world
+            .set_process_claim(
+                static_id,
+                "project.script",
+                "script",
+                true,
+                SceneMutationSource::Script,
+            )
+            .unwrap();
+        assert_eq!(world.static_render_epoch(), 0);
+
+        let static_transform = SceneTransform {
+            position: Vec3::new(3.0, 0.0, -8.0),
+            rotation_degrees: Vec3::ZERO,
+            scale: Vec3::ONE,
+        };
+        let static_bounds =
+            SceneBounds::from_center_half_extent(static_transform.position, Vec3::ONE);
+        world
+            .update_spatial_from(
+                static_id,
+                static_transform,
+                static_bounds,
+                SceneMutationSource::Engine,
+            )
+            .unwrap();
+        assert_eq!(world.static_render_epoch(), 1);
+    }
+
+    #[test]
+    fn spatial_visibility_ignores_far_static_entities_without_global_scan() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        world.add_entity(entity(1, -8.0, 0)).unwrap();
+        for i in 0..1000u64 {
+            let mut far = entity(10_000 + i, -8.0, (i + 1) as usize);
+            far.transform.position = Vec3::new(5_000.0 + i as f32 * 4.0, 0.0, -8.0);
+            far.bounds = SceneBounds::from_center_half_extent(
+                far.transform.position,
+                Vec3::new(1.0, 1.0, 1.0),
+            );
+            world.add_entity(far).unwrap();
+        }
+        world.activate_all();
+        world.pre_update(Vec3::ZERO, 1.0 / 60.0);
+
+        let plan = world.scan_visibility(view());
+        assert_eq!(plan.visible_entities, vec![SceneEntityId(1)]);
+        assert_eq!(plan.spatial_candidate_count, 1);
+        assert!(world.spatial_cell_count() > 100);
+    }
+
+    #[test]
+    fn spatial_static_solid_query_returns_only_intersecting_colliders() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+
+        let mut near = entity(70, -8.0, 0);
+        near.solid = true;
+        near.bounds = SceneBounds::from_center_half_extent(
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.0, 2.0, 2.0),
+        );
+        world.add_entity(near).unwrap();
+
+        let mut far = entity(71, -8.0, 1);
+        far.solid = true;
+        far.bounds = SceneBounds::from_center_half_extent(
+            Vec3::new(1_000.0, 0.0, 0.0),
+            Vec3::new(2.0, 2.0, 2.0),
+        );
+        world.add_entity(far).unwrap();
+
+        world.activate_all();
+        let interests = [SceneBounds {
+            min: Vec3::new(-16.0, -16.0, -16.0),
+            max: Vec3::new(16.0, 16.0, 16.0),
+        }];
+        let solids = world.static_solid_bounds_near(&interests);
+
+        assert_eq!(solids.len(), 1);
+        assert_eq!(solids[0], world.entity(SceneEntityId(70)).unwrap().bounds);
+    }
+
+    #[test]
+    fn oversized_spatial_entity_fails_open() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        let mut huge = entity(2, -50.0, 0);
+        huge.bounds = SceneBounds {
+            min: Vec3::new(-2_000.0, -10.0, -2_000.0),
+            max: Vec3::new(2_000.0, 10.0, 2_000.0),
+        };
+        world.add_entity(huge).unwrap();
+        world.activate_all();
+        world.pre_update(Vec3::ZERO, 1.0 / 60.0);
+
+        let plan = world.scan_visibility(view());
+        assert_eq!(world.spatial_oversized_count(), 1);
+        assert!(plan.spatial_candidate_count >= 1);
+        assert!(plan.visible_entities.contains(&SceneEntityId(2)));
     }
 
     #[test]
@@ -775,6 +1100,183 @@ mod tests {
         assert!(mutation.dirty.contains(SceneDirtyFlags::PROCESS_CONTROL));
         assert!(!mutation.process_active);
         assert!(mutation.process_claims.is_empty());
+    }
+
+    #[test]
+    fn process_claims_compile_to_typed_reason_mask() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        world.add_entity(entity(58, -8.0, 0)).unwrap();
+        world.activate_all();
+
+        world
+            .set_process_claim(
+                SceneEntityId(58),
+                "engine.physics",
+                "physics",
+                true,
+                SceneMutationSource::Physics,
+            )
+            .unwrap();
+        world
+            .set_process_claim(
+                SceneEntityId(58),
+                "project.script",
+                "gameplay",
+                true,
+                SceneMutationSource::Script,
+            )
+            .unwrap();
+
+        let mask = world
+            .entity(SceneEntityId(58))
+            .unwrap()
+            .process_claims
+            .mask();
+        assert!(mask.contains(SceneProcessReasons::PHYSICS));
+        assert!(mask.contains(SceneProcessReasons::SCRIPT));
+        assert!(!mask.contains(SceneProcessReasons::ANIMATION));
+        assert_eq!(mask.labels(), vec!["physics", "script"]);
+    }
+
+    #[test]
+    fn process_scheduler_applies_independent_reason_cadence() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        world.add_entity(entity(59, -8.0, 0)).unwrap();
+        world.activate_all();
+        world
+            .set_process_claim(
+                SceneEntityId(59),
+                "engine.physics",
+                "physics",
+                true,
+                SceneMutationSource::Physics,
+            )
+            .unwrap();
+        world
+            .set_process_claim(
+                SceneEntityId(59),
+                "engine.animation",
+                "animation",
+                true,
+                SceneMutationSource::Animation,
+            )
+            .unwrap();
+        world
+            .set_process_rate_hz(SceneEntityId(59), "animation", 4.0)
+            .unwrap();
+        assert!(world
+            .set_process_rate_hz(SceneEntityId(59), "physics", 30.0)
+            .is_err());
+
+        world.pre_update(Vec3::ZERO, 0.05);
+        world.update();
+        let first = world.process_tickets();
+        assert_eq!(first.len(), 1);
+        assert!(first[0].reasons.contains(SceneProcessReasons::PHYSICS));
+        assert!(first[0].reasons.contains(SceneProcessReasons::ANIMATION));
+
+        world.pre_update(Vec3::ZERO, 0.05);
+        world.update();
+        let second = world.process_tickets();
+        assert_eq!(second.len(), 1);
+        assert!(second[0].reasons.contains(SceneProcessReasons::PHYSICS));
+        assert!(!second[0].reasons.contains(SceneProcessReasons::ANIMATION));
+
+        for _ in 0..4 {
+            world.pre_update(Vec3::ZERO, 0.05);
+            world.update();
+        }
+        let due = world.process_tickets();
+        assert_eq!(due.len(), 1);
+        assert!(due[0].reasons.contains(SceneProcessReasons::PHYSICS));
+        assert!(due[0].reasons.contains(SceneProcessReasons::ANIMATION));
+    }
+
+    #[test]
+    fn streaming_residency_suspends_and_restores_process_membership() {
+        let mut e = entity(62, -8.0, 0);
+        e.asset_ref = Some("models/process_test.ydd".to_owned());
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        world.add_entity(e).unwrap();
+        world.activate_all();
+        world
+            .set_process_claim(
+                SceneEntityId(62),
+                "project.script",
+                "script",
+                true,
+                SceneMutationSource::Script,
+            )
+            .unwrap();
+        assert!(world.process_is_active(SceneEntityId(62)));
+
+        world
+            .set_residency(SceneEntityId(62), SceneResidency::Requested)
+            .unwrap();
+        assert!(!world.process_is_active(SceneEntityId(62)));
+        assert!(world
+            .entity(SceneEntityId(62))
+            .unwrap()
+            .process_claims
+            .active());
+
+        world
+            .set_residency(SceneEntityId(62), SceneResidency::Resident)
+            .unwrap();
+        assert!(world.process_is_active(SceneEntityId(62)));
+
+        world.pre_update(Vec3::ZERO, 0.016);
+        world.update();
+        assert_eq!(world.process_tickets().len(), 1);
+        assert!(world.process_tickets()[0]
+            .reasons
+            .contains(SceneProcessReasons::SCRIPT));
+    }
+
+    #[test]
+    fn process_timeslice_budget_rotates_without_starvation() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        for i in 0..600u64 {
+            world
+                .add_entity(entity(20_000 + i, -8.0, i as usize))
+                .unwrap();
+        }
+        world.activate_all();
+        for i in 0..600u64 {
+            world
+                .set_process_claim(
+                    SceneEntityId(20_000 + i),
+                    "project.script",
+                    "script",
+                    true,
+                    SceneMutationSource::Script,
+                )
+                .unwrap();
+        }
+
+        let mut seen = BTreeSet::new();
+        for frame in 0..3 {
+            world.pre_update(Vec3::ZERO, 1.0 / 60.0);
+            world.update();
+            assert_eq!(world.process_effective_budget(), 256);
+            assert_eq!(world.process_due_count(), 256);
+            assert_eq!(world.process_scanned_count(), 256);
+            let frame_ids = world
+                .process_tickets()
+                .iter()
+                .map(|ticket| ticket.entity)
+                .collect::<BTreeSet<_>>();
+            if frame < 2 {
+                assert_eq!(frame_ids.len(), 256);
+            }
+            seen.extend(frame_ids);
+        }
+        assert_eq!(seen.len(), 600);
+
+        world.pre_update(Vec3::ZERO, 1.0 / 30.0);
+        world.update();
+        assert_eq!(world.process_effective_budget(), 128);
+        assert_eq!(world.process_due_count(), 128);
     }
 
     #[test]

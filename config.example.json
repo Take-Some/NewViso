@@ -1,11 +1,11 @@
 {
   "paths": {
     "base": ".",
-    "providers": "runtime/providers",
-    "assets": "assets",
-    "content": "content",
+    "providers": "../pluginsRuntime",
+    "assets": "../Shared/Content",
+    "content": "../Shared/Content",
     "cache": "cache",
-    "codecs": "runtime/providers/codecs"
+    "codecs": "../pluginsRuntime/codecs"
   },
   "providers": {
     "logging": "engine.logging.chronicle",

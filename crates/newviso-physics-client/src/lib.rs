@@ -19,6 +19,70 @@ pub enum CollisionShape {
     Cylinder { radius: f32, half_height: f32 },
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MeshCollider {
+    #[serde(default)]
+    pub vertices: Vec<[f32; 3]>,
+    #[serde(default)]
+    pub triangles: Vec<[u32; 3]>,
+    #[serde(default)]
+    pub material_indices: Vec<u32>,
+}
+
+impl MeshCollider {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.vertices.is_empty() || self.triangles.is_empty() {
+            return Err("physics mesh collider is empty".to_owned());
+        }
+        if self
+            .vertices
+            .iter()
+            .flatten()
+            .any(|value| !value.is_finite())
+        {
+            return Err("physics mesh collider contains non-finite vertex".to_owned());
+        }
+        let vertex_count = self.vertices.len() as u64;
+        if self
+            .triangles
+            .iter()
+            .flatten()
+            .any(|index| u64::from(*index) >= vertex_count)
+        {
+            return Err(format!(
+                "physics mesh collider index exceeds vertex count {}",
+                self.vertices.len()
+            ));
+        }
+        if !self.material_indices.is_empty() && self.material_indices.len() != self.triangles.len()
+        {
+            return Err(format!(
+                "physics mesh collider material count {} does not match triangle count {}",
+                self.material_indices.len(),
+                self.triangles.len()
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum PhysicsCollider {
+    Mesh(MeshCollider),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PhysicsFrameColliderSnapshot {
+    pub entity: u64,
+    pub collider: PhysicsCollider,
+    pub flags: PhysicsBodyFlags,
+    pub material: PhysicsMaterial,
+    pub position: [f32; 3],
+    pub rotation: [f32; 4],
+    pub bounds_min: [f32; 3],
+    pub bounds_max: [f32; 3],
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PhysicsMaterial {
     pub friction: f32,
@@ -128,7 +192,7 @@ pub struct PhysicsFrameInput {
     #[serde(default)]
     pub bodies: Vec<PhysicsBodySnapshot>,
     #[serde(default)]
-    pub colliders: Vec<serde_json::Value>,
+    pub colliders: Vec<PhysicsFrameColliderSnapshot>,
     #[serde(default)]
     pub commands: Vec<PhysicsCommand>,
     #[serde(default)]
@@ -397,6 +461,24 @@ fn validate_frame(input: &PhysicsFrameInput) -> Result<(), String> {
                 "physics body {} contains non-finite state",
                 body.entity
             ));
+        }
+    }
+    for snapshot in &input.colliders {
+        if snapshot
+            .position
+            .iter()
+            .chain(snapshot.rotation.iter())
+            .chain(snapshot.bounds_min.iter())
+            .chain(snapshot.bounds_max.iter())
+            .any(|value| !value.is_finite())
+        {
+            return Err(format!(
+                "physics collider {} contains non-finite transform/bounds",
+                snapshot.entity
+            ));
+        }
+        match &snapshot.collider {
+            PhysicsCollider::Mesh(mesh) => mesh.validate()?,
         }
     }
     Ok(())

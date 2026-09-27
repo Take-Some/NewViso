@@ -1,8 +1,11 @@
 use newviso_host as host;
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const RENDER_SERVICE: &str = "engine.render";
 const RENDER_INVOKE: &str = "invoke_json";
+const RENDER_COMMAND_BATCH_BIN_V2: &str = "command_batch_bin_v2";
+static TRY_BINARY_WRITE_BUFFER: AtomicBool = AtomicBool::new(true);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ShaderStage {
@@ -41,6 +44,28 @@ pub struct VertexAttribute {
     pub format: VertexFormat,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VertexStepMode {
+    Vertex,
+    Instance,
+}
+
+impl VertexStepMode {
+    fn wire_name(self) -> &'static str {
+        match self {
+            Self::Vertex => "Vertex",
+            Self::Instance => "Instance",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct VertexLayoutDesc<'a> {
+    pub stride: u64,
+    pub attributes: &'a [VertexAttribute],
+    pub step_mode: VertexStepMode,
+}
+
 #[derive(Clone, Debug)]
 pub struct GraphicsPipelineDesc<'a> {
     pub label: &'a str,
@@ -69,6 +94,33 @@ pub struct TextureMipUpload {
     pub byte_len: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TextureResidencyState {
+    Missing,
+    Queued,
+    Uploading,
+    Ready,
+    Failed,
+}
+
+#[derive(Clone, Debug)]
+pub struct TextureResidencyInfo {
+    pub state: TextureResidencyState,
+    pub queued_bytes: u64,
+    pub uploaded_bytes: u64,
+    pub message: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UploadPumpInfo {
+    pub processed_jobs: u32,
+    pub processed_bytes: u64,
+    pub remaining_jobs: u32,
+    pub remaining_bytes: u64,
+    pub blocked_by_budget: bool,
+    pub failed_jobs: u32,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RenderClient;
 
@@ -93,6 +145,30 @@ impl RenderClient {
     }
 
     pub fn write_buffer(&self, id: u32, offset: u64, data: &[u8]) -> Result<(), String> {
+        // WriteBuffer is a frame hot-path command. Sending byte payloads through
+        // invoke_json expands every byte into a JSON integer and makes animated
+        // vertex uploads catastrophically expensive. The renderer ABI already
+        // supports WriteBuffer as command_batch_bin_v2 tag 1, so use the raw
+        // binary service path and retain JSON only as an old-provider fallback.
+        if TRY_BINARY_WRITE_BUFFER.load(Ordering::Relaxed) {
+            let packet = encode_write_buffer_bin_packet(id, offset, data)?;
+            match host::call_service(RENDER_SERVICE, RENDER_COMMAND_BATCH_BIN_V2, &packet) {
+                Ok(_) => return Ok(()),
+                Err(error) => {
+                    let detail = error.to_string();
+                    let unsupported = detail.contains("unsupported")
+                        || detail.contains("unknown method")
+                        || detail.contains("not found")
+                        || detail.contains("unknown render command batch binary tag");
+                    if unsupported {
+                        TRY_BINARY_WRITE_BUFFER.store(false, Ordering::Relaxed);
+                    } else {
+                        return Err(detail);
+                    }
+                }
+            }
+        }
+
         self.unit(json!({"WriteBuffer":{"id":id,"offset":offset,"data":data}}))
     }
 
@@ -113,22 +189,123 @@ impl RenderClient {
         mips: &[TextureMipUpload],
         data: &[u8],
     ) -> Result<u32, String> {
-        let mip_data=mips.iter().map(|m|json!({
-            "level":m.level,"width":m.width,"height":m.height,"offset":m.offset,"byte_len":m.byte_len
-        })).collect::<Vec<_>>();
-        command_id(
-            self.command(json!({"CreateTexture":{
-                "label":label,
-                "extent":{"width":width,"height":height},
-                "format":format,
-                "usage":"Sampled",
-                "mip_levels":mips.len().max(1) as u32,
-                "data":data,
-                "mip_data":mip_data,
-                "data_policy":"Immediate"
-            }}))?,
-            "TextureId",
-        )
+        self.create_texture_with_policy(label, width, height, format, mips, data, "Immediate")
+    }
+
+    pub fn create_texture_deferred(
+        &self,
+        label: &str,
+        width: u32,
+        height: u32,
+        format: &str,
+        mips: &[TextureMipUpload],
+        data: &[u8],
+    ) -> Result<u32, String> {
+        self.create_texture_with_policy(label, width, height, format, mips, data, "Deferred")
+    }
+
+    fn create_texture_with_policy(
+        &self,
+        label: &str,
+        width: u32,
+        height: u32,
+        format: &str,
+        mips: &[TextureMipUpload],
+        data: &[u8],
+        data_policy: &str,
+    ) -> Result<u32, String> {
+        let packet = encode_create_texture_bin_packet(
+            label,
+            width,
+            height,
+            format,
+            mips,
+            data,
+            data_policy,
+        )?;
+        let response = host::call_service(RENDER_SERVICE, "create_texture_bin_v1", &packet)?;
+        decode_texture_id_bin_packet(&response)
+    }
+
+    pub fn pump_uploads(
+        &self,
+        max_bytes: u64,
+        max_jobs: u32,
+        max_blocking_ms: f32,
+    ) -> Result<UploadPumpInfo, String> {
+        let response = self.command(json!({"PumpUploads":{
+            "reason":"Explicit",
+            "budget":{
+                "max_upload_bytes_per_frame":max_bytes,
+                "max_upload_jobs_per_frame":max_jobs,
+                "max_pipeline_builds_per_frame":0,
+                "max_blocking_ms_per_frame":max_blocking_ms,
+                "upload_policy":"FrameBudgeted"
+            }
+        }}))?;
+        let value = response
+            .get("UploadPumpReport")
+            .ok_or_else(|| format!("render service expected UploadPumpReport, got {response}"))?;
+        Ok(UploadPumpInfo {
+            processed_jobs: value
+                .get("processed_jobs")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32,
+            processed_bytes: value
+                .get("processed_bytes")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            remaining_jobs: value
+                .get("remaining_jobs")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32,
+            remaining_bytes: value
+                .get("remaining_bytes")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            blocked_by_budget: value
+                .get("blocked_by_budget")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            failed_jobs: value
+                .get("failed_jobs")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32,
+        })
+    }
+
+    pub fn texture_residency(&self, id: u32) -> Result<TextureResidencyInfo, String> {
+        let response = self.command(json!({"TextureResidency":{"id":id}}))?;
+        let value = response
+            .get("TextureResidency")
+            .ok_or_else(|| format!("render service expected TextureResidency, got {response}"))?;
+        let state = match value
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("Missing")
+        {
+            "Missing" => TextureResidencyState::Missing,
+            "Queued" => TextureResidencyState::Queued,
+            "Uploading" => TextureResidencyState::Uploading,
+            "Ready" => TextureResidencyState::Ready,
+            "Failed" => TextureResidencyState::Failed,
+            other => return Err(format!("unknown texture residency state '{other}'")),
+        };
+        Ok(TextureResidencyInfo {
+            state,
+            queued_bytes: value
+                .get("queued_bytes")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            uploaded_bytes: value
+                .get("uploaded_bytes")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            message: value
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        })
     }
 
     pub fn create_sampler_repeat_linear(&self, label: &str) -> Result<u32, String> {
@@ -214,6 +391,30 @@ impl RenderClient {
         sampler: Option<u32>,
         uniform: Option<(u32, u64, u64)>,
     ) -> Result<u32, String> {
+        self.create_bind_group6(
+            label,
+            layout,
+            [
+                textures[0],
+                textures[1],
+                textures[2],
+                textures[3],
+                None,
+                None,
+            ],
+            sampler,
+            uniform,
+        )
+    }
+
+    pub fn create_bind_group6(
+        &self,
+        label: &str,
+        layout: u32,
+        textures: [Option<u32>; 6],
+        sampler: Option<u32>,
+        uniform: Option<(u32, u64, u64)>,
+    ) -> Result<u32, String> {
         let uniform0 = uniform.map(
             |(buffer, offset, size)| json!({"buffer": buffer, "offset": offset, "size": size}),
         );
@@ -221,7 +422,7 @@ impl RenderClient {
             self.command(json!({"CreateBindGroup":{
                 "label":label,"layout":layout,
                 "texture0":textures[0],"texture1":textures[1],"texture2":textures[2],
-                "texture3":textures[3],"texture4":null,"texture5":null,
+                "texture3":textures[3],"texture4":textures[4],"texture5":textures[5],
                 "graph_texture_fallback":null,
                 "sampler0":sampler,
                 "uniform0":uniform0,"storage0":null,"storage1":null,"storage2":null
@@ -268,19 +469,42 @@ impl RenderClient {
     }
 
     pub fn create_pipeline(&self, desc: GraphicsPipelineDesc<'_>) -> Result<u32, String> {
-        let attributes = desc
-            .attributes
+        let layout = [VertexLayoutDesc {
+            stride: desc.vertex_stride,
+            attributes: desc.attributes,
+            step_mode: VertexStepMode::Vertex,
+        }];
+        self.create_pipeline_with_layouts(desc, &layout)
+    }
+
+    pub fn create_pipeline_with_layouts(
+        &self,
+        desc: GraphicsPipelineDesc<'_>,
+        layouts: &[VertexLayoutDesc<'_>],
+    ) -> Result<u32, String> {
+        let vertex_layouts = layouts
             .iter()
-            .map(|a| {
+            .map(|layout| {
+                let attributes = layout
+                    .attributes
+                    .iter()
+                    .map(|a| {
+                        json!({
+                            "location":a.location,"offset":a.offset,"format":a.format.wire_name()
+                        })
+                    })
+                    .collect::<Vec<_>>();
                 json!({
-                    "location":a.location,"offset":a.offset,"format":a.format.wire_name()
+                    "stride": layout.stride,
+                    "attributes": attributes,
+                    "step_mode": layout.step_mode.wire_name()
                 })
             })
             .collect::<Vec<_>>();
         command_id(self.command(json!({"CreatePipeline":{
             "label":desc.label,"vs":desc.vertex_shader,"fs":desc.fragment_shader,
             "topology":desc.topology,
-            "vertex_layouts":[{"stride":desc.vertex_stride,"attributes":attributes,"step_mode":"Vertex"}],
+            "vertex_layouts":vertex_layouts,
             "bind_group_layouts":desc.bind_group_layouts,
             "color_format":desc.color_format,"color_formats":[],
             "depth_format":desc.depth_format,
@@ -305,6 +529,10 @@ impl RenderClient {
     pub fn set_ui_draw_list(&self, draw_list: Value) -> Result<(), String> {
         self.unit(json!({"SetUiDrawList":draw_list}))
     }
+    pub fn set_render_phase(&self, phase: Option<&str>) -> Result<(), String> {
+        self.unit(json!({"SetRenderPhase":{"phase":phase}}))
+    }
+
     pub fn set_pipeline(&self, pipeline: u32) -> Result<(), String> {
         self.unit(json!({"SetPipeline":{"pipeline":pipeline}}))
     }
@@ -322,11 +550,94 @@ impl RenderClient {
         )
     }
     pub fn draw(&self, vertex_count: u32) -> Result<(), String> {
-        self.unit(json!({"Draw":{"vertex_count":vertex_count,"instance_count":1,"first_vertex":0,"first_instance":0}}))
+        self.draw_range(vertex_count, 0)
+    }
+    pub fn draw_range(&self, vertex_count: u32, first_vertex: u32) -> Result<(), String> {
+        self.draw_range_instanced(vertex_count, first_vertex, 1, 0)
+    }
+
+    pub fn draw_range_instanced(
+        &self,
+        vertex_count: u32,
+        first_vertex: u32,
+        instance_count: u32,
+        first_instance: u32,
+    ) -> Result<(), String> {
+        self.unit(json!({"Draw":{
+            "vertex_count":vertex_count,
+            "instance_count":instance_count,
+            "first_vertex":first_vertex,
+            "first_instance":first_instance
+        }}))
     }
     pub fn draw_indexed(&self, index_count: u32) -> Result<(), String> {
-        self.unit(json!({"DrawIndexed":{"index_count":index_count,"instance_count":1,"first_index":0,"vertex_offset":0,"first_instance":0}}))
+        self.draw_indexed_range_instanced(index_count, 0, 0, 1, 0)
     }
+
+    pub fn draw_indexed_range_instanced(
+        &self,
+        index_count: u32,
+        first_index: u32,
+        vertex_offset: i32,
+        instance_count: u32,
+        first_instance: u32,
+    ) -> Result<(), String> {
+        self.unit(json!({"DrawIndexed":{
+            "index_count":index_count,
+            "instance_count":instance_count,
+            "first_index":first_index,
+            "vertex_offset":vertex_offset,
+            "first_instance":first_instance
+        }}))
+    }
+    pub fn dispatch_visibility_indirect_cull(
+        &self,
+        candidate_buffer: u32,
+        indirect_buffer: u32,
+        candidate_count: u32,
+        viewport_extent: [u32; 2],
+        camera_position: [f32; 3],
+        camera_forward: [f32; 3],
+        camera_up: [f32; 3],
+        fov_y_radians: f32,
+        near: f32,
+        far: f32,
+    ) -> Result<(), String> {
+        self.unit(json!({"DispatchVisibilityIndirectCull":{
+            "candidate_buffer":candidate_buffer,
+            "candidate_offset":0,
+            "indirect_buffer":indirect_buffer,
+            "indirect_offset":0,
+            "candidate_count":candidate_count,
+            "candidate_stride":32,
+            "command_stride":20,
+            "viewport_extent":viewport_extent,
+            "camera":{
+                "position_ws":camera_position,
+                "forward_ws":camera_forward,
+                "up_ws":camera_up,
+                "fov_y":fov_y_radians,
+                "near":near,
+                "far":far
+            }
+        }}))
+    }
+
+    pub fn draw_indexed_indirect(
+        &self,
+        buffer: u32,
+        offset: u64,
+        draw_count: u32,
+        stride: u32,
+    ) -> Result<(), String> {
+        self.unit(json!({"DrawIndexedIndirect":{
+            "buffer":buffer,
+            "offset":offset,
+            "draw_count":draw_count,
+            "stride":stride
+        }}))
+    }
+
     pub fn end_frame(&self) -> Result<(), String> {
         self.unit(json!("EndFrame"))
     }
@@ -384,6 +695,114 @@ impl RenderClient {
             "render service expected unit command response, got {response}"
         ))
     }
+}
+
+fn encode_write_buffer_bin_packet(
+    id: u32,
+    offset: u64,
+    data: &[u8],
+) -> Result<Vec<u8>, String> {
+    let len = u32::try_from(data.len())
+        .map_err(|_| "write-buffer payload is too large for binary render packet".to_owned())?;
+    let mut out = Vec::with_capacity(data.len().saturating_add(25));
+    out.extend_from_slice(b"NECB\x02\0\0\0");
+    put_u32(&mut out, 1); // command count
+    out.push(1); // RenderCommand::WriteBuffer
+    put_u32(&mut out, id);
+    put_u64(&mut out, offset);
+    put_u32(&mut out, len);
+    out.extend_from_slice(data);
+    Ok(out)
+}
+
+fn put_u32(out: &mut Vec<u8>, value: u32) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn put_u64(out: &mut Vec<u8>, value: u64) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn put_bytes(out: &mut Vec<u8>, value: &[u8], what: &str) -> Result<(), String> {
+    let len = u32::try_from(value.len())
+        .map_err(|_| format!("{what} is too large for binary render packet"))?;
+    put_u32(out, len);
+    out.extend_from_slice(value);
+    Ok(())
+}
+
+fn texture_format_bin_tag(value: &str) -> Result<u8, String> {
+    match value {
+        "Rgba8Unorm" => Ok(1),
+        "Rgba8Srgb" => Ok(2),
+        "Bgra8Unorm" => Ok(3),
+        "Bgra8Srgb" => Ok(4),
+        "Rgba16Float" => Ok(5),
+        "R32Float" => Ok(6),
+        "Bc1RgbaUnorm" => Ok(7),
+        "Bc1RgbaSrgb" => Ok(8),
+        "Bc3RgbaUnorm" => Ok(9),
+        "Bc3RgbaSrgb" => Ok(10),
+        "Bc5RgUnorm" => Ok(11),
+        "Bc7RgbaUnorm" => Ok(12),
+        "Bc7RgbaSrgb" => Ok(13),
+        "Depth24Stencil8" => Ok(14),
+        "Depth32Float" => Ok(15),
+        other => Err(format!(
+            "unsupported binary render texture format '{other}'"
+        )),
+    }
+}
+
+fn encode_create_texture_bin_packet(
+    label: &str,
+    width: u32,
+    height: u32,
+    format: &str,
+    mips: &[TextureMipUpload],
+    data: &[u8],
+    data_policy: &str,
+) -> Result<Vec<u8>, String> {
+    let mip_count =
+        u32::try_from(mips.len()).map_err(|_| "texture mip count exceeds u32".to_owned())?;
+    let mip_levels =
+        u32::try_from(mips.len().max(1)).map_err(|_| "texture mip count exceeds u32".to_owned())?;
+    let policy_tag = match data_policy {
+        "Immediate" => 1u8,
+        "Deferred" => 2u8,
+        other => return Err(format!("unsupported texture data policy '{other}'")),
+    };
+
+    let mut out = Vec::with_capacity(data.len().saturating_add(128));
+    out.extend_from_slice(b"NECT\x01\0\0\0");
+    out.push(1); // label present
+    put_bytes(&mut out, label.as_bytes(), "texture label")?;
+    put_u32(&mut out, width);
+    put_u32(&mut out, height);
+    out.push(texture_format_bin_tag(format)?);
+    out.push(1); // TextureUsage::Sampled
+    put_u32(&mut out, mip_levels);
+    out.push(policy_tag);
+    put_u32(&mut out, mip_count);
+    for mip in mips {
+        put_u32(&mut out, mip.level);
+        put_u32(&mut out, mip.width);
+        put_u32(&mut out, mip.height);
+        put_u64(&mut out, mip.offset);
+        put_u64(&mut out, mip.byte_len);
+    }
+    out.push(1); // payload present
+    put_bytes(&mut out, data, "texture payload")?;
+    Ok(out)
+}
+
+fn decode_texture_id_bin_packet(bytes: &[u8]) -> Result<u32, String> {
+    if bytes.len() != 12 || &bytes[..8] != b"NETR\x01\0\0\0" {
+        return Err("create-texture binary response has invalid packet".to_owned());
+    }
+    Ok(u32::from_le_bytes(bytes[8..12].try_into().map_err(
+        |_| "create-texture binary response is truncated".to_owned(),
+    )?))
 }
 
 fn command_id(response: Value, field: &str) -> Result<u32, String> {

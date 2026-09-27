@@ -3,6 +3,8 @@ use serde_json::{json, Value};
 use std::path::Path;
 
 const ASSET_SERVICE: &str = "engine.assets";
+const ASSET_TYPES_SERVICE: &str = "engine.assets.types";
+const ASSET_TYPES_RESOLVE_METHOD: &str = "asset.types.resolve_json_v1";
 const MOUNT_METHOD: &str = "asset.mount_source_json_v1";
 const TEXT_METHOD: &str = "asset.text_v1";
 const RAW_BYTES_METHOD: &str = "asset.raw_bytes_v1";
@@ -105,6 +107,16 @@ impl AssetClient {
                 logical_path, output_kind
             )
         })
+    }
+
+    pub fn resolve_type(&self, logical_path: &str) -> Result<Value, String> {
+        let path = normalize_logical_path(logical_path)?;
+        host::call_json(
+            ASSET_TYPES_SERVICE,
+            ASSET_TYPES_RESOLVE_METHOD,
+            &json!({"logical_path": path}),
+        )
+        .map_err(|error| format!("asset type resolve failed path='{}': {error}", logical_path))
     }
 
     pub fn raw_bytes(&self, logical_path: &str) -> Result<Vec<u8>, String> {

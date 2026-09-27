@@ -11,7 +11,7 @@ impl Scene3dRuntime {
         if !seconds.is_finite() {
             return Err("scene sky time must be finite".to_owned());
         }
-        self.sky_time_seconds = seconds.rem_euclid(86_400.0);
+        self.sky_time_seconds = seconds.rem_euclid(self.timecycle_backend.duration_seconds);
         Ok(())
     }
     pub fn set_sky_time_scale(&mut self, scale: f32) -> Result<(), String> {
@@ -100,9 +100,20 @@ impl Scene3dRuntime {
             })
             .collect()
     }
-    pub fn physics_static_solid_aabbs(&self) -> Vec<([f32; 3], [f32; 3])> {
+    pub fn physics_static_solid_aabbs_near(
+        &self,
+        interests: &[([f32; 3], [f32; 3])],
+    ) -> Vec<([f32; 3], [f32; 3])> {
+        let interests = interests
+            .iter()
+            .map(|(min, max)| SceneBounds {
+                min: Vec3::new(min[0], min[1], min[2]),
+                max: Vec3::new(max[0], max[1], max[2]),
+            })
+            .collect::<Vec<_>>();
         self.world
-            .static_solid_bounds()
+            .static_solid_bounds_near(&interests)
+            .into_iter()
             .map(|bounds| {
                 (
                     [bounds.min.x, bounds.min.y, bounds.min.z],
@@ -110,6 +121,64 @@ impl Scene3dRuntime {
                 )
             })
             .collect()
+    }
+
+    /// Compact hot-path snapshot for gameplay scripting.
+    /// Full diagnostic collections stay in runtime_state().
+    pub fn script_frame_state(&self) -> Value {
+        let focus = self.world.focus();
+        json!({
+            "scene": {
+                "world": {
+                    "frame": self.frame_plan.frame,
+                    "process_active": self.world.process_active_count(),
+                    "process_due": self.world.process_due_count(),
+                    "process_budget": self.world.process_effective_budget(),
+                    "process_scanned": self.world.process_scanned_count(),
+                    "process_work": self.process_work_state(),
+                    "focus": {
+                        "position": [focus.position.x, focus.position.y, focus.position.z],
+                        "velocity": [focus.velocity.x, focus.velocity.y, focus.velocity.z]
+                    }
+                },
+                "camera": {
+                    "position": {
+                        "x": self.camera.position.x,
+                        "y": self.camera.position.y,
+                        "z": self.camera.position.z
+                    },
+                    "target": {
+                        "x": self.camera.target.x,
+                        "y": self.camera.target.y,
+                        "z": self.camera.target.z
+                    },
+                    "up": {
+                        "x": self.camera.up.x,
+                        "y": self.camera.up.y,
+                        "z": self.camera.up.z
+                    },
+                    "fov_y_degrees": self.camera.fov_y_degrees,
+                    "near": self.camera.near,
+                    "far": self.camera.far,
+                    "orbit": {
+                        "yaw_radians": self.orbit.yaw,
+                        "pitch_radians": self.orbit.pitch,
+                        "distance": self.orbit.distance
+                    }
+                },
+                "timecycle": {
+                    "cycle_seconds": self.timecycle_backend.cycle_seconds,
+                    "phase": self.timecycle_backend.phase,
+                    "rate": self.timecycle_backend.rate,
+                    "duration_seconds": self.timecycle_backend.duration_seconds
+                },
+                "weather": {
+                    "current": self.weather_backend.current,
+                    "next": self.weather_backend.next,
+                    "blend": self.weather_backend.blend
+                }
+            }
+        })
     }
 
     pub fn runtime_state(&self) -> Value {
@@ -134,6 +203,32 @@ impl Scene3dRuntime {
             .iter()
             .filter(|(_, _, light)| light.casts_shadows)
             .count();
+        let visible_asset_instances = self
+            .frame_plan
+            .visible_entities
+            .iter()
+            .filter(|id| self.asset_meshes.contains_key(&id.0))
+            .count();
+        let visible_unique_models = self
+            .frame_plan
+            .visible_entities
+            .iter()
+            .filter_map(|id| self.asset_meshes.get(&id.0).map(|mesh| mesh.model_id.0))
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        let portal_visibility = self
+            .portal_visibility
+            .as_ref()
+            .map(PortalVisibilityGraph::telemetry)
+            .unwrap_or_else(|| {
+                json!({
+                    "rooms": 0,
+                    "portals": 0,
+                    "mapped_entities": 0,
+                    "visible_rooms": []
+                })
+            });
+
         let light_state = lights
             .iter()
             .map(|(id, transform, light)| {
@@ -159,6 +254,7 @@ impl Scene3dRuntime {
         json!({
             "scene": {
                 "title": self.title,
+                "render_settings": self.render_policy,
                 "mesh_count": self.cubes.len(),
                 "world": {
                     "frame": self.frame_plan.frame,
@@ -166,6 +262,13 @@ impl Scene3dRuntime {
                     "static_entities": self.world.static_count(),
                     "dynamic_entities": self.world.dynamic_count(),
                     "process_active": self.world.process_active_count(),
+                    "process_due": self.world.process_due_count(),
+                    "process_budget": self.world.process_effective_budget(),
+                    "process_scanned": self.world.process_scanned_count(),
+                    "process_work": self.process_work_state(),
+                    "spatial_cells": self.world.spatial_cell_count(),
+                    "spatial_oversized": self.world.spatial_oversized_count(),
+                    "spatial_candidates": self.frame_plan.spatial_candidate_count,
                     "visible": self.frame_plan.visible_count,
                     "culled": self.frame_plan.culled_count,
                     "resident": self.frame_plan.resident_count,
@@ -203,6 +306,20 @@ impl Scene3dRuntime {
                         "pitch_degrees": self.orbit.pitch.to_degrees(),
                         "distance": self.orbit.distance
                     }
+                },
+                "visibility": {
+                    "portal": portal_visibility,
+                    "installed_asset_instances": self.asset_meshes.len(),
+                    "unique_asset_models": self.asset_model_gpu_ranges.len(),
+                    "visible_asset_instances": visible_asset_instances,
+                    "visible_unique_models": visible_unique_models,
+                    "instance_cell_size": ASSET_INSTANCE_CELL_SIZE,
+                    "gpu_instance_static_count": self.gpu_instance_table.instance_data.len() / INSTANCE_FLOATS,
+                    "gpu_instance_resident_batches": self.gpu_instance_table.batches.len(),
+                    "gpu_instance_rebuilds": self.gpu_instance_table.rebuild_count,
+                    "gpu_instance_uploads": self.gpu_instance_table.upload_count,
+                    "gpu_instance_uploaded": self.gpu_instance_table.uploaded,
+                    "hiz_candidate_capacity": MAX_HIZ_DRAW_CANDIDATES
                 },
                 "lighting": {
                     "active_lights": lights.len(),
@@ -281,6 +398,26 @@ impl Scene3dRuntime {
             }
         })
     }
+    pub fn configure_orbit_controls(
+        &mut self,
+        rotate_button: u64,
+        min_pitch: f32,
+        max_pitch: f32,
+    ) -> Result<(), String> {
+        if !min_pitch.is_finite()
+            || !max_pitch.is_finite()
+            || min_pitch <= -90.0
+            || max_pitch >= 90.0
+            || min_pitch >= max_pitch
+        {
+            return Err("invalid orbit pitch limits".into());
+        }
+        self.orbit.rotate_button = rotate_button;
+        self.orbit.min_pitch_degrees = min_pitch;
+        self.orbit.max_pitch_degrees = max_pitch;
+        Ok(())
+    }
+
     pub fn configure_orbit(
         &mut self,
         rotate_sensitivity: f32,
@@ -288,7 +425,15 @@ impl Scene3dRuntime {
         min_distance: f32,
         max_distance: f32,
     ) -> Result<(), String> {
-        if rotate_sensitivity <= 0.0
+        if ![
+            rotate_sensitivity,
+            zoom_sensitivity,
+            min_distance,
+            max_distance,
+        ]
+        .iter()
+        .all(|value| value.is_finite())
+            || rotate_sensitivity <= 0.0
             || zoom_sensitivity <= 0.0
             || min_distance <= 0.0
             || max_distance < min_distance
@@ -344,16 +489,17 @@ impl Scene3dRuntime {
             }
             self.camera.fov_y_degrees = fov;
         }
-        self.orbit = OrbitCamera::from_camera(&self.camera);
+        self.orbit.sync_pose(&self.camera);
         self.sync_runtime_camera_to_flecs()
     }
     pub fn set_transient_spheres(
         &mut self,
         spheres: Vec<SceneTransientSphere>,
     ) -> Result<(), String> {
-        if spheres.len() > MAX_TRANSIENT_SPHERES {
+        if spheres.len() > self.render_policy.transient_sphere_capacity {
             return Err(format!(
-                "scene.transient_spheres.set exceeds the generic limit of {MAX_TRANSIENT_SPHERES}"
+                "scene.transient_spheres.set exceeds the configured limit of {}",
+                self.render_policy.transient_sphere_capacity
             ));
         }
         for sphere in &spheres {
@@ -389,9 +535,10 @@ impl Scene3dRuntime {
         Ok(())
     }
     pub fn set_overlay_quads(&mut self, quads: Vec<SceneOverlayQuad>) -> Result<(), String> {
-        if quads.len() > MAX_OVERLAY_QUADS {
+        if quads.len() > self.render_policy.overlay_quad_capacity {
             return Err(format!(
-                "scene.overlay_quads.set exceeds the generic limit of {MAX_OVERLAY_QUADS}"
+                "scene.overlay_quads.set exceeds the configured limit of {}",
+                self.render_policy.overlay_quad_capacity
             ));
         }
         for quad in &quads {

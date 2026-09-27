@@ -302,6 +302,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "newviso-collision"
+version = "0.1.0"
+dependencies = [
+ "newviso-resource-runtime",
+]
+
+[[package]]
 name = "newviso-compat-abi"
 version = "0.1.0"
 dependencies = [
@@ -369,6 +376,7 @@ version = "0.1.0"
 dependencies = [
  "newviso-materials",
  "newviso-resource-runtime",
+ "newviso-textures",
 ]
 
 [[package]]
@@ -441,6 +449,7 @@ dependencies = [
  "newviso-assets-client",
  "newviso-bugtrap",
  "newviso-capabilities",
+ "newviso-collision",
  "newviso-compat-abi",
  "newviso-config",
  "newviso-content-manager",
@@ -458,6 +467,7 @@ dependencies = [
  "newviso-resource-runtime",
  "newviso-scene",
  "newviso-scripting",
+ "newviso-semantic-assets",
  "newviso-textures",
  "newviso-ui-client",
  "newviso-world",
@@ -498,6 +508,20 @@ dependencies = [
  "newviso-events",
  "newviso-host",
  "newviso-script-client",
+ "serde_json",
+]
+
+[[package]]
+name = "newviso-semantic-assets"
+version = "0.1.0"
+dependencies = [
+ "newviso-assets-client",
+ "newviso-collision",
+ "newviso-materials",
+ "newviso-model",
+ "newviso-resource-runtime",
+ "newviso-textures",
+ "quick-xml",
  "serde_json",
 ]
 
@@ -560,6 +584,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.42.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41b1177fdf999d2321d3fb46ff47159d9c1fb9ad66a4879f8c50a0b504615e9b"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

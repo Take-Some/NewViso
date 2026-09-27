@@ -18,8 +18,8 @@ impl PlatformApplication for EngineApplication {
 
         self.renderer = Some(renderer);
 
-        bugtrap::checkpoint("scene.renderer.initialize");
-        self.scene.initialize_renderer()?;
+        let startup_commands = self.settings.startup_commands.clone();
+        self.apply_script_commands(&startup_commands)?;
 
         host::publish_event_json(
             event_topic::RUNTIME_STARTED,
@@ -31,7 +31,7 @@ impl PlatformApplication for EngineApplication {
 
         if self.scripts.is_some() {
             bugtrap::set_phase("scripts.start");
-            let runtime_state = self.runtime_state();
+            let runtime_state = self.script_frame_state();
             let control = {
                 let scripts = self
                     .scripts
@@ -44,6 +44,9 @@ impl PlatformApplication for EngineApplication {
             self.apply_script_commands(&control.commands)?;
             self.sync_world_actor_presentations()?;
         }
+
+        bugtrap::checkpoint("scene.renderer.initialize");
+        self.scene.initialize_renderer()?;
 
         self.publish_bound_ui_if_changed()?;
         self.publish_content_manager_if_changed()?;
@@ -63,8 +66,18 @@ impl PlatformApplication for EngineApplication {
             return Ok(false);
         }
 
+        if !dt.is_finite() || dt < 0.0 {
+            return Err("frame delta must be finite and non-negative".into());
+        }
         self.world_save_allowed = false;
         self.elapsed_seconds += f64::from(dt);
+        let perf_frame = self.asset_streamer.stats().frame;
+        let perf_start = std::time::Instant::now();
+        let mut perf_mark = perf_start;
+        let perf_physics_ms;
+        let perf_scripts_ms;
+        let perf_streaming_ms;
+        let perf_scene_render_ms;
 
         bugtrap::set_phase("frame.input");
         let input = InputSnapshot::sample()?;
@@ -108,10 +121,18 @@ impl PlatformApplication for EngineApplication {
 
         if self.physics.is_some() {
             bugtrap::set_phase("physics.step");
-            let scene_solids = self.scene.physics_static_solid_aabbs();
+            let scene_solids = self
+                .physics
+                .as_ref()
+                .and_then(PhysicsRuntime::scene_collider_interests)
+                .map(|interests| self.scene.physics_static_solid_aabbs_near(&interests))
+                .unwrap_or_default();
             let (activity_updates, pose_updates) = {
                 let physics = self.physics.as_mut().expect("physics checked");
-                physics.step(dt, &scene_solids)?;
+                physics.step(
+                    dt.min(self.settings.scheduling.max_physics_frame_seconds),
+                    &scene_solids,
+                )?;
                 (
                     physics.scene_activity_updates(),
                     physics.scene_pose_updates(),
@@ -127,13 +148,20 @@ impl PlatformApplication for EngineApplication {
             }
         }
 
+        perf_physics_ms = perf_mark.elapsed().as_secs_f64() * 1000.0;
+        perf_mark = std::time::Instant::now();
         bugtrap::set_phase("living_world.tick");
         let transient_observers = [self.scene.focus_position()];
-        self.living_world.tick_frame(dt, &transient_observers);
+        let observers = if self.settings.scheduling.scene_focus_observer {
+            &transient_observers[..]
+        } else {
+            &[]
+        };
+        self.living_world.tick_frame(dt, observers);
         self.sync_world_actor_presentations()?;
 
         if self.scripts.is_some() {
-            let runtime_state = self.runtime_state();
+            let runtime_state = self.script_frame_state();
             let frame_context = json!({
                 "input": {
                     "state": &input.state,
@@ -174,8 +202,11 @@ impl PlatformApplication for EngineApplication {
             self.scene.tick(dt)?;
         } else {
             // Native orbit is an engine/editor navigation fallback, not gameplay.
-            self.scene
-                .update_native_input_from_snapshot(&input, dt, camera_navigation_enabled)?;
+            self.scene.update_native_input_from_snapshot(
+                &input,
+                dt,
+                camera_navigation_enabled && self.settings.scheduling.native_navigation_enabled,
+            )?;
         }
 
         for mutation in self.scene.drain_entity_mutations() {
@@ -184,8 +215,12 @@ impl PlatformApplication for EngineApplication {
 
         // The scene contributes only generic asset interest. Residency, dependency
         // closure, retry and eviction remain owned by newviso-resource-runtime.
+        perf_scripts_ms = perf_mark.elapsed().as_secs_f64() * 1000.0;
+        perf_mark = std::time::Instant::now();
         self.sync_scene_streaming_interests()?;
         self.pump_asset_streaming()?;
+        perf_streaming_ms = perf_mark.elapsed().as_secs_f64() * 1000.0;
+        perf_mark = std::time::Instant::now();
 
         self.publish_bound_ui_if_changed()?;
         self.publish_content_manager_if_changed()?;
@@ -299,11 +334,30 @@ impl PlatformApplication for EngineApplication {
             self.scene.render_frame(surface.width, surface.height)?;
         }
 
+        perf_scene_render_ms = perf_mark.elapsed().as_secs_f64() * 1000.0;
+        perf_mark = std::time::Instant::now();
         if let Some(renderer) = self.renderer.as_mut() {
             bugtrap::native_boundary("render.provider.update");
             renderer.update(dt)?;
             bugtrap::native_boundary("render.provider.render");
             renderer.render(dt)?;
+        }
+        let perf_provider_ms = perf_mark.elapsed().as_secs_f64() * 1000.0;
+        let perf_total_ms = perf_start.elapsed().as_secs_f64() * 1000.0;
+        if perf_total_ms >= 25.0 || perf_frame % 60 == 0 {
+            host::info(
+                "newviso.perf",
+                format!(
+                    "frame={} total_ms={:.2} physics_ms={:.2} scripts_world_ms={:.2} streaming_ms={:.2} scene_render_ms={:.2} provider_ms={:.2}",
+                    perf_frame,
+                    perf_total_ms,
+                    perf_physics_ms,
+                    perf_scripts_ms,
+                    perf_streaming_ms,
+                    perf_scene_render_ms,
+                    perf_provider_ms
+                ),
+            );
         }
         bugtrap::set_phase("frame.idle");
 

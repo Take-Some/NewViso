@@ -38,6 +38,7 @@ fn binding() -> WorldActorPresentationBinding {
         stream_distance: f32::INFINITY,
         fade_range: 0.0,
         materialized_representations: vec!["physical".into(), "proxy".into()],
+        locomotion: None,
     }
 }
 #[test]

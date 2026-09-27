@@ -9,6 +9,18 @@ impl EngineApplication {
                 .ok_or_else(|| format!("script command[{index}] has no string 'op'"))?;
 
             match op {
+                "scene.render.configure" => {
+                    let patch = command.get("settings").ok_or_else(|| {
+                        format!("script command[{index}] scene.render.configure requires settings")
+                    })?;
+                    self.scene.configure_render_policy(patch)?;
+                }
+                "runtime.configure" => {
+                    let patch = command.get("settings").ok_or_else(|| {
+                        format!("script command[{index}] runtime.configure requires settings")
+                    })?;
+                    self.configure_runtime(patch)?;
+                }
                 "events.emit" => {
                     let topic = command
                         .get("topic")
@@ -119,6 +131,26 @@ impl EngineApplication {
                         .destroy_body_from_script(command, index)?;
                     self.scene.set_physics_process_active(entity, false)?;
                 }
+                "physics.body.velocity.set" => {
+                    self.physics
+                        .as_mut()
+                        .ok_or_else(|| {
+                            format!(
+                                "script command[{index}] requires engine.physics but no physics capability is active"
+                            )
+                        })?
+                        .set_body_velocity_from_script(command, index)?;
+                }
+                "physics.body.pose.set" => {
+                    self.physics
+                        .as_mut()
+                        .ok_or_else(|| {
+                            format!(
+                                "script command[{index}] requires engine.physics but no physics capability is active"
+                            )
+                        })?
+                        .set_body_pose_from_script(command, index)?;
+                }
                 "physics.body.impulse" => {
                     self.physics
                         .as_mut()
@@ -197,12 +229,14 @@ impl EngineApplication {
                     self.scene.set_scene_environment(desc)?;
                 }
                 "scene.orbit.configure" => {
-                    self.scene.configure_orbit(
-                        command_number(command, "rotate_sensitivity", index)?,
-                        command_number(command, "zoom_sensitivity", index)?,
-                        command_number(command, "min_distance", index)?,
-                        command_number(command, "max_distance", index)?,
-                    )?;
+                    // Preserve the legacy command while keeping the live settings
+                    // snapshot synchronized with the actual camera policy.
+                    self.configure_runtime(&json!({"camera": {
+                        "rotate_sensitivity": command_number(command, "rotate_sensitivity", index)?,
+                        "zoom_sensitivity": command_number(command, "zoom_sensitivity", index)?,
+                        "min_distance": command_number(command, "min_distance", index)?,
+                        "max_distance": command_number(command, "max_distance", index)?
+                    }}))?;
                 }
                 "scene.sky.time.set" => {
                     self.scene
@@ -255,6 +289,7 @@ impl EngineApplication {
                     )?)?;
                 }
                 "world.simulation.configure" => {
+                    let simulation_defaults = WorldSimulationPolicyDesc::default();
                     self.living_world
                         .configure_simulation(WorldSimulationPolicyDesc {
                             transient_full_radius: command_number(
@@ -267,6 +302,11 @@ impl EngineApplication {
                                 "transient_reduced_radius",
                                 index,
                             )?,
+                            tier_hysteresis_radius: command
+                                .get("tier_hysteresis_radius")
+                                .map(|_| command_number(command, "tier_hysteresis_radius", index))
+                                .transpose()?
+                                .unwrap_or(simulation_defaults.tier_hysteresis_radius),
                             full_interval_seconds: command_number(
                                 command,
                                 "full_interval_seconds",
@@ -773,6 +813,18 @@ impl EngineApplication {
                         })
                         .transpose()?
                         .unwrap_or(false);
+                    let locomotion = command
+                        .get("locomotion")
+                        .filter(|value| !value.is_null())
+                        .map(|value| {
+                            serde_json::from_value::<WorldActorLocomotionBinding>(value.clone())
+                                .map_err(|error| {
+                                    format!(
+                                        "script command[{index}] world.actor.presentation.bind invalid locomotion: {error}"
+                                    )
+                                })
+                        })
+                        .transpose()?;
                     self.bind_world_actor_presentation(
                         actor_id.to_owned(),
                         WorldActorPresentationBinding {
@@ -824,6 +876,7 @@ impl EngineApplication {
                                 .transpose()?
                                 .unwrap_or(0.0),
                             materialized_representations,
+                            locomotion,
                         },
                     )?;
                 }
@@ -1217,6 +1270,26 @@ impl EngineApplication {
                         reason,
                         active,
                     )?;
+                }
+                "scene.entity.process_rate.set" => {
+                    let entity = command
+                        .get("entity")
+                        .and_then(Value::as_u64)
+                        .ok_or_else(|| {
+                            format!(
+                                "script command[{index}] scene.entity.process_rate.set requires unsigned integer 'entity'"
+                            )
+                        })?;
+                    let reason = command
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            format!(
+                                "script command[{index}] scene.entity.process_rate.set requires string 'reason'"
+                            )
+                        })?;
+                    let hz = command_number(command, "hz", index)?;
+                    self.scene.set_entity_process_rate_hz(entity, reason, hz)?;
                 }
                 "scene.entity.visibility.set" => {
                     let entity = command
@@ -1615,6 +1688,149 @@ impl EngineApplication {
                     })?;
                     self.scene.remove_lens_flare(id);
                 }
+                "scene.dynamic_entity.upsert" => {
+                    let id = command
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            format!(
+                                "script command[{index}] scene.dynamic_entity.upsert requires string 'id'"
+                            )
+                        })?;
+                    let visual = match command
+                        .get("visual")
+                        .and_then(Value::as_str)
+                        .unwrap_or("none")
+                        .trim()
+                        .to_ascii_lowercase()
+                        .as_str()
+                    {
+                        "none" => SceneRuntimeVisualKind::None,
+                        "cube" => SceneRuntimeVisualKind::Cube,
+                        other => {
+                            return Err(format!(
+                                "script command[{index}] scene.dynamic_entity.upsert has invalid visual '{other}'"
+                            ))
+                        }
+                    };
+                    let asset_ref = command
+                        .get("asset_ref")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    let texture_dictionary = command
+                        .get("texture_dictionary")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    let solid = command
+                        .get("solid")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    self.scene.upsert_runtime_dynamic_entity(
+                        id,
+                        SceneRuntimeEntityDesc {
+                            visual,
+                            asset_ref,
+                            texture_dictionary,
+                            position: command_vec3(command, "position", index)?,
+                            rotation_degrees: command_vec3(
+                                command,
+                                "rotation_degrees",
+                                index,
+                            )?,
+                            scale: command_vec3(command, "scale", index)?,
+                            bounds_half_extent: command_vec3(
+                                command,
+                                "bounds_half_extent",
+                                index,
+                            )?,
+                            base_color: command_vec4(command, "base_color", index)?,
+                            solid,
+                            visible_distance: command_number(
+                                command,
+                                "visible_distance",
+                                index,
+                            )?,
+                            stream_distance: command_number(
+                                command,
+                                "stream_distance",
+                                index,
+                            )?,
+                            fade_range: command_number(command, "fade_range", index)?,
+                        },
+                    )?;
+                }
+                "scene.entity.main_view_meshes.set" => {
+                    let id = command.get("id").and_then(Value::as_str).ok_or_else(|| {
+                        format!("script command[{index}] main_view_meshes.set requires string 'id'")
+                    })?;
+                    let prefixes = command.get("hidden_mesh_prefixes")
+                        .and_then(Value::as_array)
+                        .ok_or_else(|| format!("script command[{index}] requires 'hidden_mesh_prefixes' array"))?
+                        .iter()
+                        .map(|value| value.as_str().map(str::to_owned).ok_or_else(|| {
+                            format!("script command[{index}] hidden_mesh_prefixes must contain strings")
+                        }))
+                        .collect::<Result<Vec<_>, String>>()?;
+                    let stable_id = self.scene.runtime_entity_stable_id(id).ok_or_else(|| {
+                        format!("script command[{index}] mesh visibility target '{id}' does not exist")
+                    })?;
+                    self.scene.set_entity_main_view_hidden_meshes(stable_id, prefixes)?;
+                }
+                "scene.entity.animation.play" => {
+                    let id = command
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            format!(
+                                "script command[{index}] scene.entity.animation.play requires string 'id'"
+                            )
+                        })?;
+                    let clip_ref = command
+                        .get("clip_ref")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.trim().is_empty())
+                        .ok_or_else(|| {
+                            format!(
+                                "script command[{index}] scene.entity.animation.play requires string 'clip_ref'"
+                            )
+                        })?;
+                    let playback_rate = command
+                        .get("playback_rate")
+                        .map(|_| command_number(command, "playback_rate", index))
+                        .transpose()?
+                        .unwrap_or(1.0);
+                    let restart_if_same = command
+                        .get("restart_if_same")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    let stable_id = self.scene.runtime_entity_stable_id(id).ok_or_else(|| {
+                        format!(
+                            "script command[{index}] animation target '{}' does not exist",
+                            id
+                        )
+                    })?;
+                    let _ = self.bind_scene_entity_animation(
+                        stable_id,
+                        SceneAnimationBinding {
+                            clip_ref: clip_ref.to_owned(),
+                            playback_rate,
+                            restart_if_same,
+                        },
+                    )?;
+                }
+                "scene.entity.animation.stop" => {
+                    let id = command
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            format!(
+                                "script command[{index}] scene.entity.animation.stop requires string 'id'"
+                            )
+                        })?;
+                    if let Some(stable_id) = self.scene.runtime_entity_stable_id(id) {
+                        let _ = self.unbind_scene_entity_animation(stable_id)?;
+                    }
+                }
                 "scene.entity.transform.set" => {
                     let id = command
                         .get("id")
@@ -1648,11 +1864,30 @@ impl EngineApplication {
                         .and_then(Value::as_bool)
                         .unwrap_or(false);
                     if !if_exists || self.scene.runtime_entity_exists(id) {
+                        if let Some(stable_id) = self.scene.runtime_entity_stable_id(id) {
+                            self.scene_animation_bindings.remove(&stable_id);
+                        }
                         self.scene.remove_runtime_entity(id)?;
                     }
                 }
                 "scene.camera.set" => {
-                    let position = command_vec3(command, "position", index)?;
+                    let mut position = command_vec3(command, "position", index)?;
+                    if let Some(collision) = command.get("collision") {
+                        let origin = command_vec3(collision, "origin", index)?;
+                        let radius = command_number(collision, "radius", index)?;
+                        if !(0.01..=2.0).contains(&radius) {
+                            return Err(format!("script command[{index}] camera collision radius must be in 0.01..=2"));
+                        }
+                        let ignore = collision.get("ignore_entity")
+                            .map(|_| command_u64(collision, "ignore_entity", index)).transpose()?;
+                        let min = std::array::from_fn(|i| origin[i].min(position[i]) - radius);
+                        let max = std::array::from_fn(|i| origin[i].max(position[i]) + radius);
+                        let solids = self.scene.physics_static_solid_aabbs_near(&[(min, max)]);
+                        let physics = self.physics.as_ref().ok_or_else(|| {
+                            format!("script command[{index}] camera collision requires physics")
+                        })?;
+                        position = physics.constrain_camera(origin, position, radius, ignore, &solids);
+                    }
                     let target = command_vec3(command, "target", index)?;
                     let up = command
                         .get("up")

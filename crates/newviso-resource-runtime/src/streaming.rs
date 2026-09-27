@@ -79,6 +79,9 @@ pub struct StreamingPolicy {
     /// Maximum number of resources decoded per pump.
     /// Zero means unlimited.
     pub max_loads_per_tick: usize,
+    /// Maximum number of independent source/decode jobs executed concurrently.
+    /// Values <= 1 keep the legacy sequential path.
+    pub parallel_loads: usize,
     /// Approximate source bytes decoded per pump.
     /// Zero means unlimited. A single resource may exceed this limit.
     pub max_source_bytes_per_tick: u64,
@@ -96,6 +99,7 @@ impl Default for StreamingPolicy {
         Self {
             max_resident_bytes: 512 * 1024 * 1024,
             max_loads_per_tick: 8,
+            parallel_loads: 4,
             max_source_bytes_per_tick: 32 * 1024 * 1024,
             eviction_grace_frames: 120,
             failed_retry_frames: 120,
@@ -106,6 +110,12 @@ impl Default for StreamingPolicy {
 
 impl StreamingPolicy {
     pub fn validate(&self) -> Result<(), String> {
+        if self.parallel_loads == 0 || self.parallel_loads > 32 {
+            return Err(format!(
+                "parallel_loads must be in 1..=32, got {}",
+                self.parallel_loads
+            ));
+        }
         if !self.dependency_priority_scale.is_finite()
             || self.dependency_priority_scale < 0.0
             || self.dependency_priority_scale > 1.0
@@ -343,6 +353,35 @@ mod tests {
     }
 
     #[test]
+    fn changing_policy_reprioritizes_existing_dependencies_and_preserves_residency() {
+        let child = AssetAddress::parse("assets/child@main").unwrap();
+        let root = AssetAddress::parse("assets/root@main").unwrap();
+        let assets = HashMap::from([
+            ("assets/root".to_owned(), (vec![1; 32], vec![child.clone()])),
+            ("assets/child".to_owned(), (vec![2; 16], Vec::new())),
+        ]);
+        let mut streaming = streamer(assets, StreamingPolicy::default());
+        streaming
+            .request(
+                StreamingOwnerId::new(1),
+                root.clone(),
+                StreamingClaim::new(10.0),
+            )
+            .unwrap();
+        streaming.pump();
+        let mut policy = streaming.policy().clone();
+        policy.dependency_priority_scale = 0.25;
+        streaming.set_policy(policy).unwrap();
+        assert_eq!(streaming.snapshot(&child).unwrap().effective_priority, 2.5);
+        assert!(streaming.is_resident(&root));
+        assert!(streaming.is_resident(&child));
+        let mut invalid = streaming.policy().clone();
+        invalid.dependency_priority_scale = f32::NAN;
+        assert!(streaming.set_policy(invalid).is_err());
+        assert_eq!(streaming.policy().dependency_priority_scale, 0.25);
+    }
+
+    #[test]
     fn highest_priority_request_loads_first() {
         let assets = HashMap::from([
             ("assets/low".to_owned(), (vec![1; 8], Vec::new())),
@@ -364,6 +403,70 @@ mod tests {
         streaming.pump();
         assert_eq!(streaming.state(&high), StreamingState::Resident);
         assert_eq!(streaming.state(&low), StreamingState::Queued);
+    }
+
+    #[test]
+    fn parallel_worker_batch_resolves_assets_concurrently() {
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+        use std::time::Duration;
+
+        struct ConcurrentSource {
+            active: Arc<AtomicUsize>,
+            peak: Arc<AtomicUsize>,
+        }
+
+        impl AssetSource for ConcurrentSource {
+            fn resolve(&self, logical_path: &str) -> Result<ResolvedAsset, String> {
+                let active = self.active.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+                self.peak.fetch_max(active, AtomicOrdering::SeqCst);
+                std::thread::sleep(Duration::from_millis(20));
+                self.active.fetch_sub(1, AtomicOrdering::SeqCst);
+
+                let bytes = logical_path.as_bytes().to_vec();
+                let hash = blake3::hash(&bytes);
+                Ok(ResolvedAsset {
+                    source: ResolvedAssetSource {
+                        mount_id: "parallel-test".to_owned(),
+                        logical_path: logical_path.to_owned(),
+                        source_revision: u64::from_le_bytes(
+                            hash.as_bytes()[0..8].try_into().expect("hash prefix"),
+                        ),
+                    },
+                    bytes,
+                    dependencies: Vec::new(),
+                })
+            }
+        }
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let resources = ResourceManager::new(ConcurrentSource {
+            active: active.clone(),
+            peak: peak.clone(),
+        });
+        let mut policy = StreamingPolicy::default();
+        policy.max_loads_per_tick = 4;
+        policy.parallel_loads = 4;
+        policy.max_resident_bytes = 0;
+        let mut streaming = AssetStreamer::new(resources, policy).unwrap();
+        let owner = StreamingOwnerId::new(77);
+
+        for name in ["a", "b", "c", "d"] {
+            streaming
+                .request(
+                    owner,
+                    AssetAddress::parse(&format!("assets/{name}")).unwrap(),
+                    StreamingClaim::new(1.0),
+                )
+                .unwrap();
+        }
+
+        let report = streaming.pump();
+        assert_eq!(report.loaded.len(), 4);
+        assert!(
+            peak.load(AtomicOrdering::SeqCst) >= 2,
+            "parallel batch never overlapped source resolution"
+        );
     }
 
     #[test]

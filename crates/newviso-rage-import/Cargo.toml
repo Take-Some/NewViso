@@ -1,0 +1,15 @@
+[package]
+name = "newviso-semantic-assets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+newviso-assets-client.workspace = true
+newviso-collision.workspace = true
+newviso-materials.workspace = true
+newviso-model.workspace = true
+newviso-resource-runtime.workspace = true
+newviso-textures.workspace = true
+quick-xml.workspace = true
+serde_json.workspace = true
