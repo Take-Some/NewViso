@@ -92,6 +92,16 @@ unsafe extern "system" fn window_proc(
             view::create_controls(hwnd);
             0
         }
+        WM_SIZE => {
+            view::layout_controls(hwnd);
+            0
+        }
+        WM_GETMINMAXINFO => {
+            let info = &mut *(l_param as *mut MinMaxInfo);
+            info.min_track_size.x = 760;
+            info.min_track_size.y = 680;
+            0
+        }
         WM_COMMAND => {
             handle_command(hwnd, w_param & 0xFFFF);
             0

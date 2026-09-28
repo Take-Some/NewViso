@@ -25,6 +25,7 @@ pub(crate) const FONT_META: usize = 1;
 pub(crate) const FONT_LABEL: usize = 2;
 pub(crate) const FONT_BODY: usize = 3;
 pub(crate) const FONT_HEADING: usize = 4;
+pub(crate) const FONT_MONO: usize = 5;
 pub(crate) const FONT_METRIC: usize = 6;
 
 pub(crate) fn create_font(height: i32, weight: i32, face: &str) -> Hfont {

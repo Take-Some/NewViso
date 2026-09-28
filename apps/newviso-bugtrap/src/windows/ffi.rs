@@ -25,8 +25,10 @@ pub(crate) type Colorref = u32;
 pub(crate) const WM_CREATE: Uint = 0x0001;
 pub(crate) const WM_DESTROY: Uint = 0x0002;
 pub(crate) const WM_CLOSE: Uint = 0x0010;
+pub(crate) const WM_SIZE: Uint = 0x0005;
 pub(crate) const WM_PAINT: Uint = 0x000F;
 pub(crate) const WM_ERASEBKGND: Uint = 0x0014;
+pub(crate) const WM_GETMINMAXINFO: Uint = 0x0024;
 pub(crate) const WM_DRAWITEM: Uint = 0x002B;
 pub(crate) const WM_SETFONT: Uint = 0x0030;
 pub(crate) const WM_SETICON: Uint = 0x0080;
@@ -64,7 +66,9 @@ pub(crate) const ODS_FOCUS: Uint = 0x0010;
 
 pub(crate) const DT_LEFT: Uint = 0x0000;
 pub(crate) const DT_CENTER: Uint = 0x0001;
+pub(crate) const DT_RIGHT: Uint = 0x0002;
 pub(crate) const DT_VCENTER: Uint = 0x0004;
+pub(crate) const DT_WORDBREAK: Uint = 0x0010;
 pub(crate) const DT_SINGLELINE: Uint = 0x0020;
 pub(crate) const DT_NOPREFIX: Uint = 0x0800;
 pub(crate) const DT_END_ELLIPSIS: Uint = 0x8000;
@@ -120,6 +124,15 @@ pub(crate) struct Msg {
     pub(crate) time: Dword,
     pub(crate) pt: Point,
     pub(crate) l_private: Dword,
+}
+
+#[repr(C)]
+pub(crate) struct MinMaxInfo {
+    pub(crate) reserved: Point,
+    pub(crate) max_size: Point,
+    pub(crate) max_position: Point,
+    pub(crate) min_track_size: Point,
+    pub(crate) max_track_size: Point,
 }
 
 #[repr(C)]
@@ -184,6 +197,14 @@ extern "system" {
     pub(crate) fn DispatchMessageW(msg: *const Msg) -> Lresult;
     pub(crate) fn ShowWindow(hwnd: Hwnd, command: i32) -> Bool;
     pub(crate) fn UpdateWindow(hwnd: Hwnd) -> Bool;
+    pub(crate) fn MoveWindow(
+        hwnd: Hwnd,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        repaint: Bool,
+    ) -> Bool;
     pub(crate) fn SendMessageW(hwnd: Hwnd, msg: Uint, w_param: Wparam, l_param: Lparam) -> Lresult;
     pub(crate) fn SetWindowTextW(hwnd: Hwnd, text: *const u16) -> Bool;
     pub(crate) fn InvalidateRect(hwnd: Hwnd, rect: *const Rect, erase: Bool) -> Bool;

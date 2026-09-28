@@ -14,8 +14,10 @@ pub(crate) enum Page {
 }
 
 pub(crate) struct UiHandles {
+    pub(crate) icon: Hwnd,
     pub(crate) details: Hwnd,
     pub(crate) tabs: [Hwnd; 6],
+    pub(crate) actions: [Hwnd; 4],
     pub(crate) current_page: Page,
     pub(crate) brushes: Vec<Hbrush>,
     pub(crate) fonts: Vec<Hfont>,
