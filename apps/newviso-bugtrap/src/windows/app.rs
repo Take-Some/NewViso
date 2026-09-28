@@ -8,7 +8,7 @@ use super::{
     commands::*,
     ffi::*,
     state::{handles, ui_state, Page},
-    theme::{RGB_BG, RGB_PANEL, RGB_TEXT},
+    theme::{RGB_BG, RGB_CODE, RGB_TEXT},
     view,
 };
 
@@ -46,8 +46,8 @@ pub(crate) unsafe fn run_window() {
         WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
-        1040,
-        760,
+        1136,
+        814,
         null_mut(),
         null_mut(),
         instance,
@@ -96,7 +96,12 @@ unsafe extern "system" fn window_proc(
             handle_command(hwnd, w_param & 0xFFFF);
             0
         }
-        WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORBTN => control_color(w_param as Hdc),
+        WM_DRAWITEM => {
+            let item = &*(l_param as *const DrawItemStruct);
+            view::paint_owner_draw(item);
+            1
+        }
+        WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORBTN => control_color(msg, w_param as Hdc),
         WM_ERASEBKGND => 1,
         WM_PAINT => {
             paint_background(hwnd);
@@ -133,10 +138,9 @@ unsafe fn handle_command(hwnd: Hwnd, id: usize) {
     }
 }
 
-unsafe fn control_color(hdc: Hdc) -> Lresult {
+unsafe fn control_color(msg: Uint, hdc: Hdc) -> Lresult {
     SetTextColor(hdc, RGB_TEXT);
-    SetBkColor(hdc, RGB_PANEL);
-    SetBkMode(hdc, 1);
+    SetBkMode(hdc, TRANSPARENT);
 
     let Some(handles_mutex) = handles() else {
         return 0;
@@ -144,27 +148,26 @@ unsafe fn control_color(hdc: Hdc) -> Lresult {
     let Ok(handles) = handles_mutex.lock() else {
         return 0;
     };
-    let Some(brush) = handles.brushes.get(1) else {
-        return 0;
-    };
 
-    *brush as Lresult
+    let brush_index = if msg == WM_CTLCOLOREDIT { 1 } else { 0 };
+    let background = if msg == WM_CTLCOLOREDIT {
+        RGB_CODE
+    } else {
+        RGB_BG
+    };
+    SetBkColor(hdc, background);
+
+    handles
+        .brushes
+        .get(brush_index)
+        .copied()
+        .unwrap_or(null_mut()) as Lresult
 }
 
 unsafe fn paint_background(hwnd: Hwnd) {
     let mut paint = std::mem::zeroed::<PaintStruct>();
     let hdc = BeginPaint(hwnd, &mut paint);
-
-    if let Some(handles_mutex) = handles() {
-        if let Ok(handles) = handles_mutex.lock() {
-            if let Some(brush) = handles.brushes.first() {
-                let mut rect = std::mem::zeroed::<Rect>();
-                GetClientRect(hwnd, &mut rect);
-                FillRect(hdc, &rect, *brush);
-            }
-        }
-    }
-
+    view::paint_shell(hwnd, hdc);
     EndPaint(hwnd, &paint);
 }
 

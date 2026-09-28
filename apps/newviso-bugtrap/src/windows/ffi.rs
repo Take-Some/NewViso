@@ -8,6 +8,7 @@ pub(crate) type Hinstance = *mut c_void;
 pub(crate) type Hicon = *mut c_void;
 pub(crate) type Hcursor = *mut c_void;
 pub(crate) type Hbrush = *mut c_void;
+pub(crate) type Hpen = *mut c_void;
 pub(crate) type Hmenu = *mut c_void;
 pub(crate) type Hglobal = *mut c_void;
 pub(crate) type Hgdobj = *mut c_void;
@@ -24,15 +25,22 @@ pub(crate) type Colorref = u32;
 pub(crate) const WM_CREATE: Uint = 0x0001;
 pub(crate) const WM_DESTROY: Uint = 0x0002;
 pub(crate) const WM_CLOSE: Uint = 0x0010;
-pub(crate) const WM_COMMAND: Uint = 0x0111;
+pub(crate) const WM_PAINT: Uint = 0x000F;
+pub(crate) const WM_ERASEBKGND: Uint = 0x0014;
+pub(crate) const WM_DRAWITEM: Uint = 0x002B;
 pub(crate) const WM_SETFONT: Uint = 0x0030;
 pub(crate) const WM_SETICON: Uint = 0x0080;
-pub(crate) const WM_CTLCOLORSTATIC: Uint = 0x0138;
+pub(crate) const WM_COMMAND: Uint = 0x0111;
 pub(crate) const WM_CTLCOLOREDIT: Uint = 0x0133;
 pub(crate) const WM_CTLCOLORBTN: Uint = 0x0135;
-pub(crate) const WM_ERASEBKGND: Uint = 0x0014;
-pub(crate) const WM_PAINT: Uint = 0x000F;
+pub(crate) const WM_CTLCOLORSTATIC: Uint = 0x0138;
+
 pub(crate) const EM_SETSEL: Uint = 0x00B1;
+pub(crate) const EM_SETMARGINS: Uint = 0x00D3;
+pub(crate) const EC_LEFTMARGIN: Wparam = 0x0001;
+pub(crate) const EC_RIGHTMARGIN: Wparam = 0x0002;
+pub(crate) const STM_SETICON: Uint = 0x0170;
+
 pub(crate) const ICON_SMALL: Wparam = 0;
 pub(crate) const ICON_BIG: Wparam = 1;
 
@@ -47,11 +55,22 @@ pub(crate) const ES_AUTOVSCROLL: Dword = 0x0040;
 pub(crate) const ES_AUTOHSCROLL: Dword = 0x0080;
 pub(crate) const ES_READONLY: Dword = 0x0800;
 pub(crate) const ES_NOHIDESEL: Dword = 0x0100;
-pub(crate) const BS_PUSHBUTTON: Dword = 0x0000;
-pub(crate) const BS_DEFPUSHBUTTON: Dword = 0x0001;
-pub(crate) const BS_FLAT: Dword = 0x8000;
+pub(crate) const BS_OWNERDRAW: Dword = 0x000B;
 pub(crate) const SS_ICON: Dword = 0x00000003;
-pub(crate) const SS_CENTER: Dword = 0x00000001;
+
+pub(crate) const ODS_SELECTED: Uint = 0x0001;
+pub(crate) const ODS_DISABLED: Uint = 0x0004;
+pub(crate) const ODS_FOCUS: Uint = 0x0010;
+
+pub(crate) const DT_LEFT: Uint = 0x0000;
+pub(crate) const DT_CENTER: Uint = 0x0001;
+pub(crate) const DT_VCENTER: Uint = 0x0004;
+pub(crate) const DT_SINGLELINE: Uint = 0x0020;
+pub(crate) const DT_NOPREFIX: Uint = 0x0800;
+pub(crate) const DT_END_ELLIPSIS: Uint = 0x8000;
+
+pub(crate) const TRANSPARENT: i32 = 1;
+pub(crate) const PS_SOLID: i32 = 0;
 
 pub(crate) const CW_USEDEFAULT: i32 = i32::MIN;
 pub(crate) const SW_SHOW: i32 = 5;
@@ -74,6 +93,7 @@ pub(crate) struct Point {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub(crate) struct Rect {
     pub(crate) left: i32,
     pub(crate) top: i32,
@@ -100,6 +120,19 @@ pub(crate) struct Msg {
     pub(crate) time: Dword,
     pub(crate) pt: Point,
     pub(crate) l_private: Dword,
+}
+
+#[repr(C)]
+pub(crate) struct DrawItemStruct {
+    pub(crate) ctl_type: Uint,
+    pub(crate) ctl_id: Uint,
+    pub(crate) item_id: Uint,
+    pub(crate) item_action: Uint,
+    pub(crate) item_state: Uint,
+    pub(crate) hwnd_item: Hwnd,
+    pub(crate) hdc: Hdc,
+    pub(crate) rc_item: Rect,
+    pub(crate) item_data: usize,
 }
 
 pub(crate) type WndProc = unsafe extern "system" fn(Hwnd, Uint, Wparam, Lparam) -> Lresult;
@@ -161,6 +194,13 @@ extern "system" {
     pub(crate) fn SetTextColor(hdc: Hdc, color: Colorref) -> Colorref;
     pub(crate) fn SetBkColor(hdc: Hdc, color: Colorref) -> Colorref;
     pub(crate) fn SetBkMode(hdc: Hdc, mode: i32) -> i32;
+    pub(crate) fn DrawTextW(
+        hdc: Hdc,
+        text: *const u16,
+        count: i32,
+        rect: *mut Rect,
+        format: Uint,
+    ) -> i32;
     pub(crate) fn LoadIconW(instance: Hinstance, icon_name: *const u16) -> Hicon;
     pub(crate) fn LoadCursorW(instance: Hinstance, cursor_name: *const u16) -> Hcursor;
     pub(crate) fn OpenClipboard(owner: Hwnd) -> Bool;
@@ -181,6 +221,17 @@ extern "system" {
 #[link(name = "gdi32")]
 extern "system" {
     pub(crate) fn CreateSolidBrush(color: Colorref) -> Hbrush;
+    pub(crate) fn CreatePen(style: i32, width: i32, color: Colorref) -> Hpen;
+    pub(crate) fn SelectObject(hdc: Hdc, object: Hgdobj) -> Hgdobj;
+    pub(crate) fn RoundRect(
+        hdc: Hdc,
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+        width: i32,
+        height: i32,
+    ) -> Bool;
     pub(crate) fn DeleteObject(object: Hgdobj) -> Bool;
     pub(crate) fn CreateFontW(
         height: i32,
@@ -236,4 +287,8 @@ pub(crate) const fn rgb(r: u8, g: u8, b: u8) -> Colorref {
 
 pub(crate) fn make_int_resource(id: usize) -> *const u16 {
     id as *const u16
+}
+
+pub(crate) const fn make_lparam(low: i32, high: i32) -> Lparam {
+    ((low as u32 & 0xFFFF) | ((high as u32 & 0xFFFF) << 16)) as Lparam
 }
