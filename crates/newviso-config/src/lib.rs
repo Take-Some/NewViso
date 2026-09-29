@@ -80,6 +80,7 @@ impl Default for ProviderSelectionConfig {
 pub struct RuntimeConfig {
     pub max_frames: Option<u64>,
     pub skip_platform: bool,
+    pub safe_mode: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -87,6 +88,7 @@ impl Default for RuntimeConfig {
         Self {
             max_frames: None,
             skip_platform: false,
+            safe_mode: false,
         }
     }
 }
@@ -111,6 +113,7 @@ pub struct ResolvedBootstrapConfig {
     pub renderer_provider: String,
     pub max_frames: Option<u64>,
     pub skip_platform: bool,
+    pub safe_mode: bool,
     pub project_path: Option<PathBuf>,
     pub cli_overrides: Vec<String>,
 }
@@ -268,6 +271,11 @@ impl ResolvedBootstrapConfig {
             .or_else(|| env_bool("NEWVISO_SKIP_PLATFORM"))
             .unwrap_or(config.runtime.skip_platform);
 
+        let safe_mode = cli
+            .bool("runtime.safe_mode")?
+            .or_else(|| env_bool("NEWVISO_SAFE_MODE"))
+            .unwrap_or(config.runtime.safe_mode);
+
         let logging_provider = resolve_layered_string(
             cli.get("providers.logging"),
             "NEWVISO_LOGGING_PROVIDER",
@@ -318,6 +326,7 @@ impl ResolvedBootstrapConfig {
             renderer_provider,
             max_frames,
             skip_platform,
+            safe_mode,
             project_path,
             cli_overrides: cli.applied,
         })
@@ -488,6 +497,29 @@ mod tests {
         assert!(config.skip_platform);
         assert_eq!(config.renderer_provider, "engine.render.test");
         assert_eq!(config.cli_overrides.len(), 5);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn safe_mode_cli_is_an_explicit_runtime_contract() {
+        let root = temp_dir("bootstrap-safe-mode");
+        let exe = root.join("newviso.exe");
+
+        let safe =
+            ResolvedBootstrapConfig::load_for_executable_and_args(&exe, ["--safe-mode"]).unwrap();
+        assert!(safe.safe_mode);
+        assert!(safe
+            .cli_overrides
+            .iter()
+            .any(|value| value == "runtime.safe_mode=true"));
+
+        let normal = ResolvedBootstrapConfig::load_for_executable_and_args(
+            &exe,
+            ["--safe-mode", "--normal-mode"],
+        )
+        .unwrap();
+        assert!(!normal.safe_mode);
 
         let _ = fs::remove_dir_all(root);
     }

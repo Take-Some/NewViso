@@ -10,6 +10,19 @@ impl PlatformApplication for EngineApplication {
         let mut renderer = RunningProvider::load_current(&self.renderer_path)?;
         bugtrap::checkpoint("render.provider.initialize");
         renderer.initialize()?;
+        bugtrap::set_context("renderer_provider_runtime_id", renderer.id().to_owned());
+        if let Ok(info) = host::call_json("engine.render", "info_json", &json!({})) {
+            bugtrap::set_context("renderer_info_json", info.to_string());
+            if let Some(value) = info.get("backend_name").and_then(Value::as_str) {
+                bugtrap::set_context("renderer_backend_name", value.to_owned());
+            }
+            if let Some(value) = info.get("backend_version").and_then(Value::as_str) {
+                bugtrap::set_context("renderer_backend_version", value.to_owned());
+            }
+            if let Some(value) = info.get("backend_id").and_then(Value::as_str) {
+                bugtrap::set_context("renderer_backend_id", value.to_owned());
+            }
+        }
 
         host::info(
             "newviso.runtime",
@@ -121,23 +134,55 @@ impl PlatformApplication for EngineApplication {
 
         if self.physics.is_some() {
             bugtrap::set_phase("physics.step");
+            let (surface_wetness, surface_snow) = self.scene.surface_weather_state();
+            self.vehicles
+                .set_surface_weather(surface_wetness, surface_snow)?;
+            let physics_dt = dt.min(self.settings.scheduling.max_physics_frame_seconds);
             let scene_solids = self
                 .physics
                 .as_ref()
                 .and_then(PhysicsRuntime::scene_collider_interests)
-                .map(|interests| self.scene.physics_static_solid_aabbs_near(&interests))
+                .map(|interests| self.scene.physics_static_solid_colliders_near(&interests))
                 .unwrap_or_default();
-            let (activity_updates, pose_updates) = {
+            let (damage_contacts, activity_updates, pose_updates) = {
+                let vehicles = &mut self.vehicles;
                 let physics = self.physics.as_mut().expect("physics checked");
-                physics.step(
-                    dt.min(self.settings.scheduling.max_physics_frame_seconds),
-                    &scene_solids,
-                )?;
+                physics.step(physics_dt, &scene_solids, vehicles)?;
                 (
+                    physics.damage_contacts(),
                     physics.scene_activity_updates(),
                     physics.scene_pose_updates(),
                 )
             };
+
+            // Static scene props remain cheap until a real collision or a
+            // damage-carrying projectile reaches them. The scene owns health
+            // and break policy; physics owns the dynamic body created at the
+            // exact transition.
+            for contact in damage_contacts {
+                let _ = self.apply_vehicle_contact_damage(contact)?;
+                if let Some(activation) = self.scene.apply_entity_damage(
+                    contact.target,
+                    contact.direct_damage,
+                    contact.contact_impulse,
+                )? {
+                    host::info(
+                        "newviso.scene",
+                        format!(
+                            "destructible activated entity={} source={} damage={:.2} impulse={:.2}",
+                            activation.entity,
+                            contact.source,
+                            contact.direct_damage,
+                            contact.contact_impulse
+                        ),
+                    );
+                    let physics = self.physics.as_mut().expect("physics checked");
+                    physics.promote_scene_destructible(activation, contact)?;
+                    self.scene
+                        .set_physics_process_active(activation.entity, true)?;
+                }
+            }
+
             for activity in activity_updates {
                 self.scene
                     .set_physics_process_active(activity.entity, activity.active)?;
@@ -150,6 +195,15 @@ impl PlatformApplication for EngineApplication {
 
         perf_physics_ms = perf_mark.elapsed().as_secs_f64() * 1000.0;
         perf_mark = std::time::Instant::now();
+        let scripts_detail_start = std::time::Instant::now();
+        let mut scripts_detail_mark = scripts_detail_start;
+        let perf_world_native_ms;
+        let perf_presentations_ms;
+        let perf_script_state_ms;
+        let perf_quickjs_ms;
+        let perf_script_commands_ms;
+        let perf_scene_tick_ms;
+
         bugtrap::set_phase("living_world.tick");
         let transient_observers = [self.scene.focus_position()];
         let observers = if self.settings.scheduling.scene_focus_observer {
@@ -158,10 +212,21 @@ impl PlatformApplication for EngineApplication {
             &[]
         };
         self.living_world.tick_frame(dt, observers);
+        bugtrap::set_phase("agents.tick");
+        self.tick_agents(dt)?;
+        bugtrap::set_phase("characters.tick");
+        self.tick_physical_characters(dt)?;
+        perf_world_native_ms = scripts_detail_mark.elapsed().as_secs_f64() * 1000.0;
+        scripts_detail_mark = std::time::Instant::now();
+
         self.sync_world_actor_presentations()?;
+        perf_presentations_ms = scripts_detail_mark.elapsed().as_secs_f64() * 1000.0;
+        scripts_detail_mark = std::time::Instant::now();
 
         if self.scripts.is_some() {
             let runtime_state = self.script_frame_state();
+            perf_script_state_ms = scripts_detail_mark.elapsed().as_secs_f64() * 1000.0;
+            scripts_detail_mark = std::time::Instant::now();
             let frame_context = json!({
                 "input": {
                     "state": &input.state,
@@ -194,12 +259,18 @@ impl PlatformApplication for EngineApplication {
                     &frame_context,
                 )?
             };
+            perf_quickjs_ms = scripts_detail_mark.elapsed().as_secs_f64() * 1000.0;
+            scripts_detail_mark = std::time::Instant::now();
+
             self.exit_requested |= control.exit_requested;
             self.ui_bindings.extend(control.ui_bindings);
             self.apply_script_commands(&control.commands)?;
-            self.sync_world_actor_presentations()?;
+            perf_script_commands_ms = scripts_detail_mark.elapsed().as_secs_f64() * 1000.0;
+            scripts_detail_mark = std::time::Instant::now();
+
             bugtrap::set_phase("scene.tick");
             self.scene.tick(dt)?;
+            perf_scene_tick_ms = scripts_detail_mark.elapsed().as_secs_f64() * 1000.0;
         } else {
             // Native orbit is an engine/editor navigation fallback, not gameplay.
             self.scene.update_native_input_from_snapshot(
@@ -207,7 +278,14 @@ impl PlatformApplication for EngineApplication {
                 dt,
                 camera_navigation_enabled && self.settings.scheduling.native_navigation_enabled,
             )?;
+            perf_script_state_ms = 0.0;
+            perf_quickjs_ms = 0.0;
+            perf_script_commands_ms = 0.0;
+            perf_scene_tick_ms = 0.0;
         }
+
+        bugtrap::set_phase("vehicles.presentation");
+        self.sync_vehicle_presentations()?;
 
         for mutation in self.scene.drain_entity_mutations() {
             host::publish_event_json(event_topic::SCENE_ENTITY_MUTATED, "newviso.scene", mutation)?;
@@ -217,9 +295,25 @@ impl PlatformApplication for EngineApplication {
         // closure, retry and eviction remain owned by newviso-resource-runtime.
         perf_scripts_ms = perf_mark.elapsed().as_secs_f64() * 1000.0;
         perf_mark = std::time::Instant::now();
+        let streaming_interest_started = std::time::Instant::now();
         self.sync_scene_streaming_interests()?;
+        let streaming_interest_ms = streaming_interest_started.elapsed().as_secs_f64() * 1000.0;
+        let streaming_pump_started = std::time::Instant::now();
         self.pump_asset_streaming()?;
+        let streaming_pump_ms = streaming_pump_started.elapsed().as_secs_f64() * 1000.0;
         perf_streaming_ms = perf_mark.elapsed().as_secs_f64() * 1000.0;
+        if perf_streaming_ms >= 4.0 {
+            host::debug(
+                "newviso.perf",
+                format!(
+                    "streaming_breakdown frame={} interests_ms={:.3} pump_ms={:.3} total_ms={:.3}",
+                    self.ui_frame_index,
+                    streaming_interest_ms,
+                    streaming_pump_ms,
+                    perf_streaming_ms
+                ),
+            );
+        }
         perf_mark = std::time::Instant::now();
 
         self.publish_bound_ui_if_changed()?;
@@ -348,11 +442,17 @@ impl PlatformApplication for EngineApplication {
             host::info(
                 "newviso.perf",
                 format!(
-                    "frame={} total_ms={:.2} physics_ms={:.2} scripts_world_ms={:.2} streaming_ms={:.2} scene_render_ms={:.2} provider_ms={:.2}",
+                    "frame={} total_ms={:.2} physics_ms={:.2} scripts_world_ms={:.2} world_native_ms={:.2} presentations_ms={:.2} script_state_ms={:.2} quickjs_ms={:.2} script_commands_ms={:.2} scene_tick_ms={:.2} streaming_ms={:.2} scene_render_ms={:.2} provider_ms={:.2}",
                     perf_frame,
                     perf_total_ms,
                     perf_physics_ms,
                     perf_scripts_ms,
+                    perf_world_native_ms,
+                    perf_presentations_ms,
+                    perf_script_state_ms,
+                    perf_quickjs_ms,
+                    perf_script_commands_ms,
+                    perf_scene_tick_ms,
                     perf_streaming_ms,
                     perf_scene_render_ms,
                     perf_provider_ms
@@ -428,6 +528,15 @@ impl PlatformApplication for EngineApplication {
         }
 
         self.cursor_captured = false;
+
+        // Capture diagnostics while scene streaming ownership is still intact.
+        // Releasing claims first erased the very dependency state needed to
+        // diagnose shutdown-time residency/materialization problems.
+        host::info(
+            "newviso.runtime",
+            format!("pre-shutdown runtime state: {}", self.runtime_state()),
+        );
+
         let claims = std::mem::take(&mut self.scene_stream_claims);
         for (stable_id, address) in claims {
             self.asset_streamer

@@ -23,10 +23,7 @@ impl EngineApplication {
         Ok(stopped)
     }
 
-    pub(super) fn apply_scene_animation_binding(
-        &mut self,
-        stable_id: u64,
-    ) -> Result<bool, String> {
+    pub(super) fn apply_scene_animation_binding(&mut self, stable_id: u64) -> Result<bool, String> {
         let Some(binding) = self.scene_animation_bindings.get(&stable_id).cloned() else {
             return Ok(false);
         };

@@ -1,5 +1,7 @@
 mod sweep;
-pub use sweep::{sweep_sphere_aabb, SphereSweepMesh};
+pub use sweep::{
+    sweep_sphere_aabb, sweep_sphere_aabb_hit, SphereSweepHit, SphereSweepMesh, TriangleSurfaceHit,
+};
 
 use newviso_resource_runtime::{AssetDomain, AssetId, AssetResource};
 use std::{any::Any, sync::Arc};
@@ -28,7 +30,7 @@ pub struct CollisionMeshResource {
     /// Local-space vertices. Placement transform is owned by Scene/World.
     pub vertices: Vec<[f32; 3]>,
     pub triangles: Vec<[u32; 3]>,
-    /// RAGE physical material/type per triangle. Backends may remap this to
+    /// RSC7 physical material/type per triangle. Backends may remap this to
     /// engine materials without changing the imported topology.
     pub material_indices: Vec<u32>,
     pub bounds: CollisionBounds,

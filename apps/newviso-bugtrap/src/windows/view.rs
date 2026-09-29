@@ -1,21 +1,23 @@
 use std::ptr::null;
 
 use super::{
+    actions as recovery_actions,
     commands::*,
     ffi::*,
     state::{handles, install_handles, ui_state, Page, UiHandles},
     theme::*,
 };
 
-const HEADER_TOP: i32 = 18;
-const INCIDENT_TOP: i32 = 96;
+const BASE_DPI: i32 = 96;
 const TAB_GAP: i32 = 6;
 const ACTION_GAP: i32 = 10;
 
 #[derive(Clone, Copy)]
 struct Layout {
+    dpi: i32,
     client_width: i32,
     client_height: i32,
+    logical_content_width: i32,
     content_left: i32,
     content_right: i32,
     incident: Rect,
@@ -25,10 +27,12 @@ struct Layout {
     footer_y: i32,
     status: Rect,
     wide_metrics: bool,
+    compact_actions: bool,
 }
 
 impl Layout {
     unsafe fn from_window(hwnd: Hwnd) -> Self {
+        let dpi = dpi_for_window(hwnd);
         let mut client = Rect {
             left: 0,
             top: 0,
@@ -39,70 +43,75 @@ impl Layout {
 
         let client_width = (client.right - client.left).max(1);
         let client_height = (client.bottom - client.top).max(1);
-        let margin = if client_width >= 920 { 28 } else { 18 };
-        let content_left = margin;
-        let content_right = (client_width - margin).max(content_left + 320);
-        let content_width = content_right - content_left;
-        let wide_metrics = content_width >= 920;
+        let logical_width = unscale(client_width, dpi);
+        let logical_height = unscale(client_height, dpi);
+        let margin = if logical_width >= 920 { 28 } else { 18 };
+        let logical_content_width = (logical_width - margin * 2).max(320);
+        let content_left = scale(margin, dpi);
+        let content_right = (client_width - scale(margin, dpi)).max(content_left + scale(320, dpi));
+        let wide_metrics = logical_content_width >= 920;
+        let compact_actions = logical_content_width < 980;
 
         let incident_bottom = if wide_metrics { 248 } else { 298 };
         let incident = Rect {
             left: content_left,
-            top: INCIDENT_TOP,
+            top: scale(96, dpi),
             right: content_right,
-            bottom: incident_bottom,
+            bottom: scale(incident_bottom, dpi),
         };
 
-        let section_y = incident.bottom + 10;
-        let tabs_y = incident.bottom + 34;
-        let details_top = tabs_y + 44;
-        let footer_y = (client_height - 58).max(details_top + 138);
-        let details_bottom = (footer_y - 12).max(details_top + 120);
+        let section_y = incident.bottom + scale(10, dpi);
+        let tabs_y = incident.bottom + scale(34, dpi);
+        let details_top = tabs_y + scale(44, dpi);
+        let footer_reserved = if compact_actions { 104 } else { 58 };
+        let footer_y = scale((logical_height - footer_reserved).max(568), dpi);
+        let details_bottom = (footer_y - scale(12, dpi)).max(details_top + scale(120, dpi));
 
-        let status_width = if client_width >= 900 { 184 } else { 166 };
+        let status_width = if logical_width >= 900 { 184 } else { 166 };
         let status = Rect {
-            left: content_right - status_width,
-            top: 22,
+            left: content_right - scale(status_width, dpi),
+            top: scale(22, dpi),
             right: content_right,
-            bottom: 56,
+            bottom: scale(56, dpi),
         };
 
         Self {
+            dpi,
             client_width,
             client_height,
+            logical_content_width,
             content_left,
             content_right,
             incident,
             section_y,
             tabs_y,
             details: Rect {
-                left: content_left + 1,
+                left: content_left + scale(1, dpi),
                 top: details_top,
-                right: content_right - 1,
+                right: content_right - scale(1, dpi),
                 bottom: details_bottom,
             },
             footer_y,
             status,
             wide_metrics,
+            compact_actions,
         }
     }
 
     fn content_width(self) -> i32 {
         self.content_right - self.content_left
     }
+
+    fn px(self, value: i32) -> i32 {
+        scale(value, self.dpi)
+    }
 }
 
 pub(crate) unsafe fn create_controls(hwnd: Hwnd) {
     let instance = GetModuleHandleW(null());
     let icon = LoadIconW(instance, make_int_resource(1));
-
-    let font_brand = create_font(21, FW_BOLD, "Segoe UI");
-    let font_meta = create_font(10, FW_MEDIUM, "Segoe UI");
-    let font_label = create_font(10, FW_SEMIBOLD, "Segoe UI");
-    let font_body = create_font(11, FW_NORMAL, "Segoe UI");
-    let font_heading = create_font(18, FW_SEMIBOLD, "Segoe UI");
-    let font_mono = create_font(10, FW_NORMAL, "Cascadia Mono");
-    let font_metric = create_font(11, FW_SEMIBOLD, "Segoe UI");
+    let dpi = dpi_for_window(hwnd);
+    let fonts = create_fonts(dpi);
 
     let brush_bg = CreateSolidBrush(RGB_BG);
     let brush_code = CreateSolidBrush(RGB_CODE);
@@ -115,19 +124,37 @@ pub(crate) unsafe fn create_controls(hwnd: Hwnd) {
         WS_CHILD | WS_VISIBLE | SS_ICON,
         0,
         0,
-        42,
-        42,
+        scale(42, dpi),
+        scale(42, dpi),
         0,
     );
     SendMessageW(icon_view, STM_SETICON, icon as Wparam, 0);
 
     let tabs = [
-        create_tab(hwnd, instance, font_label, "Overview", ID_TAB_OVERVIEW),
-        create_tab(hwnd, instance, font_label, "Exception", ID_TAB_EXCEPTION),
-        create_tab(hwnd, instance, font_label, "Stack trace", ID_TAB_STACK),
-        create_tab(hwnd, instance, font_label, "Engine", ID_TAB_ENGINE),
-        create_tab(hwnd, instance, font_label, "System", ID_TAB_SYSTEM),
-        create_tab(hwnd, instance, font_label, "Files", ID_TAB_FILES),
+        create_tab(
+            hwnd,
+            instance,
+            fonts[FONT_LABEL],
+            "Overview",
+            ID_TAB_OVERVIEW,
+        ),
+        create_tab(
+            hwnd,
+            instance,
+            fonts[FONT_LABEL],
+            "Exception",
+            ID_TAB_EXCEPTION,
+        ),
+        create_tab(
+            hwnd,
+            instance,
+            fonts[FONT_LABEL],
+            "Stack trace",
+            ID_TAB_STACK,
+        ),
+        create_tab(hwnd, instance, fonts[FONT_LABEL], "Engine", ID_TAB_ENGINE),
+        create_tab(hwnd, instance, fonts[FONT_LABEL], "System", ID_TAB_SYSTEM),
+        create_tab(hwnd, instance, fonts[FONT_LABEL], "Files", ID_TAB_FILES),
     ];
 
     let details = create_control(
@@ -149,26 +176,53 @@ pub(crate) unsafe fn create_controls(hwnd: Hwnd) {
         100,
         0,
     );
-    SendMessageW(details, WM_SETFONT, font_body as Wparam, 1);
+    SendMessageW(details, WM_SETFONT, fonts[FONT_BODY] as Wparam, 1);
     SendMessageW(
         details,
         EM_SETMARGINS,
         EC_LEFTMARGIN | EC_RIGHTMARGIN,
-        make_lparam(16, 16),
+        make_lparam(scale(16, dpi), scale(16, dpi)),
     );
 
     let actions = [
-        create_action(hwnd, instance, font_label, "Copy error", ID_COPY_ERROR),
-        create_action(hwnd, instance, font_label, "Copy diagnostic", ID_COPY),
         create_action(
             hwnd,
             instance,
-            font_label,
+            fonts[FONT_LABEL],
+            "Restart NewViso",
+            ID_RESTART,
+        ),
+        create_action(
+            hwnd,
+            instance,
+            fonts[FONT_LABEL],
+            "Restart in safe mode",
+            ID_RESTART_SAFE,
+        ),
+        create_action(hwnd, instance, fonts[FONT_LABEL], "Open logs", ID_OPEN_LOGS),
+        create_action(
+            hwnd,
+            instance,
+            fonts[FONT_LABEL],
+            "Copy diagnostic",
+            ID_COPY,
+        ),
+        create_action(
+            hwnd,
+            instance,
+            fonts[FONT_LABEL],
             "Open report folder",
             ID_OPEN_FOLDER,
         ),
-        create_action(hwnd, instance, font_label, "Close", ID_CLOSE),
+        create_action(hwnd, instance, fonts[FONT_LABEL], "Close", ID_CLOSE),
     ];
+
+    EnableWindow(actions[0], recovery_actions::restart_available() as Bool);
+    EnableWindow(
+        actions[1],
+        recovery_actions::safe_restart_available() as Bool,
+    );
+    EnableWindow(actions[2], recovery_actions::logs_available() as Bool);
 
     install_handles(UiHandles {
         icon: icon_view,
@@ -177,19 +231,40 @@ pub(crate) unsafe fn create_controls(hwnd: Hwnd) {
         actions,
         current_page: Page::Overview,
         brushes: vec![brush_bg, brush_code],
-        fonts: vec![
-            font_brand,
-            font_meta,
-            font_label,
-            font_body,
-            font_heading,
-            font_mono,
-            font_metric,
-        ],
+        fonts,
     });
 
     layout_controls(hwnd);
     switch_page(hwnd, Page::Overview);
+}
+
+pub(crate) unsafe fn refresh_dpi_resources(hwnd: Hwnd) {
+    let dpi = dpi_for_window(hwnd);
+    let new_fonts = create_fonts(dpi);
+    if let Some(handles_mutex) = handles() {
+        if let Ok(mut handles) = handles_mutex.lock() {
+            let old_fonts = std::mem::replace(&mut handles.fonts, new_fonts);
+            let details_font = if handles.current_page == Page::Overview {
+                handles.fonts[FONT_BODY]
+            } else {
+                handles.fonts[FONT_MONO]
+            };
+            SendMessageW(handles.details, WM_SETFONT, details_font as Wparam, 1);
+            for control in handles.tabs.into_iter().chain(handles.actions) {
+                SendMessageW(control, WM_SETFONT, handles.fonts[FONT_LABEL] as Wparam, 1);
+            }
+            SendMessageW(
+                handles.details,
+                EM_SETMARGINS,
+                EC_LEFTMARGIN | EC_RIGHTMARGIN,
+                make_lparam(scale(16, dpi), scale(16, dpi)),
+            );
+            for font in old_fonts {
+                DeleteObject(font as Hgdobj);
+            }
+        }
+    }
+    InvalidateRect(hwnd, null(), 1);
 }
 
 pub(crate) unsafe fn layout_controls(hwnd: Hwnd) {
@@ -205,45 +280,62 @@ pub(crate) unsafe fn layout_controls(hwnd: Hwnd) {
         (handles.icon, handles.details, handles.tabs, handles.actions)
     };
 
-    MoveWindow(icon, layout.content_left + 2, HEADER_TOP + 4, 42, 42, 1);
+    MoveWindow(
+        icon,
+        layout.content_left + layout.px(2),
+        layout.px(22),
+        layout.px(42),
+        layout.px(42),
+        1,
+    );
 
-    let tab_width =
-        ((layout.content_width() - TAB_GAP * (tabs.len() as i32 - 1)) / tabs.len() as i32).max(70);
+    let tab_gap = layout.px(TAB_GAP);
+    let tab_width = ((layout.content_width() - tab_gap * (tabs.len() as i32 - 1))
+        / tabs.len() as i32)
+        .max(layout.px(70));
     for (index, tab) in tabs.into_iter().enumerate() {
-        let x = layout.content_left + index as i32 * (tab_width + TAB_GAP);
-        MoveWindow(tab, x, layout.tabs_y, tab_width, 34, 1);
+        let x = layout.content_left + index as i32 * (tab_width + tab_gap);
+        MoveWindow(tab, x, layout.tabs_y, tab_width, layout.px(34), 1);
     }
 
     MoveWindow(
         details,
         layout.details.left,
         layout.details.top,
-        (layout.details.right - layout.details.left).max(80),
-        (layout.details.bottom - layout.details.top).max(80),
+        (layout.details.right - layout.details.left).max(layout.px(80)),
+        (layout.details.bottom - layout.details.top).max(layout.px(80)),
         1,
     );
 
-    if layout.content_width() >= 820 {
-        let widths = [126, 152, 174, 126];
+    let action_gap = layout.px(ACTION_GAP);
+    if !layout.compact_actions {
+        let logical_widths = [138, 168, 106, 142, 164, 90];
+        let widths = logical_widths.map(|width| layout.px(width));
+        let total = widths.iter().sum::<i32>() + action_gap * 5;
+        let squeeze = (total - layout.content_width()).max(0);
+        let per_button_squeeze = (squeeze / 6) + i32::from(squeeze % 6 != 0);
+        let widths = widths.map(|width| (width - per_button_squeeze).max(layout.px(82)));
+
         let mut x = layout.content_left;
-        for (index, action) in actions.into_iter().enumerate().take(3) {
-            MoveWindow(action, x, layout.footer_y, widths[index], 40, 1);
-            x += widths[index] + ACTION_GAP;
-        }
-        MoveWindow(
-            actions[3],
-            layout.content_right - widths[3],
-            layout.footer_y,
-            widths[3],
-            40,
-            1,
-        );
-    } else {
-        let button_width =
-            ((layout.content_width() - ACTION_GAP * 3) / actions.len() as i32).max(92);
         for (index, action) in actions.into_iter().enumerate() {
-            let x = layout.content_left + index as i32 * (button_width + ACTION_GAP);
-            MoveWindow(action, x, layout.footer_y, button_width, 40, 1);
+            MoveWindow(action, x, layout.footer_y, widths[index], layout.px(40), 1);
+            x += widths[index] + action_gap;
+        }
+    } else {
+        let columns = 3;
+        let width =
+            ((layout.content_width() - action_gap * (columns - 1)) / columns).max(layout.px(92));
+        for (index, action) in actions.into_iter().enumerate() {
+            let column = index as i32 % columns;
+            let row = index as i32 / columns;
+            MoveWindow(
+                action,
+                layout.content_left + column * (width + action_gap),
+                layout.footer_y + row * layout.px(46),
+                width,
+                layout.px(40),
+                1,
+            );
         }
     }
 
@@ -311,16 +403,16 @@ pub(crate) unsafe fn paint_shell(hwnd: Hwnd, hdc: Hdc) {
     };
     fill_rect_color(hdc, &client, RGB_BG);
 
-    let brand_left = layout.content_left + 54;
+    let brand_left = layout.content_left + layout.px(54);
     draw_text(
         hdc,
         fonts[FONT_BRAND],
         "NEWVISO",
         Rect {
             left: brand_left,
-            top: 16,
-            right: brand_left + 190,
-            bottom: 45,
+            top: layout.px(16),
+            right: brand_left + layout.px(190),
+            bottom: layout.px(45),
         },
         RGB_TEXT,
         DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
@@ -328,27 +420,33 @@ pub(crate) unsafe fn paint_shell(hwnd: Hwnd, hdc: Hdc) {
     draw_text(
         hdc,
         fonts[FONT_META],
-        "BUGTRAP  /  CRASH REPORT",
+        "BUGTRAP  /  RECOVERY & DIAGNOSTICS",
         Rect {
-            left: brand_left + 2,
-            top: 45,
-            right: brand_left + 330,
-            bottom: 67,
+            left: brand_left + layout.px(2),
+            top: layout.px(45),
+            right: brand_left + layout.px(360),
+            bottom: layout.px(67),
         },
         RGB_TEXT_MUTED,
         DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
     );
 
-    fill_round_rect(hdc, &layout.status, 16, RGB_DANGER_SOFT, RGB_DANGER_BORDER);
+    fill_round_rect(
+        hdc,
+        &layout.status,
+        layout.px(16),
+        RGB_DANGER_SOFT,
+        RGB_DANGER_BORDER,
+    );
     fill_round_rect(
         hdc,
         &Rect {
-            left: layout.status.left + 14,
-            top: 35,
-            right: layout.status.left + 22,
-            bottom: 43,
+            left: layout.status.left + layout.px(14),
+            top: layout.status.top + layout.px(13),
+            right: layout.status.left + layout.px(22),
+            bottom: layout.status.top + layout.px(21),
         },
-        8,
+        layout.px(8),
         RGB_DANGER,
         RGB_DANGER,
     );
@@ -357,9 +455,9 @@ pub(crate) unsafe fn paint_shell(hwnd: Hwnd, hdc: Hdc) {
         fonts[FONT_LABEL],
         "CRASH CAPTURED",
         Rect {
-            left: layout.status.left + 32,
+            left: layout.status.left + layout.px(32),
             top: layout.status.top,
-            right: layout.status.right - 12,
+            right: layout.status.right - layout.px(12),
             bottom: layout.status.bottom,
         },
         RGB_DANGER,
@@ -370,30 +468,30 @@ pub(crate) unsafe fn paint_shell(hwnd: Hwnd, hdc: Hdc) {
         hdc,
         &Rect {
             left: layout.content_left,
-            top: 78,
+            top: layout.px(78),
             right: layout.content_right,
-            bottom: 79,
+            bottom: layout.px(79),
         },
         RGB_BORDER,
     );
 
-    fill_round_rect(hdc, &layout.incident, 18, RGB_PANEL, RGB_BORDER);
+    fill_round_rect(hdc, &layout.incident, layout.px(18), RGB_PANEL, RGB_BORDER);
     fill_round_rect(
         hdc,
         &Rect {
             left: layout.incident.left,
             top: layout.incident.top,
-            right: layout.incident.left + 6,
+            right: layout.incident.left + layout.px(6),
             bottom: layout.incident.bottom,
         },
-        6,
+        layout.px(6),
         RGB_DANGER,
         RGB_DANGER,
     );
 
     let state = ui_state();
-    let inner_left = layout.incident.left + 24;
-    let inner_right = layout.incident.right - 24;
+    let inner_left = layout.incident.left + layout.px(24);
+    let inner_right = layout.incident.right - layout.px(24);
 
     draw_text(
         hdc,
@@ -401,9 +499,9 @@ pub(crate) unsafe fn paint_shell(hwnd: Hwnd, hdc: Hdc) {
         "RUNTIME FAILURE",
         Rect {
             left: inner_left,
-            top: 109,
-            right: inner_left + 190,
-            bottom: 132,
+            top: layout.incident.top + layout.px(13),
+            right: inner_left + layout.px(190),
+            bottom: layout.incident.top + layout.px(36),
         },
         RGB_DANGER,
         DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
@@ -414,18 +512,18 @@ pub(crate) unsafe fn paint_shell(hwnd: Hwnd, hdc: Hdc) {
         &state.issue_title,
         Rect {
             left: inner_left,
-            top: 132,
+            top: layout.incident.top + layout.px(36),
             right: inner_right,
-            bottom: 163,
+            bottom: layout.incident.top + layout.px(67),
         },
         RGB_TEXT,
         DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
     );
 
     let metric_top = if layout.wide_metrics {
-        layout.incident.bottom - 48
+        layout.incident.bottom - layout.px(48)
     } else {
-        layout.incident.bottom - 90
+        layout.incident.bottom - layout.px(90)
     };
     draw_text(
         hdc,
@@ -433,9 +531,9 @@ pub(crate) unsafe fn paint_shell(hwnd: Hwnd, hdc: Hdc) {
         &state.issue_summary,
         Rect {
             left: inner_left,
-            top: 162,
+            top: layout.incident.top + layout.px(66),
             right: inner_right,
-            bottom: metric_top - 7,
+            bottom: metric_top - layout.px(7),
         },
         RGB_TEXT_MUTED,
         DT_LEFT | DT_WORDBREAK | DT_NOPREFIX,
@@ -450,8 +548,8 @@ pub(crate) unsafe fn paint_shell(hwnd: Hwnd, hdc: Hdc) {
         Rect {
             left: layout.content_left,
             top: layout.section_y,
-            right: layout.content_left + 190,
-            bottom: layout.section_y + 22,
+            right: layout.content_left + layout.px(190),
+            bottom: layout.section_y + layout.px(22),
         },
         RGB_TEXT_DIM,
         DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
@@ -459,12 +557,12 @@ pub(crate) unsafe fn paint_shell(hwnd: Hwnd, hdc: Hdc) {
     draw_text(
         hdc,
         fonts[FONT_META],
-        &format!("{}  ·  local crash package", state.report_name),
+        &format!("{}  ·  {}", state.crash_id, state.report_name),
         Rect {
-            left: layout.content_left + 200,
+            left: layout.content_left + layout.px(200),
             top: layout.section_y,
             right: layout.content_right,
-            bottom: layout.section_y + 22,
+            bottom: layout.section_y + layout.px(22),
         },
         RGB_TEXT_DIM,
         DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
@@ -472,34 +570,34 @@ pub(crate) unsafe fn paint_shell(hwnd: Hwnd, hdc: Hdc) {
 
     let code_frame = Rect {
         left: layout.content_left,
-        top: layout.details.top - 1,
+        top: layout.details.top - layout.px(1),
         right: layout.content_right,
-        bottom: layout.details.bottom + 1,
+        bottom: layout.details.bottom + layout.px(1),
     };
-    fill_round_rect(hdc, &code_frame, 12, RGB_CODE, RGB_BORDER);
+    fill_round_rect(hdc, &code_frame, layout.px(12), RGB_CODE, RGB_BORDER);
 
-    let divider_y = layout.footer_y - 12;
+    let divider_y = layout.footer_y - layout.px(12);
     fill_rect_color(
         hdc,
         &Rect {
             left: layout.content_left,
             top: divider_y,
             right: layout.content_right,
-            bottom: divider_y + 1,
+            bottom: divider_y + layout.px(1),
         },
         RGB_BORDER,
     );
 
-    if layout.content_width() >= 920 {
+    if layout.logical_content_width >= 1180 {
         draw_text(
             hdc,
             fonts[FONT_META],
-            "Local by default. Share only when you choose to.",
+            &format!("{}  ·  {}", state.provider_summary, state.recovery_summary),
             Rect {
-                left: layout.content_left + 520,
+                left: layout.content_left + layout.px(820),
                 top: layout.footer_y,
-                right: layout.content_right - 144,
-                bottom: layout.footer_y + 40,
+                right: layout.content_right,
+                bottom: layout.footer_y + layout.px(40),
             },
             RGB_TEXT_DIM,
             DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
@@ -508,25 +606,26 @@ pub(crate) unsafe fn paint_shell(hwnd: Hwnd, hdc: Hdc) {
 }
 
 unsafe fn paint_metrics(hdc: Hdc, fonts: &[Hfont], layout: Layout, state: &crate::report::UiState) {
-    let left = layout.incident.left + 24;
-    let right = layout.incident.right - 24;
+    let left = layout.incident.left + layout.px(24);
+    let right = layout.incident.right - layout.px(24);
     let available = right - left;
-    let gap = 10;
+    let gap = layout.px(10);
 
     let items = [
         ("ENGINE PHASE", state.phase.as_str()),
-        ("FAILURE TYPE", state.kind.as_str()),
-        ("ADDRESS", state.exception_address.as_str()),
-        ("CAPTURED", state.evidence_summary.as_str()),
+        ("BUILD", state.build_summary.as_str()),
+        ("RENDERER", state.renderer_summary.as_str()),
+        ("GPU", state.gpu_summary.as_str()),
     ];
 
     if layout.wide_metrics {
         let width = (available - gap * 3) / 4;
-        let y = layout.incident.bottom - 48;
+        let y = layout.incident.bottom - layout.px(48);
         for (index, (label, value)) in items.into_iter().enumerate() {
             paint_metric(
                 hdc,
                 fonts,
+                layout,
                 label,
                 value,
                 left + index as i32 * (width + gap),
@@ -536,17 +635,18 @@ unsafe fn paint_metrics(hdc: Hdc, fonts: &[Hfont], layout: Layout, state: &crate
         }
     } else {
         let width = (available - gap) / 2;
-        let y = layout.incident.bottom - 90;
+        let y = layout.incident.bottom - layout.px(90);
         for (index, (label, value)) in items.into_iter().enumerate() {
             let column = index as i32 % 2;
             let row = index as i32 / 2;
             paint_metric(
                 hdc,
                 fonts,
+                layout,
                 label,
                 value,
                 left + column * (width + gap),
-                y + row * 42,
+                y + row * layout.px(42),
                 width,
             );
         }
@@ -580,24 +680,25 @@ unsafe fn paint_tab(item: &DrawItemStruct) {
     };
     let border = if selected { RGB_BORDER_STRONG } else { RGB_BG };
 
-    fill_round_rect(item.hdc, &item.rc_item, 12, fill, border);
+    let dpi = dpi_for_window(item.hwnd_item);
+    fill_round_rect(item.hdc, &item.rc_item, scale(12, dpi), fill, border);
 
     if selected {
         fill_round_rect(
             item.hdc,
             &Rect {
-                left: item.rc_item.left + 18,
-                top: item.rc_item.bottom - 4,
-                right: item.rc_item.right - 18,
-                bottom: item.rc_item.bottom - 1,
+                left: item.rc_item.left + scale(18, dpi),
+                top: item.rc_item.bottom - scale(4, dpi),
+                right: item.rc_item.right - scale(18, dpi),
+                bottom: item.rc_item.bottom - scale(1, dpi),
             },
-            3,
+            scale(3, dpi),
             RGB_ACCENT,
             RGB_ACCENT,
         );
     }
 
-    let width = item.rc_item.right - item.rc_item.left;
+    let width = unscale(item.rc_item.right - item.rc_item.left, dpi);
     draw_text(
         item.hdc,
         handles.fonts[FONT_LABEL],
@@ -619,9 +720,12 @@ unsafe fn paint_action(item: &DrawItemStruct) {
     let id = item.ctl_id as usize;
     let pressed = item.item_state & ODS_SELECTED != 0;
     let disabled = item.item_state & ODS_DISABLED != 0;
-    let primary = id == ID_COPY;
+    let primary = id == ID_RESTART;
+    let recovery_secondary = id == ID_RESTART_SAFE;
 
-    let (fill, border, text_color) = if primary {
+    let (fill, border, text_color) = if disabled {
+        (RGB_SURFACE, RGB_BORDER, RGB_TEXT_DIM)
+    } else if primary {
         (
             if pressed {
                 RGB_ACCENT_PRESSED
@@ -635,25 +739,32 @@ unsafe fn paint_action(item: &DrawItemStruct) {
             },
             RGB_PANEL,
         )
+    } else if recovery_secondary {
+        (
+            if pressed { RGB_SURFACE } else { RGB_PANEL },
+            RGB_ACCENT,
+            RGB_ACCENT,
+        )
     } else if pressed {
         (RGB_SURFACE, RGB_BORDER_STRONG, RGB_TEXT)
     } else {
         (RGB_PANEL, RGB_BORDER_STRONG, RGB_TEXT)
     };
 
-    fill_round_rect(item.hdc, &item.rc_item, 12, fill, border);
+    let dpi = dpi_for_window(item.hwnd_item);
+    fill_round_rect(item.hdc, &item.rc_item, scale(12, dpi), fill, border);
 
-    if item.item_state & ODS_FOCUS != 0 {
+    if item.item_state & ODS_FOCUS != 0 && !disabled {
         let focus = Rect {
-            left: item.rc_item.left + 3,
-            top: item.rc_item.top + 3,
-            right: item.rc_item.right - 3,
-            bottom: item.rc_item.bottom - 3,
+            left: item.rc_item.left + scale(3, dpi),
+            top: item.rc_item.top + scale(3, dpi),
+            right: item.rc_item.right - scale(3, dpi),
+            bottom: item.rc_item.bottom - scale(3, dpi),
         };
         fill_round_rect(
             item.hdc,
             &focus,
-            9,
+            scale(9, dpi),
             fill,
             if primary { RGB_PANEL } else { RGB_ACCENT },
         );
@@ -664,7 +775,7 @@ unsafe fn paint_action(item: &DrawItemStruct) {
         handles.fonts[FONT_LABEL],
         action_label(id),
         item.rc_item,
-        if disabled { RGB_TEXT_DIM } else { text_color },
+        text_color,
         DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
     );
 }
@@ -672,6 +783,7 @@ unsafe fn paint_action(item: &DrawItemStruct) {
 unsafe fn paint_metric(
     hdc: Hdc,
     fonts: &[Hfont],
+    layout: Layout,
     label: &str,
     value: &str,
     x: i32,
@@ -682,19 +794,19 @@ unsafe fn paint_metric(
         left: x,
         top: y,
         right: x + width,
-        bottom: y + 37,
+        bottom: y + layout.px(37),
     };
-    fill_round_rect(hdc, &rect, 10, RGB_SURFACE, RGB_BORDER);
+    fill_round_rect(hdc, &rect, layout.px(10), RGB_SURFACE, RGB_BORDER);
 
     draw_text(
         hdc,
         fonts[FONT_META],
         label,
         Rect {
-            left: x + 11,
-            top: y + 3,
-            right: x + width - 10,
-            bottom: y + 18,
+            left: x + layout.px(11),
+            top: y + layout.px(3),
+            right: x + width - layout.px(10),
+            bottom: y + layout.px(18),
         },
         RGB_TEXT_DIM,
         DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
@@ -704,10 +816,10 @@ unsafe fn paint_metric(
         fonts[FONT_METRIC],
         value,
         Rect {
-            left: x + 11,
-            top: y + 17,
-            right: x + width - 10,
-            bottom: y + 35,
+            left: x + layout.px(11),
+            top: y + layout.px(17),
+            right: x + width - layout.px(10),
+            bottom: y + layout.px(35),
         },
         RGB_TEXT,
         DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
@@ -781,6 +893,9 @@ fn tab_label(id: usize, width: i32) -> &'static str {
 
 fn action_label(id: usize) -> &'static str {
     match id {
+        ID_RESTART => "Restart NewViso",
+        ID_RESTART_SAFE => "Restart in safe mode",
+        ID_OPEN_LOGS => "Open logs",
         ID_COPY_ERROR => "Copy error",
         ID_COPY => "Copy diagnostic",
         ID_OPEN_FOLDER => "Open report folder",
@@ -819,4 +934,28 @@ unsafe fn create_control(
         instance,
         std::ptr::null_mut(),
     )
+}
+
+unsafe fn dpi_for_window(hwnd: Hwnd) -> i32 {
+    GetDpiForWindow(hwnd).max(BASE_DPI as Uint) as i32
+}
+
+fn scale(value: i32, dpi: i32) -> i32 {
+    ((value as i64 * dpi as i64 + 48) / 96) as i32
+}
+
+fn unscale(value: i32, dpi: i32) -> i32 {
+    ((value as i64 * 96 + (dpi as i64 / 2)) / dpi as i64) as i32
+}
+
+fn create_fonts(dpi: i32) -> Vec<Hfont> {
+    vec![
+        create_font(scale(21, dpi), FW_BOLD, "Segoe UI"),
+        create_font(scale(10, dpi), FW_MEDIUM, "Segoe UI"),
+        create_font(scale(10, dpi), FW_SEMIBOLD, "Segoe UI"),
+        create_font(scale(11, dpi), FW_NORMAL, "Segoe UI"),
+        create_font(scale(18, dpi), FW_SEMIBOLD, "Segoe UI"),
+        create_font(scale(10, dpi), FW_NORMAL, "Cascadia Mono"),
+        create_font(scale(11, dpi), FW_SEMIBOLD, "Segoe UI"),
+    ]
 }

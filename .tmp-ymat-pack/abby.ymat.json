@@ -1,0 +1,1517 @@
+{
+  "schema": "northstar.ymat.v1",
+  "materials": [
+    {
+      "name": "m00",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "opaque",
+      "two_sided": false,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m00_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m00_normal",
+          "required": true
+        },
+        {
+          "slot": "roughness",
+          "ref": "textures/characters/abby.ytd@m00_roughness",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.62
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ]
+    },
+    {
+      "name": "m01",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "opaque",
+      "two_sided": false,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m01_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m01_normal",
+          "required": true
+        },
+        {
+          "slot": "roughness",
+          "ref": "textures/characters/abby.ytd@m01_roughness",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.62
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ]
+    },
+    {
+      "name": "m02",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "masked",
+      "two_sided": true,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m02_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m02_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ],
+      "alpha_cutoff": 0.5
+    },
+    {
+      "name": "m03",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "masked",
+      "two_sided": true,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m03_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m03_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ],
+      "alpha_cutoff": 0.5
+    },
+    {
+      "name": "m04",
+      "shader": "pbr.eye",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "opaque",
+      "two_sided": false,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m04_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m04_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.14
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 1.0
+        }
+      ]
+    },
+    {
+      "name": "m05",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "masked",
+      "two_sided": true,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m05_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m05_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ],
+      "alpha_cutoff": 0.5
+    },
+    {
+      "name": "m06",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "opaque",
+      "two_sided": false,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m06_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m06_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ]
+    },
+    {
+      "name": "m07",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "alpha",
+      "two_sided": true,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m07_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m07_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.05
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.12
+        }
+      ]
+    },
+    {
+      "name": "m08",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "opaque",
+      "two_sided": false,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m08_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m08_normal",
+          "required": true
+        },
+        {
+          "slot": "roughness",
+          "ref": "textures/characters/abby.ytd@m08_roughness",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.32
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.24
+        }
+      ]
+    },
+    {
+      "name": "m09",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "masked",
+      "two_sided": true,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m09_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m09_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ],
+      "alpha_cutoff": 0.5
+    },
+    {
+      "name": "m10",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "masked",
+      "two_sided": true,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m10_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m10_normal",
+          "required": true
+        },
+        {
+          "slot": "roughness",
+          "ref": "textures/characters/abby.ytd@m10_roughness",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ],
+      "alpha_cutoff": 0.5
+    },
+    {
+      "name": "m11",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "masked",
+      "two_sided": true,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m11_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m11_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ],
+      "alpha_cutoff": 0.5
+    },
+    {
+      "name": "m12",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "masked",
+      "two_sided": true,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m12_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m12_normal",
+          "required": true
+        },
+        {
+          "slot": "roughness",
+          "ref": "textures/characters/abby.ytd@m12_roughness",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ],
+      "alpha_cutoff": 0.5
+    },
+    {
+      "name": "m13",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "masked",
+      "two_sided": true,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m13_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m13_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ],
+      "alpha_cutoff": 0.5
+    },
+    {
+      "name": "m14",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "masked",
+      "two_sided": true,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m14_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m14_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ],
+      "alpha_cutoff": 0.5
+    },
+    {
+      "name": "m15",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "masked",
+      "two_sided": true,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m15_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m15_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ],
+      "alpha_cutoff": 0.5
+    },
+    {
+      "name": "m16",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "masked",
+      "two_sided": true,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m16_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m16_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ],
+      "alpha_cutoff": 0.5
+    },
+    {
+      "name": "m17",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "masked",
+      "two_sided": true,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m17_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m17_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ],
+      "alpha_cutoff": 0.5
+    },
+    {
+      "name": "m18",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "masked",
+      "two_sided": true,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m18_base",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ],
+      "alpha_cutoff": 0.5
+    },
+    {
+      "name": "m19",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "masked",
+      "two_sided": true,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m19_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m19_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ],
+      "alpha_cutoff": 0.5
+    },
+    {
+      "name": "m20",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "opaque",
+      "two_sided": false,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m20_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m20_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ]
+    },
+    {
+      "name": "m21",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "opaque",
+      "two_sided": false,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m21_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m21_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ]
+    },
+    {
+      "name": "m22",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "opaque",
+      "two_sided": false,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m22_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m22_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ]
+    },
+    {
+      "name": "m23",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "opaque",
+      "two_sided": false,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m23_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m23_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ]
+    },
+    {
+      "name": "m24",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "opaque",
+      "two_sided": false,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m24_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m24_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ]
+    },
+    {
+      "name": "m25",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "masked",
+      "two_sided": true,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m25_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m25_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ],
+      "alpha_cutoff": 0.5
+    },
+    {
+      "name": "m26",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "masked",
+      "two_sided": true,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m26_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m26_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ],
+      "alpha_cutoff": 0.5
+    },
+    {
+      "name": "m27",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "opaque",
+      "two_sided": false,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m27_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m27_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ]
+    },
+    {
+      "name": "m28",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "opaque",
+      "two_sided": false,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m28_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m28_normal",
+          "required": true
+        },
+        {
+          "slot": "roughness",
+          "ref": "textures/characters/abby.ytd@m28_roughness",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.62
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ]
+    },
+    {
+      "name": "m29",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "opaque",
+      "two_sided": false,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m29_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m29_normal",
+          "required": true
+        },
+        {
+          "slot": "roughness",
+          "ref": "textures/characters/abby.ytd@m29_roughness",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.62
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ]
+    },
+    {
+      "name": "m30",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "masked",
+      "two_sided": true,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m30_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m30_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ],
+      "alpha_cutoff": 0.5
+    },
+    {
+      "name": "m31",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "opaque",
+      "two_sided": true,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m31_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m31_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.74
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ]
+    },
+    {
+      "name": "m32",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "opaque",
+      "two_sided": false,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m32_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m32_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.78
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ]
+    },
+    {
+      "name": "m33",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "opaque",
+      "two_sided": false,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m33_base",
+          "required": true
+        },
+        {
+          "slot": "normal",
+          "ref": "textures/characters/abby.ytd@m33_normal",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.76
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.55
+        }
+      ]
+    },
+    {
+      "name": "m34",
+      "shader": "pbr.default",
+      "surface_domain": "surface",
+      "shading_model": "pbr",
+      "blend": "opaque",
+      "two_sided": false,
+      "textures": [
+        {
+          "slot": "base_color",
+          "ref": "textures/characters/abby.ytd@m34_base",
+          "required": true
+        }
+      ],
+      "params": [
+        {
+          "name": "base_color",
+          "type": "color",
+          "value": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "float",
+          "value": 0.82
+        },
+        {
+          "name": "normal_scale",
+          "type": "float",
+          "value": 0.0
+        }
+      ]
+    }
+  ]
+}

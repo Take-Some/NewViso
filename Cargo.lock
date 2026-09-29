@@ -88,6 +88,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "bytemuck"
+version = "1.25.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95832e849adfb21180ccb6826a99da14e5d266ae5c2e668e1602cf234f153797"
+dependencies = [
+ "bytemuck_derive",
+]
+
+[[package]]
+name = "bytemuck_derive"
+version = "1.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a1f896587b6f2c069c73d2f0913e2d590c3990285cd2f0b6aa02b786b4c679c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
+]
+
+[[package]]
+name = "byteorder"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
+
+[[package]]
 name = "cc"
 version = "1.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -168,6 +194,15 @@ name = "find-msvc-tools"
 version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef25905e51abafe4dcea6c15fec58c57b601cdbd0ee53d22ea1d3016c587d39b"
+
+[[package]]
+name = "fxhash"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
+dependencies = [
+ "byteorder",
+]
 
 [[package]]
 name = "generational-arena"
@@ -253,6 +288,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "newviso-agent"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "newviso-assets-client"
 version = "0.1.0"
 dependencies = [
@@ -302,6 +345,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "newviso-character"
+version = "0.1.0"
+dependencies = [
+ "newviso-collision",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "newviso-collision"
 version = "0.1.0"
 dependencies = [
@@ -313,6 +365,7 @@ name = "newviso-compat-abi"
 version = "0.1.0"
 dependencies = [
  "abi_stable",
+ "serde",
 ]
 
 [[package]]
@@ -333,6 +386,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "newviso-contract-api"
+version = "0.1.0"
+
+[[package]]
 name = "newviso-core"
 version = "0.1.0"
 
@@ -351,6 +408,7 @@ dependencies = [
  "abi_stable",
  "newviso-compat-abi",
  "newviso-events",
+ "newviso-task-api",
  "serde_json",
 ]
 
@@ -360,6 +418,22 @@ version = "0.1.0"
 dependencies = [
  "newviso-host",
  "serde_json",
+]
+
+[[package]]
+name = "newviso-items"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "newviso-loading-api"
+version = "0.1.0"
+dependencies = [
+ "newviso-service-api",
+ "serde",
 ]
 
 [[package]]
@@ -380,7 +454,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "newviso-navigation"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "newviso-noise-api"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "newviso-physics-api"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -392,6 +482,7 @@ name = "newviso-physics-client"
 version = "0.1.0"
 dependencies = [
  "newviso-host",
+ "newviso-physics-api",
  "serde",
  "serde_json",
 ]
@@ -425,10 +516,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "newviso-render-api"
+version = "0.1.0"
+dependencies = [
+ "newviso-contract-api",
+ "newviso-service-api",
+ "newviso-ui-draw",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "newviso-render-client"
 version = "0.1.0"
 dependencies = [
  "newviso-host",
+ "newviso-render-api",
  "serde_json",
 ]
 
@@ -446,9 +549,12 @@ name = "newviso-runtime"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "newviso-agent",
  "newviso-assets-client",
+ "newviso-audio-client",
  "newviso-bugtrap",
  "newviso-capabilities",
+ "newviso-character",
  "newviso-collision",
  "newviso-compat-abi",
  "newviso-config",
@@ -457,8 +563,10 @@ dependencies = [
  "newviso-events",
  "newviso-host",
  "newviso-input-client",
+ "newviso-items",
  "newviso-materials",
  "newviso-model",
+ "newviso-navigation",
  "newviso-physics-client",
  "newviso-platform",
  "newviso-project",
@@ -468,9 +576,12 @@ dependencies = [
  "newviso-scene",
  "newviso-scripting",
  "newviso-semantic-assets",
+ "newviso-steering",
  "newviso-textures",
  "newviso-ui-client",
+ "newviso-vehicle",
  "newviso-world",
+ "quick-xml",
  "serde",
  "serde_json",
 ]
@@ -526,6 +637,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "newviso-service-api"
+version = "0.1.0"
+dependencies = [
+ "newviso-contract-api",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "newviso-steering"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "newviso-task-api"
+version = "0.1.0"
+dependencies = [
+ "newviso-loading-api",
+ "newviso-service-api",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "newviso-textures"
 version = "0.1.0"
 dependencies = [
@@ -537,6 +674,34 @@ name = "newviso-ui-client"
 version = "0.1.0"
 dependencies = [
  "newviso-host",
+ "serde_json",
+]
+
+[[package]]
+name = "newviso-ui-draw"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "fxhash",
+ "serde",
+ "serde_json",
+ "smallvec",
+]
+
+[[package]]
+name = "newviso-vehicle"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "newviso-visibility-api"
+version = "0.1.0"
+dependencies = [
+ "newviso-service-api",
+ "serde",
  "serde_json",
 ]
 
@@ -706,6 +871,9 @@ name = "smallvec"
 version = "1.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "syn"

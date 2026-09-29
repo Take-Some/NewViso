@@ -1,8 +1,6 @@
 use super::{ProjectError, ProjectWorldPersistence, RUNTIME_SETTINGS_SCHEMA_V1};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-
-const DEFAULTS: &str = include_str!("assets/runtime_defaults.json");
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -48,8 +46,9 @@ pub struct ProjectStreamingSettings {
     /// Zero means unlimited.
     pub max_loads_per_tick: usize,
     pub parallel_loads: usize,
-    /// Maximum new model instances uploaded/materialized per frame.
-    /// Zero means unlimited; collision meshes are never delayed by this budget.
+    /// Maximum new model instances committed per frame.
+    /// CPU-heavy model/collision preparation is asynchronous; owner-thread commits
+    /// are additionally protected by the runtime frame-time slice.
     pub max_model_materializations_per_frame: usize,
     pub max_source_mb_per_tick: u64,
     pub eviction_grace_frames: u64,
@@ -61,6 +60,7 @@ pub struct ProjectStreamingSettings {
 #[serde(deny_unknown_fields)]
 pub struct ProjectScriptingSettings {
     pub event_queue_capacity: usize,
+    pub world_snapshot_interval_seconds: f32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -69,36 +69,6 @@ pub struct ProjectSchedulingSettings {
     pub max_physics_frame_seconds: f32,
     pub scene_focus_observer: bool,
     pub native_navigation_enabled: bool,
-}
-
-fn defaults() -> Value {
-    serde_json::from_str(DEFAULTS).expect("packaged runtime defaults must be valid JSON")
-}
-
-fn default_section<T: DeserializeOwned>(key: &str) -> T {
-    serde_json::from_value(defaults()[key].clone())
-        .expect("packaged runtime defaults must match their schema")
-}
-
-macro_rules! section_default {
-    ($kind:ty, $key:literal) => {
-        impl Default for $kind {
-            fn default() -> Self {
-                default_section($key)
-            }
-        }
-    };
-}
-section_default!(ProjectWindowSettings, "window");
-section_default!(ProjectCameraSettings, "camera");
-section_default!(ProjectStreamingSettings, "streaming");
-section_default!(ProjectScriptingSettings, "scripting");
-section_default!(ProjectSchedulingSettings, "scheduling");
-
-impl Default for ProjectRuntimeSettings {
-    fn default() -> Self {
-        serde_json::from_value(defaults()).expect("packaged runtime defaults must match schema")
-    }
 }
 
 fn merge(target: &mut Value, patch: &Value) {
@@ -117,15 +87,29 @@ fn merge(target: &mut Value, patch: &Value) {
 }
 
 impl ProjectRuntimeSettings {
+    /// Decode a complete runtime document. Engine startup normally uses
+    /// from_base_and_override(), because Shared Assets own the complete base.
     pub fn from_value(value: Value) -> Result<Self, ProjectError> {
-        // Require the document's schema, even when all other fields use defaults.
         if value.get("schema").and_then(Value::as_str) != Some(RUNTIME_SETTINGS_SCHEMA_V1) {
             return Err(ProjectError::Asset(
                 "unsupported or missing runtime settings schema".into(),
             ));
         }
-        let mut merged = defaults();
-        merge(&mut merged, &value);
+        Self::decode(value)
+    }
+
+    /// Build effective runtime configuration from authoritative Shared Assets
+    /// plus a project-owned partial override.
+    pub fn from_base_and_override(base: Value, project: Value) -> Result<Self, ProjectError> {
+        if base.get("schema").and_then(Value::as_str) != Some(RUNTIME_SETTINGS_SCHEMA_V1)
+            || project.get("schema").and_then(Value::as_str) != Some(RUNTIME_SETTINGS_SCHEMA_V1)
+        {
+            return Err(ProjectError::Asset(
+                "unsupported or missing runtime settings schema".into(),
+            ));
+        }
+        let mut merged = base;
+        merge(&mut merged, &project);
         Self::decode(merged)
     }
 
@@ -163,6 +147,7 @@ impl ProjectRuntimeSettings {
         if self.window.width == 0 || self.window.height == 0 {
             return Err(invalid("window dimensions must be greater than zero"));
         }
+
         let c = &self.camera;
         if [
             c.rotate_sensitivity,
@@ -183,6 +168,7 @@ impl ProjectRuntimeSettings {
                 "camera sensitivities, distance or pitch limits are invalid",
             ));
         }
+
         if self.streaming.parallel_loads == 0 || self.streaming.parallel_loads > 32 {
             return Err(invalid("streaming parallel_loads must be in 1..=32"));
         }
@@ -200,20 +186,31 @@ impl ProjectRuntimeSettings {
                 return Err(invalid("streaming byte budget overflows u64"));
             }
         }
+
         if self.scripting.event_queue_capacity == 0 {
             return Err(invalid(
                 "scripting event_queue_capacity must be greater than zero",
             ));
         }
+        if !self.scripting.world_snapshot_interval_seconds.is_finite()
+            || !(0.0..=5.0).contains(&self.scripting.world_snapshot_interval_seconds)
+        {
+            return Err(invalid(
+                "scripting world_snapshot_interval_seconds must be finite and in 0..=5",
+            ));
+        }
+
         let dt = self.scheduling.max_physics_frame_seconds;
         if !dt.is_finite() || dt <= 0.0 {
             return Err(invalid(
                 "max_physics_frame_seconds must be finite and greater than zero",
             ));
         }
+
         self.world_persistence
             .validate()
             .map_err(ProjectError::Asset)?;
+
         for command in &self.startup_commands {
             if command
                 .get("op")
@@ -234,12 +231,59 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn partial_launch_and_live_patch_preserve_current_values() {
-        let mut settings = ProjectRuntimeSettings::from_value(json!({
+    fn complete_base() -> Value {
+        json!({
             "schema": RUNTIME_SETTINGS_SCHEMA_V1,
-            "camera": {"max_distance": 900.0}, "variables": {"weather": {"wind": 12}}
-        }))
+            "window": {"title": null, "width": 1280, "height": 720},
+            "camera": {
+                "rotate_sensitivity": 0.005,
+                "zoom_sensitivity": 0.0015,
+                "min_distance": 2.0,
+                "max_distance": 40.0,
+                "rotate_button": 1,
+                "min_pitch_degrees": -85.0,
+                "max_pitch_degrees": 85.0
+            },
+            "streaming": {
+                "max_resident_mb": 512,
+                "max_loads_per_tick": 8,
+                "parallel_loads": 4,
+                "max_model_materializations_per_frame": 32,
+                "max_source_mb_per_tick": 32,
+                "eviction_grace_frames": 120,
+                "failed_retry_frames": 120,
+                "dependency_priority_scale": 0.95
+            },
+            "scripting": {
+                "event_queue_capacity": 4096,
+                "world_snapshot_interval_seconds": 0.2
+            },
+            "scheduling": {
+                "max_physics_frame_seconds": 0.05,
+                "scene_focus_observer": true,
+                "native_navigation_enabled": true
+            },
+            "world_persistence": {
+                "save_path": null,
+                "load_on_start": true,
+                "save_on_shutdown": true,
+                "autosave_interval_seconds": 0.0
+            },
+            "variables": {},
+            "startup_commands": []
+        })
+    }
+
+    #[test]
+    fn shared_base_and_project_patch_preserve_current_values() {
+        let mut settings = ProjectRuntimeSettings::from_base_and_override(
+            complete_base(),
+            json!({
+                "schema": RUNTIME_SETTINGS_SCHEMA_V1,
+                "camera": {"max_distance": 900.0},
+                "variables": {"weather": {"wind": 12}}
+            }),
+        )
         .unwrap();
         settings = settings
             .patched(&json!({"streaming": {"max_loads_per_tick": 3}}))
@@ -252,7 +296,7 @@ mod tests {
 
     #[test]
     fn rejects_typos_invalid_ranges_and_cold_live_changes() {
-        let settings = ProjectRuntimeSettings::default();
+        let settings = ProjectRuntimeSettings::from_value(complete_base()).unwrap();
         for patch in [
             json!({"camera": {"max_distnce": 2}}),
             json!({"camera": {"min_distance": 1000}}),
@@ -269,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_or_unknown_launch_settings_fail() {
+    fn incomplete_invalid_or_unknown_launch_settings_fail() {
         for value in [
             json!({}),
             json!({"schema": RUNTIME_SETTINGS_SCHEMA_V1, "straming": {}}),

@@ -25,11 +25,16 @@ struct SaveEnvelope {
 struct SavePayload {
     world: Value,
     presentations: BTreeMap<String, WorldActorPresentationBinding>,
+    /// Added after world-save v1 shipped. Missing field in older saves decodes as
+    /// null and therefore restores an empty item runtime.
+    #[serde(default)]
+    items: Value,
 }
 
 pub(super) struct WorldStartup {
     pub(super) world: LivingWorldRuntime,
     pub(super) presentations: BTreeMap<String, WorldActorPresentationBinding>,
+    pub(super) items: ItemsRuntime,
     pub(super) persistence: Option<WorldPersistence>,
 }
 
@@ -57,6 +62,7 @@ impl WorldStartup {
         let mut startup = Self {
             world: LivingWorldRuntime::default(),
             presentations: BTreeMap::new(),
+            items: ItemsRuntime::default(),
             persistence: None,
         };
         let Some(relative) = settings.save_path.as_deref() else {
@@ -80,7 +86,7 @@ impl WorldStartup {
         store.check_path(&store.path)?;
         if settings.load_on_start && (store.path.exists() || store.backup_path().exists()) {
             let primary = store.read_valid(&store.path);
-            let (world, presentations, bytes) = match primary {
+            let (world, presentations, items, bytes) = match primary {
                 Ok(value) => value,
                 Err(primary_error) => {
                     let result = store.read_valid(&store.backup_path()).map_err(|backup_error| {
@@ -97,6 +103,7 @@ impl WorldStartup {
                 world.runtime_state()["clock"]["world_seconds"].as_f64();
             startup.world = world;
             startup.presentations = presentations;
+            startup.items = items;
         }
         startup.persistence = Some(store);
         Ok(startup)
@@ -131,6 +138,7 @@ impl WorldPersistence {
         (
             LivingWorldRuntime,
             BTreeMap<String, WorldActorPresentationBinding>,
+            ItemsRuntime,
             Vec<u8>,
         ),
         String,
@@ -161,7 +169,8 @@ impl WorldPersistence {
                 return Err("duplicate saved presentation scene key".into());
             }
         }
-        Ok((world, payload.presentations, bytes))
+        let items = ItemsRuntime::from_checkpoint(payload.items)?;
+        Ok((world, payload.presentations, items, bytes))
     }
 
     fn atomic_write(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -192,10 +201,12 @@ impl WorldPersistence {
         &mut self,
         world: &LivingWorldRuntime,
         presentations: &BTreeMap<String, WorldActorPresentationBinding>,
+        items: &ItemsRuntime,
     ) -> Result<(), String> {
         let payload = serde_json::to_string(&SavePayload {
             world: world.checkpoint()?,
             presentations: presentations.clone(),
+            items: items.checkpoint()?,
         })
         .map_err(|e| e.to_string())?;
         let envelope = SaveEnvelope {
@@ -247,7 +258,11 @@ impl EngineApplication {
             return;
         }
         store.elapsed_since_attempt = 0.0;
-        if let Err(error) = store.save(&self.living_world, &self.world_actor_presentations) {
+        if let Err(error) = store.save(
+            &self.living_world,
+            &self.world_actor_presentations,
+            &self.items,
+        ) {
             host::warn("newviso.world", format!("world autosave failed: {error}"));
             store.last_error = Some(error);
         }
@@ -263,7 +278,11 @@ impl EngineApplication {
         if !store.settings.save_on_shutdown {
             return;
         }
-        if let Err(error) = store.save(&self.living_world, &self.world_actor_presentations) {
+        if let Err(error) = store.save(
+            &self.living_world,
+            &self.world_actor_presentations,
+            &self.items,
+        ) {
             host::warn(
                 "newviso.world",
                 format!("world shutdown save failed: {error}"),

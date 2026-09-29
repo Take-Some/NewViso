@@ -7,7 +7,92 @@ fn write_sky_vec4(out: &mut [f32; SKY_UNIFORM_FLOATS], offset: usize, color: [f3
     out[offset + 3] = w;
 }
 
+type SceneLightEntry = (SceneEntityId, SceneTransform, LightComponent);
+
+fn light_influence_score(camera: &Camera, entry: &SceneLightEntry) -> f32 {
+    let (_, transform, light) = entry;
+    match light.light_type {
+        LightType::Directional => f32::INFINITY,
+        LightType::Point | LightType::Spot | LightType::Area => {
+            let delta = transform.position.sub(camera.position);
+            let distance_sq = delta.dot(delta).max(0.01);
+            light.intensity.max(0.0) * light.range.max(0.001) / distance_sq
+        }
+    }
+}
+
+/// Conservative pre-admission for the fixed forward-light budget.
+///
+/// A local light farther than camera far distance plus its range cannot overlap
+/// any point inside the camera far sphere, regardless of orientation. This is a
+/// cheap world-space first stage; screen/tile classification can be layered on
+/// later by the render backend.
+fn light_can_affect_camera_volume(camera: &Camera, entry: &SceneLightEntry) -> bool {
+    let (_, transform, light) = entry;
+    if light.light_type == LightType::Directional {
+        return true;
+    }
+    let delta = transform.position.sub(camera.position);
+    let max_distance = camera.far.max(0.0) + light.range.max(0.0);
+    delta.dot(delta) <= max_distance * max_distance
+}
+
+fn select_frame_lights(camera: &Camera, mut lights: Vec<SceneLightEntry>) -> Vec<SceneLightEntry> {
+    lights.retain(|entry| light_can_affect_camera_volume(camera, entry));
+    lights.sort_unstable_by(|a, b| {
+        light_influence_score(camera, b)
+            .partial_cmp(&light_influence_score(camera, a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0 .0.cmp(&b.0 .0))
+    });
+    lights.truncate(MAX_LIGHTS);
+    lights
+}
+
 impl Scene3dRuntime {
+    pub(super) fn renderer_local_lights(&self) -> Vec<RenderLight> {
+        let mut lights = self.world.active_lights();
+        lights.retain(|entry| {
+            light_can_affect_camera_volume(&self.camera, entry)
+                && !matches!(entry.2.light_type, LightType::Directional)
+        });
+        lights.sort_unstable_by(|a, b| {
+            light_influence_score(&self.camera, b)
+                .partial_cmp(&light_influence_score(&self.camera, a))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0 .0.cmp(&b.0 .0))
+        });
+
+        lights
+            .into_iter()
+            .take(1024)
+            .map(|(_, transform, light)| {
+                let direction = light_direction(transform.rotation_degrees);
+                let kind = match light.light_type {
+                    LightType::Directional => RenderLightKind::Directional,
+                    LightType::Point => RenderLightKind::Point,
+                    LightType::Spot => RenderLightKind::Spot,
+                    LightType::Area => RenderLightKind::Area,
+                };
+                RenderLight::local(
+                    kind,
+                    [
+                        transform.position.x,
+                        transform.position.y,
+                        transform.position.z,
+                    ],
+                    [direction.x, direction.y, direction.z],
+                    light.color,
+                    light.intensity.max(0.0),
+                    light.range.max(0.001),
+                    light.cone_inner_degrees.to_radians().cos(),
+                    light.cone_outer_degrees.to_radians().cos(),
+                    light.casts_shadows,
+                )
+            })
+            .collect()
+    }
+
     pub(super) fn scene_frame_uniform(
         &self,
         aspect: f32,
@@ -17,28 +102,12 @@ impl Scene3dRuntime {
         let view_proj = camera_view_projection(&self.camera, aspect);
         out[0..16].copy_from_slice(&view_proj);
 
-        let mut lights = self.world.active_lights();
-        // Directional lights are global and must never be evicted by nearby
-        // local lighting. Local lights are ranked by camera influence so the
-        // fixed GPU light budget follows the observer through interiors.
-        lights.sort_by(|a, b| {
-            let score = |entry: &(SceneEntityId, SceneTransform, LightComponent)| {
-                let (_, transform, light) = entry;
-                match light.light_type {
-                    LightType::Directional => f32::INFINITY,
-                    LightType::Point | LightType::Spot | LightType::Area => {
-                        let delta = transform.position.sub(self.camera.position);
-                        let distance_sq = delta.dot(delta).max(0.01);
-                        light.intensity.max(0.0) * light.range.max(0.001) / distance_sq
-                    }
-                }
-            };
-            score(b)
-                .partial_cmp(&score(a))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        let light_count = lights.len().min(MAX_LIGHTS);
+        // Directional lights are global and must never be evicted. Local
+        // lights first pass a conservative influence-volume test, then the
+        // fixed forward-light budget keeps only the strongest camera-relative
+        // contributors.
+        let lights = select_frame_lights(&self.camera, self.world.active_lights());
+        let light_count = lights.len();
         let mut shadow_light_index: Option<usize> = None;
         let mut shadow_matrix = identity_matrix();
         let mut shadow_bias = 0.0015;
@@ -57,7 +126,7 @@ impl Scene3dRuntime {
         let haze_params_base = haze_color_base + 4;
         let clear_color_base = haze_params_base + 4;
 
-        for (index, (_, transform, light)) in lights.iter().take(MAX_LIGHTS).enumerate() {
+        for (index, (_, transform, light)) in lights.iter().enumerate() {
             let direction = light_direction(transform.rotation_degrees);
             let type_code = match light.light_type {
                 LightType::Directional => 0.0,
@@ -327,6 +396,96 @@ impl Scene3dRuntime {
         out[173] = self.sky_clouds.shear_speed[1];
         out[174] = self.sky_clouds.seed_offset[0];
         out[175] = self.sky_clouds.seed_offset[1];
+
+        // GTA-style motion contract:
+        // xy = integrated wind-driven large-cloud phase,
+        // z = continuous time-cycle in days, w = noise phase scale.
+        out[176] = self.sky_cloud_noise_phase[0];
+        out[177] = self.sky_cloud_noise_phase[1];
+        out[178] = self.sky_cloud_cycle_time_days;
+        out[179] = self.sky_clouds.noise_phase_scale;
+
+        // Large speed is consumed on CPU while the three independent detail
+        // speeds reproduce GTA's speedConstants phase channels in shader.
+        out[180] = self.sky_clouds.small_speed;
+        out[181] = self.sky_clouds.overall_detail_speed;
+        out[182] = self.sky_clouds.edge_detail_speed;
+        out[183] = self.sky_clouds.large_speed;
+
+        let (dome_scale, horizon_level) = self
+            .sky
+            .as_ref()
+            .map(|sky| (sky.dome_scale, sky.horizon_level))
+            .unwrap_or((20_000.0, 0.0));
+        out[184] = dome_scale;
+        out[185] = horizon_level;
+        out[186] = self.camera.position.y;
+        out[187] = 0.0;
         out
+    }
+}
+
+#[cfg(test)]
+mod light_selection_tests {
+    use super::*;
+
+    fn camera() -> Camera {
+        Camera {
+            position: Vec3::ZERO,
+            target: Vec3::new(0.0, 0.0, -1.0),
+            up: Vec3::Y,
+            fov_y_degrees: 60.0,
+            near: 0.1,
+            far: 100.0,
+        }
+    }
+
+    fn point(id: u64, z: f32, range: f32, intensity: f32) -> SceneLightEntry {
+        (
+            SceneEntityId(id),
+            SceneTransform {
+                position: Vec3::new(0.0, 0.0, z),
+                rotation_degrees: Vec3::ZERO,
+                scale: Vec3::ONE,
+            },
+            LightComponent {
+                light_type: LightType::Point,
+                color: [1.0, 1.0, 1.0],
+                intensity,
+                range,
+                cone_inner_degrees: 0.0,
+                cone_outer_degrees: 45.0,
+                casts_shadows: false,
+                shadow_bias: 0.001,
+                shadow_normal_bias: 0.01,
+                shadow_resolution: 512,
+                shadow_distance: 50.0,
+            },
+        )
+    }
+
+    #[test]
+    fn local_light_outside_camera_volume_is_rejected() {
+        let cam = camera();
+        assert!(light_can_affect_camera_volume(
+            &cam,
+            &point(1, -80.0, 25.0, 1.0)
+        ));
+        assert!(!light_can_affect_camera_volume(
+            &cam,
+            &point(2, -140.0, 10.0, 1.0)
+        ));
+    }
+
+    #[test]
+    fn frame_light_selection_keeps_strongest_local_contributors() {
+        let cam = camera();
+        let mut lights = Vec::new();
+        for i in 0..(MAX_LIGHTS + 8) {
+            lights.push(point(i as u64, -10.0, 30.0, (i + 1) as f32));
+        }
+        let selected = select_frame_lights(&cam, lights);
+        assert_eq!(selected.len(), MAX_LIGHTS);
+        assert!(selected[0].2.intensity > selected[MAX_LIGHTS - 1].2.intensity);
     }
 }

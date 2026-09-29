@@ -115,6 +115,14 @@ where
             set_override(&mut out, "runtime.skip_platform", "false".to_owned())?;
             continue;
         }
+        if arg == "--safe-mode" {
+            set_override(&mut out, "runtime.safe_mode", "true".to_owned())?;
+            continue;
+        }
+        if arg == "--normal-mode" {
+            set_override(&mut out, "runtime.safe_mode", "false".to_owned())?;
+            continue;
+        }
 
         return Err(BootstrapConfigError::Cli(format!(
             "unknown argument '{arg}'. Use --set key=value for bootstrap overrides"
@@ -160,6 +168,7 @@ fn set_override(
         "paths.codecs",
         "runtime.max_frames",
         "runtime.skip_platform",
+        "runtime.safe_mode",
         "providers.logging",
         "providers.input",
         "providers.assets",

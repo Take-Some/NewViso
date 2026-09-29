@@ -1,33 +1,6 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-#[derive(Clone, Copy, Debug)]
-struct PortalClipRect {
-    min_x: f32,
-    min_y: f32,
-    max_x: f32,
-    max_y: f32,
-}
-
-impl PortalClipRect {
-    const FULL: Self = Self {
-        min_x: -1.0,
-        min_y: -1.0,
-        max_x: 1.0,
-        max_y: 1.0,
-    };
-
-    fn intersect(self, other: Self) -> Option<Self> {
-        let rect = Self {
-            min_x: self.min_x.max(other.min_x),
-            min_y: self.min_y.max(other.min_y),
-            max_x: self.max_x.min(other.max_x),
-            max_y: self.max_y.min(other.max_y),
-        };
-        (rect.min_x <= rect.max_x && rect.min_y <= rect.max_y).then_some(rect)
-    }
-}
-
 #[derive(Clone, Debug)]
 struct PortalRoom {
     id: u32,
@@ -39,7 +12,7 @@ struct PortalRoom {
 struct ScenePortal {
     from: u32,
     to: u32,
-    corners: Vec<Vec3>,
+    _corners: Vec<Vec3>,
 }
 
 #[derive(Clone, Debug)]
@@ -137,7 +110,11 @@ impl PortalVisibilityGraph {
             if corners.len() < 3 {
                 return Err("portal requires at least 3 corners".to_owned());
             }
-            portals.push(ScenePortal { from, to, corners });
+            portals.push(ScenePortal {
+                from,
+                to,
+                _corners: corners,
+            });
         }
 
         let entity_room_names = value
@@ -180,25 +157,35 @@ impl PortalVisibilityGraph {
         }
     }
 
-    fn camera_room(&self, position: Vec3) -> Option<u32> {
+    fn camera_rooms(&self, position: Vec3) -> BTreeSet<u32> {
         self.rooms
             .iter()
             .filter(|room| room.camera_volume && point_in_bounds(position, room.bounds))
-            .min_by(|a, b| {
-                bounds_volume(a.bounds)
-                    .partial_cmp(&bounds_volume(b.bounds))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
             .map(|room| room.id)
+            .collect()
     }
 
-    fn visible_rooms(&self, camera: &Camera, aspect: f32) -> Option<BTreeSet<u32>> {
-        let start = self.camera_room(camera.position)?;
-        let matrix = camera_view_projection(camera, aspect);
-        let mut visible = BTreeSet::from([start]);
-        let mut queue = VecDeque::from([(start, PortalClipRect::FULL, 0u32)]);
+    fn visible_rooms(&self, camera: &Camera) -> Option<BTreeSet<u32>> {
+        let starts = self.camera_rooms(camera.position);
+        if starts.is_empty() {
+            return None;
+        }
 
-        while let Some((room, clip, depth)) = queue.pop_front() {
+        // The imported RSC7 MLO room bounds are conservative world-space AABBs.
+        // Several rooms can overlap after rotation, and imported portal polygons are
+        // not precise enough to be an authoritative screen-space visibility mask.
+        //
+        // Keep the room graph as a coarse connectivity/PVS filter only. Camera
+        // orientation is handled later by the normal scene frustum and GPU Hi-Z.
+        // This deliberately prevents a portal projection error from making visible
+        // geometry disappear while the player rotates the camera.
+        let mut visible = starts.clone();
+        let mut queue = starts
+            .into_iter()
+            .map(|room| (room, 0u32))
+            .collect::<VecDeque<_>>();
+
+        while let Some((room, depth)) = queue.pop_front() {
             if depth >= self.max_depth {
                 continue;
             }
@@ -214,17 +201,9 @@ impl PortalVisibilityGraph {
                 } else {
                     continue;
                 };
-                if visible.contains(&next) {
-                    continue;
+                if visible.insert(next) {
+                    queue.push_back((next, depth + 1));
                 }
-                let Some(portal_rect) = project_portal_rect(&portal.corners, matrix) else {
-                    continue;
-                };
-                let Some(next_clip) = clip.intersect(portal_rect) else {
-                    continue;
-                };
-                visible.insert(next);
-                queue.push_back((next, next_clip, depth + 1));
             }
         }
         Some(visible)
@@ -233,10 +212,10 @@ impl PortalVisibilityGraph {
     pub(super) fn filter_candidates(
         &mut self,
         camera: &Camera,
-        aspect: f32,
+        _aspect: f32,
         candidates: &mut BTreeSet<SceneEntityId>,
     ) {
-        let Some(visible_rooms) = self.visible_rooms(camera, aspect) else {
+        let Some(visible_rooms) = self.visible_rooms(camera) else {
             self.last_visible_rooms.clear();
             return; // fail open outside the authored room graph
         };
@@ -250,6 +229,7 @@ impl PortalVisibilityGraph {
 
     pub(super) fn telemetry(&self) -> Value {
         json!({
+            "mode": "connectivity_conservative",
             "rooms": self.rooms.len(),
             "portals": self.portals.len(),
             "mapped_entities": self.entity_rooms.len(),
@@ -265,71 +245,6 @@ fn point_in_bounds(point: Vec3, bounds: SceneBounds) -> bool {
         && point.y <= bounds.max.y
         && point.z >= bounds.min.z
         && point.z <= bounds.max.z
-}
-
-fn bounds_volume(bounds: SceneBounds) -> f32 {
-    let d = bounds.max.sub(bounds.min);
-    (d.x.abs() * d.y.abs() * d.z.abs()).max(0.0)
-}
-
-fn project_portal_rect(corners: &[Vec3], matrix: [f32; 16]) -> Option<PortalClipRect> {
-    let mut projected = Vec::<[f32; 2]>::new();
-    let mut any_behind = false;
-    for corner in corners {
-        let clip = mul_mat4_vec4(matrix, [corner.x, corner.y, corner.z, 1.0]);
-        if clip[3] <= 1.0e-5 {
-            any_behind = true;
-            continue;
-        }
-        projected.push([clip[0] / clip[3], clip[1] / clip[3]]);
-    }
-    if projected.is_empty() {
-        return None;
-    }
-    if any_behind {
-        // Portal intersects the near plane. Fail open for this portal rather
-        // than accidentally culling a room the camera is entering.
-        return Some(PortalClipRect::FULL);
-    }
-
-    let min_x = projected.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
-    let min_y = projected.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
-    let max_x = projected
-        .iter()
-        .map(|p| p[0])
-        .fold(f32::NEG_INFINITY, f32::max);
-    let max_y = projected
-        .iter()
-        .map(|p| p[1])
-        .fold(f32::NEG_INFINITY, f32::max);
-    PortalClipRect {
-        min_x,
-        min_y,
-        max_x,
-        max_y,
-    }
-    .intersect(PortalClipRect::FULL)
-}
-
-fn mul_mat4_vec4(matrix: [f32; 16], vector: [f32; 4]) -> [f32; 4] {
-    [
-        matrix[0] * vector[0]
-            + matrix[4] * vector[1]
-            + matrix[8] * vector[2]
-            + matrix[12] * vector[3],
-        matrix[1] * vector[0]
-            + matrix[5] * vector[1]
-            + matrix[9] * vector[2]
-            + matrix[13] * vector[3],
-        matrix[2] * vector[0]
-            + matrix[6] * vector[1]
-            + matrix[10] * vector[2]
-            + matrix[14] * vector[3],
-        matrix[3] * vector[0]
-            + matrix[7] * vector[1]
-            + matrix[11] * vector[2]
-            + matrix[15] * vector[3],
-    ]
 }
 
 #[cfg(test)]
@@ -384,19 +299,66 @@ mod tests {
     }
 
     #[test]
-    fn clip_rect_intersection_rejects_disjoint_portals() {
-        let a = PortalClipRect {
-            min_x: -1.0,
-            min_y: -1.0,
-            max_x: -0.5,
-            max_y: 1.0,
+    fn portal_connectivity_does_not_change_when_camera_rotates() {
+        let mut graph = PortalVisibilityGraph {
+            max_depth: 8,
+            rooms: vec![
+                PortalRoom {
+                    id: 1,
+                    bounds: SceneBounds {
+                        min: Vec3::new(-10.0, -10.0, -10.0),
+                        max: Vec3::new(10.0, 10.0, 10.0),
+                    },
+                    camera_volume: true,
+                },
+                PortalRoom {
+                    id: 2,
+                    bounds: SceneBounds {
+                        min: Vec3::new(20.0, -10.0, -10.0),
+                        max: Vec3::new(40.0, 10.0, 10.0),
+                    },
+                    camera_volume: true,
+                },
+            ],
+            portals: vec![ScenePortal {
+                from: 1,
+                to: 2,
+                _corners: vec![
+                    Vec3::new(10.0, -1.0, -1.0),
+                    Vec3::new(10.0, 1.0, -1.0),
+                    Vec3::new(10.0, 1.0, 1.0),
+                    Vec3::new(10.0, -1.0, 1.0),
+                ],
+            }],
+            entity_room_names: BTreeMap::new(),
+            entity_rooms: BTreeMap::from([(1, 1), (2, 2)]),
+            adjacency: BTreeMap::from([(1, vec![0]), (2, vec![0])]),
+            last_visible_rooms: BTreeSet::new(),
         };
-        let b = PortalClipRect {
-            min_x: 0.5,
-            min_y: -1.0,
-            max_x: 1.0,
-            max_y: 1.0,
+        let mut candidates = BTreeSet::from([SceneEntityId(1), SceneEntityId(2)]);
+        let forward_camera = Camera {
+            position: Vec3::ZERO,
+            target: Vec3::new(1.0, 0.0, 0.0),
+            up: Vec3::Y,
+            fov_y_degrees: 70.0,
+            near: 0.1,
+            far: 100.0,
         };
-        assert!(a.intersect(b).is_none());
+        graph.filter_candidates(&forward_camera, 16.0 / 9.0, &mut candidates);
+        assert_eq!(
+            candidates,
+            BTreeSet::from([SceneEntityId(1), SceneEntityId(2)])
+        );
+
+        let mut candidates = BTreeSet::from([SceneEntityId(1), SceneEntityId(2)]);
+        let reverse_camera = Camera {
+            target: Vec3::new(-1.0, 0.0, 0.0),
+            ..forward_camera
+        };
+        graph.filter_candidates(&reverse_camera, 16.0 / 9.0, &mut candidates);
+        assert_eq!(
+            candidates,
+            BTreeSet::from([SceneEntityId(1), SceneEntityId(2)])
+        );
     }
 }

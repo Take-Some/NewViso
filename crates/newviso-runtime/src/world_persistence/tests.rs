@@ -47,11 +47,42 @@ fn save_restart_and_corrupt_primary_recovery_keep_valid_state() {
     let mut startup = WorldStartup::open(&dir.0, "test", &settings()).unwrap();
     startup.world.set_fact("stock", json!(4)).unwrap();
     startup.presentations.insert("actor".into(), binding());
+    startup
+        .items
+        .upsert_definition(ItemDefinition {
+            id: "office.phone".into(),
+            display_name: "Office phone".into(),
+            category: "misc".into(),
+            max_stack: 1,
+            tags: vec!["pickable".into()],
+            metadata: Value::Null,
+        })
+        .unwrap();
+    startup
+        .items
+        .upsert_pickup(WorldPickup {
+            id: "pickup.phone.01".into(),
+            item_id: "office.phone".into(),
+            quantity: 1,
+            position: [0.0, 0.0, 0.0],
+            collection_radius: 2.0,
+            requires_interact: true,
+            collected: false,
+        })
+        .unwrap();
+    startup
+        .items
+        .collect("pickup.phone.01", "player", [0.0, 0.0, 0.0])
+        .unwrap();
     let store = startup.persistence.as_mut().unwrap();
-    store.save(&startup.world, &startup.presentations).unwrap();
+    store
+        .save(&startup.world, &startup.presentations, &startup.items)
+        .unwrap();
     startup.world.tick_frame(0.2, &[]);
     startup.world.set_fact("stock", json!(8)).unwrap();
-    store.save(&startup.world, &startup.presentations).unwrap();
+    store
+        .save(&startup.world, &startup.presentations, &startup.items)
+        .unwrap();
     let resumed = WorldStartup::open(&dir.0, "test", &settings()).unwrap();
     assert_eq!(
         resumed.world.checkpoint().unwrap(),
@@ -62,6 +93,14 @@ fn save_restart_and_corrupt_primary_recovery_keep_valid_state() {
         f32::INFINITY
     );
     assert!(resumed.persistence.as_ref().unwrap().restored);
+    assert_eq!(
+        resumed.items.inventory_quantity("player", "office.phone"),
+        1
+    );
+    assert_eq!(
+        resumed.items.runtime_state()["pickups"][0]["collected"],
+        true
+    );
     fs::write(&store.path, b"interrupted/corrupt bytes").unwrap();
     let mut recovered = WorldStartup::open(&dir.0, "test", &settings()).unwrap();
     assert!(recovered.persistence.as_ref().unwrap().recovered_backup);
@@ -70,7 +109,7 @@ fn save_restart_and_corrupt_primary_recovery_keep_valid_state() {
         .persistence
         .as_mut()
         .unwrap()
-        .save(&recovered.world, &recovered.presentations)
+        .save(&recovered.world, &recovered.presentations, &recovered.items)
         .unwrap();
     assert!(WorldStartup::open(&dir.0, "test", &settings()).is_ok());
     assert!(WorldStartup::open(&dir.0, "another-project", &settings()).is_err());

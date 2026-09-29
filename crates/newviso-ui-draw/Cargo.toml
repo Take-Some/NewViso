@@ -1,0 +1,12 @@
+[package]
+name = "newviso-ui-draw"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytemuck = { version = "1.24", features = ["derive"] }
+smallvec = { version = "1.15", features = ["serde"] }
+serde.workspace = true
+serde_json.workspace = true
+fxhash = "0.2"

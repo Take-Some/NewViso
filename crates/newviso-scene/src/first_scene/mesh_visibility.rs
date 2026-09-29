@@ -10,8 +10,15 @@ pub(super) struct MainViewMeshVisibility {
 
 impl MainViewMeshVisibility {
     fn set(&mut self, id: u64, prefixes: Vec<String>) -> Result<(), String> {
-        if prefixes.len() > 128 || prefixes.iter().any(|p| p.trim().is_empty() || p.len() > 256) {
-            return Err("hidden_mesh_prefixes requires at most 128 non-empty names of at most 256 bytes".to_owned());
+        if prefixes.len() > 128
+            || prefixes
+                .iter()
+                .any(|p| p.trim().is_empty() || p.len() > 256)
+        {
+            return Err(
+                "hidden_mesh_prefixes requires at most 128 non-empty names of at most 256 bytes"
+                    .to_owned(),
+            );
         }
         if prefixes.is_empty() {
             self.hidden_prefixes.remove(&id);
@@ -30,9 +37,10 @@ impl MainViewMeshVisibility {
     }
 
     pub(super) fn visible(&self, id: u64, mesh: &str) -> bool {
-        !self.hidden_prefixes.get(&id).is_some_and(|prefixes| {
-            prefixes.iter().any(|prefix| mesh.starts_with(prefix))
-        })
+        !self
+            .hidden_prefixes
+            .get(&id)
+            .is_some_and(|prefixes| prefixes.iter().any(|prefix| mesh.starts_with(prefix)))
     }
 }
 

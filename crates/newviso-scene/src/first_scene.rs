@@ -1,30 +1,38 @@
 use crate::{
-    camera::{Camera, OrbitCamera},
+    camera::{previous_hiz_camera_compatible, Camera, OrbitCamera},
     math::{transform_point, Vec3},
     world::{
-        LightComponent, LightType, SceneBounds, SceneEntity, SceneEntityId, SceneEntityKind,
-        SceneFocusSource, SceneFramePlan, SceneLifecycle, SceneLodPolicy, SceneMobility,
-        SceneMutationSource, SceneProcessClaims, SceneProcessReasons, SceneResidency,
-        SceneTransform, SceneView, SceneWorld, VisibilityMask,
+        LightComponent, LightType, SceneBounds, SceneDestructible, SceneEntity, SceneEntityId,
+        SceneEntityKind, SceneFocusSource, SceneFramePlan, SceneLifecycle, SceneLodPolicy,
+        SceneMobility, SceneMutationSource, SceneProcessClaims, SceneProcessReasons,
+        SceneResidency, SceneTransform, SceneView, SceneWorld, VisibilityMask,
     },
 };
 use newviso_host as host_runtime;
 use newviso_input_client::InputSnapshot;
 use newviso_render_client::{
-    GraphicsPipelineDesc, RenderClient, ShaderStage, TextureMipUpload, TextureResidencyState,
-    VertexAttribute, VertexFormat, VertexLayoutDesc, VertexStepMode,
+    Extent2D, GraphicsPipelineDesc, RenderClient, RenderDrawListKind, RenderGraphDesc,
+    RenderGraphPassDesc, RenderGraphPassDomain, RenderGraphPassId, RenderGraphPassKind,
+    RenderGraphResourceDesc, RenderGraphResourceId, RenderGraphResourceSemantic,
+    RenderGraphResourceUsage, RenderLight, RenderLightKind, ShaderStage,
+    TextureFormat as RenderTextureFormat, TextureMipUpload, TextureResidencyState, VertexAttribute,
+    VertexFormat, VertexLayoutDesc, VertexStepMode,
 };
 use newviso_textures::{TextureFormat, TextureResource};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[path = "geometry.rs"]
 mod geometry;
 
 mod animation_skinning;
 mod asset_models;
-mod mesh_visibility;
+mod atmospheric_clouds;
+#[cfg(test)]
+mod debris_stress;
 mod gpu_instance_table;
+mod mass_instances;
+mod mesh_visibility;
 mod parse_helpers;
 mod portal_visibility;
 mod render_math;
@@ -37,12 +45,28 @@ mod scene_entities;
 mod scene_lighting;
 mod scene_load;
 mod scene_state;
-pub use asset_models::SceneResolvedMaterial;
-use asset_models::{
-    AssetAlphaMode, AssetDrawRange, AssetTriangleVertex, CpuAssetMaterial, CpuAssetMesh,
+mod volumetric_clouds;
+mod weather_gpu_fx;
+pub use asset_models::{
+    prepare_model_geometry, SceneModelPartPose, ScenePreparedModelGeometry, SceneResolvedMaterial,
 };
+use asset_models::{AssetDrawRange, AssetTriangleVertex, CpuAssetMaterial, CpuAssetMesh};
+use atmospheric_clouds::*;
+pub use atmospheric_clouds::{
+    AtmosphericCloudAnimMode, AtmosphericCloudLayerDesc, AtmosphericCloudLayerResources,
+    AtmosphericCloudMeshResources, AtmosphericCloudResources, AtmosphericCloudTextureSet,
+    AtmosphericCloudUvLayerDesc, AtmosphericCloudVertex,
+};
+pub use mass_instances::SceneMassInstanceDesc;
 use portal_visibility::PortalVisibilityGraph;
 use render_policy::RenderPolicy;
+pub use volumetric_clouds::VolumetricCloudDesc;
+use volumetric_clouds::*;
+use weather_gpu_fx::*;
+pub use weather_gpu_fx::{
+    WeatherGpuFxEmitterDesc, WeatherGpuFxLayerDesc, WeatherGpuFxRenderDesc, WeatherGpuFxResources,
+    WeatherGpuFxSystemType,
+};
 mod sky_gpu;
 
 use parse_helpers::*;
@@ -56,6 +80,7 @@ const ECS_SERVICE: &str = "engine.ecs";
 const VERTEX_SHADER: &[u8] = include_bytes!("assets/scene.vert.spv");
 const ASSET_INSTANCED_VERTEX_SHADER: &[u8] = include_bytes!("assets/scene_instanced.vert.spv");
 const FRAGMENT_SHADER: &[u8] = include_bytes!("assets/scene.frag.spv");
+const GBUFFER_FRAGMENT_SHADER: &[u8] = include_bytes!("assets/scene_gbuffer.frag.spv");
 const SKY_VERTEX_SHADER: &[u8] = include_bytes!("assets/sky.vert.spv");
 const SKY_FRAGMENT_SHADER: &[u8] = include_bytes!("assets/sky.frag.spv");
 const SHADOW_VERTEX_SHADER: &[u8] = include_bytes!("assets/shadow.vert.spv");
@@ -66,7 +91,7 @@ const FLARE_VERTEX_SHADER: &[u8] = include_bytes!("assets/flare.vert.spv");
 const FLARE_FRAGMENT_SHADER: &[u8] = include_bytes!("assets/flare.frag.spv");
 const SKY_FLOATS_PER_VERTEX: usize = 5;
 const SKY_VERTEX_STRIDE: u64 = (SKY_FLOATS_PER_VERTEX * std::mem::size_of::<f32>()) as u64;
-const SKY_UNIFORM_FLOATS: usize = 176;
+const SKY_UNIFORM_FLOATS: usize = 188;
 const MAX_SKY_VISUALS: usize = 4;
 const FLARE_FLOATS_PER_VERTEX: usize = 12;
 const FLARE_VERTEX_STRIDE: u64 = (FLARE_FLOATS_PER_VERTEX * std::mem::size_of::<f32>()) as u64;
@@ -80,17 +105,16 @@ const INSTANCE_FLOATS: usize = 16;
 const INSTANCE_STRIDE: u64 = (INSTANCE_FLOATS * std::mem::size_of::<f32>()) as u64;
 const DEFAULT_ASSET_INSTANCE_CAPACITY: u32 = 16_384;
 const DEFAULT_ASSET_VERTEX_CAPACITY: u32 = 2_097_152;
+const DEFAULT_SKINNED_VERTEX_CAPACITY: u32 = 131_072;
 const ASSET_INSTANCE_CELL_SIZE: f32 = 16.0;
 const ENABLE_ASSET_HIZ_OCCLUSION: bool = true;
 const MAX_HIZ_DRAW_CANDIDATES: u32 = 4_096;
 const MAX_STREAMED_TEXTURE_UPLOADS_PER_FRAME: usize = 1;
 const MAX_STREAMED_MATERIAL_CREATIONS_PER_FRAME: usize = 8;
 const MAX_STREAMED_TEXTURE_DIMENSION: u32 = 2_048;
-const STREAMED_TEXTURE_UPLOAD_BUDGET_BYTES: u64 = 4 * 1024 * 1024;
-const STREAMED_TEXTURE_UPLOAD_BUDGET_JOBS: u32 = 1;
-const STREAMED_TEXTURE_UPLOAD_BLOCKING_MS: f32 = 1.5;
 const HIZ_CANDIDATE_STRIDE: u64 = 32;
 const HIZ_INDIRECT_STRIDE: u64 = 20;
+const SCENE_FRAME_SLOTS: usize = 3;
 
 #[derive(Clone, Debug)]
 pub(super) struct Cube {
@@ -121,6 +145,33 @@ pub struct SceneTransientSphere {
 pub struct SceneOverlayQuad {
     pub rect: [f32; 4],
     pub color: [f32; 4],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SceneParticleBlend {
+    Alpha,
+    Additive,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneParticleSpawnDesc {
+    pub position: [f32; 3],
+    pub velocity: [f32; 3],
+    pub acceleration: [f32; 3],
+    pub size: [f32; 2],
+    pub end_size: [f32; 2],
+    pub color: [f32; 4],
+    pub end_color: [f32; 4],
+    pub lifetime_seconds: f32,
+    pub rotation_degrees: f32,
+    pub angular_velocity_degrees: f32,
+    pub blend: SceneParticleBlend,
+}
+
+#[derive(Clone, Debug)]
+struct SceneRuntimeParticle {
+    desc: SceneParticleSpawnDesc,
+    age_seconds: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -283,6 +334,18 @@ pub struct SkyCloudDesc {
     pub shape_contrast: f32,
     pub shear_speed: [f32; 2],
     pub seed_offset: [f32; 2],
+    /// Large-cloud base phase speed. Mirrors the dedicated large cloud speed
+    /// used by GTA's procedural sky rather than reusing detail-layer motion.
+    pub large_speed: f32,
+    /// Independent small/filler cloud phase speed.
+    pub small_speed: f32,
+    /// Independent overall-detail phase speed.
+    pub overall_detail_speed: f32,
+    /// Independent edge-detail phase speed.
+    pub edge_detail_speed: f32,
+    /// Scalar applied twice to the integrated wind-driven base noise phase.
+    /// GTA's sky uses 0.01, yielding speed * 0.0001 UV units per second.
+    pub noise_phase_scale: f32,
 }
 
 impl Default for SkyCloudDesc {
@@ -305,6 +368,11 @@ impl Default for SkyCloudDesc {
             shape_contrast: 1.0,
             shear_speed: [0.0, 0.0],
             seed_offset: [0.0, 0.0],
+            large_speed: 5.0,
+            small_speed: 1.0,
+            overall_detail_speed: 1.0,
+            edge_detail_speed: 1.0,
+            noise_phase_scale: 0.01,
         }
     }
 }
@@ -436,30 +504,48 @@ struct GpuInstanceTable {
     batches: BTreeMap<GpuInstanceBatchKey, GpuResidentInstanceBatch>,
     entity_slots: BTreeMap<u64, u32>,
     entity_batches: BTreeMap<u64, GpuInstanceBatchKey>,
-    uploaded: bool,
+    generation: u64,
+    uploaded_generation: [u64; SCENE_FRAME_SLOTS],
     rebuild_count: u64,
     upload_count: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct RenderSubmissionStats {
+    instance_batches: usize,
+    instance_count: usize,
+    hiz_draws: usize,
+    opaque_indirect_groups: usize,
+    direct_opaque_draws: usize,
+    alpha_draws: usize,
+    mass_draws: usize,
+    mass_instances: usize,
+    graph_executed_passes: u32,
+    graph_skipped_passes: u32,
+    graph_cpu_record_ms: f32,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct GpuScene {
-    vertex_buffer: u32,
+    vertex_buffers: [u32; SCENE_FRAME_SLOTS],
     vertex_capacity: u32,
     cube_capacity: usize,
-    shadow_vertex_buffer: u32,
+    shadow_vertex_buffers: [u32; SCENE_FRAME_SLOTS],
     shadow_vertex_capacity: u32,
     asset_vertex_buffer: u32,
     asset_vertex_capacity: u32,
     asset_vertex_count: u32,
+    skinned_vertex_buffers: [u32; SCENE_FRAME_SLOTS],
+    skinned_vertex_capacity: u32,
     asset_index_buffer: u32,
     asset_index_capacity: u32,
-    asset_instance_buffer: u32,
+    asset_instance_buffers: [u32; SCENE_FRAME_SLOTS],
     asset_instance_capacity: u32,
-    visibility_candidate_buffer: u32,
-    visibility_indirect_buffer: u32,
-    frame_uniform: u32,
+    visibility_candidate_buffers: [u32; SCENE_FRAME_SLOTS],
+    visibility_indirect_buffers: [u32; SCENE_FRAME_SLOTS],
+    frame_uniforms: [u32; SCENE_FRAME_SLOTS],
     bind_group_layout: u32,
-    bind_group: u32,
+    bind_groups: [u32; SCENE_FRAME_SLOTS],
     material_bind_group_layout: u32,
     default_base_color_texture: u32,
     default_normal_texture: u32,
@@ -470,14 +556,17 @@ struct GpuScene {
     material_sampler: u32,
     default_material_bind_group: u32,
     shadow_bind_group_layout: u32,
-    shadow_bind_group: u32,
+    shadow_bind_groups: [u32; SCENE_FRAME_SLOTS],
     shadow_render_target: u32,
     shadow_sampler: u32,
     vertex_shader: u32,
     fragment_shader: u32,
+    gbuffer_fragment_shader: u32,
     pipeline: u32,
+    gbuffer_pipeline: u32,
     alpha_pipeline: u32,
     asset_pipeline: u32,
+    asset_gbuffer_pipeline: u32,
     asset_alpha_pipeline: u32,
     shadow_vertex_shader: u32,
     shadow_fragment_shader: u32,
@@ -486,10 +575,12 @@ struct GpuScene {
     asset_vertex_shader: u32,
     asset_shadow_vertex_shader: u32,
     shadow_resolution: u32,
-    flare_vertex_buffer: u32,
+    flare_vertex_buffers: [u32; SCENE_FRAME_SLOTS],
     flare_vertex_shader: u32,
     flare_fragment_shader: u32,
     flare_pipeline: u32,
+    particle_vertex_buffers: [u32; SCENE_FRAME_SLOTS],
+    particle_additive_pipeline: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -533,6 +624,12 @@ pub struct SkyDomeResources {
     pub detail_noise: SkyTextureResources,
     pub billboard_texture: Option<SkyTextureResources>,
     pub clouds: SkyCloudDesc,
+    pub volumetric_clouds: VolumetricCloudDesc,
+    /// Radius/scale of the camera-relative sky dome. GTA uses ~20 km.
+    pub dome_scale: f32,
+    /// Fixed vertical horizon anchor. Horizontal axes follow the camera while
+    /// this level remains world-anchored, matching GTA's water/horizon plane.
+    pub horizon_level: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -545,8 +642,8 @@ struct GpuSky {
     billboard_texture: Option<u32>,
     sampler: u32,
     bind_group_layout: u32,
-    bind_group: u32,
-    camera_uniform: u32,
+    bind_groups: [u32; SCENE_FRAME_SLOTS],
+    camera_uniforms: [u32; SCENE_FRAME_SLOTS],
     vertex_shader: u32,
     fragment_shader: u32,
     pipeline: u32,
@@ -590,6 +687,147 @@ impl Default for WeatherBackendState {
     }
 }
 
+/// Resolved physical/output state of the active weather blend.
+///
+/// The fields mirror the data-driven channels used by GTA V weather.xml so
+/// downstream systems (clouds, precipitation, wind and water) consume one
+/// authoritative state rather than reimplementing weather logic independently.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WeatherEffectsState {
+    pub current_cloud_settings: String,
+    pub next_cloud_settings: String,
+    pub current_timecycle: String,
+    pub next_timecycle: String,
+    pub current_drop_setting: String,
+    pub next_drop_setting: String,
+    pub current_mist_setting: String,
+    pub next_mist_setting: String,
+    pub current_ground_setting: String,
+    pub next_ground_setting: String,
+    pub current_cloud_variant: String,
+    pub next_cloud_variant: String,
+    pub sun: f32,
+    pub cloud: f32,
+    pub wind_min: f32,
+    pub wind_max: f32,
+    pub wind_speed: f32,
+    pub wind_direction: [f32; 2],
+    pub rain: f32,
+    pub snow: f32,
+    pub snow_mist: f32,
+    pub fog: f32,
+    pub ripple_bumpiness: f32,
+    pub ripple_min_bumpiness: f32,
+    pub ripple_max_bumpiness: f32,
+    pub ripple_bumpiness_wind_scale: f32,
+    pub ripple_scale: f32,
+    pub ripple_speed: f32,
+    pub ripple_velocity_transfer: f32,
+    pub ocean_bumpiness: f32,
+    pub deep_ocean_scale: f32,
+    pub ocean_noise_min_amplitude: f32,
+    pub ocean_wave_amplitude: f32,
+    pub shore_wave_amplitude: f32,
+    pub ocean_wave_wind_scale: f32,
+    pub shore_wave_wind_scale: f32,
+    pub ocean_wave_min_amplitude: f32,
+    pub shore_wave_min_amplitude: f32,
+    pub ocean_wave_max_amplitude: f32,
+    pub shore_wave_max_amplitude: f32,
+    pub ocean_foam_intensity: f32,
+    pub ocean_foam_scale: f32,
+    pub ripple_disturb: f32,
+    pub lightning: f32,
+    pub sandstorm: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CloudHatKeyframeState {
+    pub enabled: bool,
+    pub cloud_color: [f32; 4],
+    pub cloud_light_color: [f32; 4],
+    pub cloud_ambient_color: [f32; 4],
+    pub cloud_sky_color: [f32; 4],
+    pub cloud_bounce_color: [f32; 4],
+    pub cloud_east_color: [f32; 4],
+    pub cloud_west_color: [f32; 4],
+    pub scale_fill_colors: [f32; 4],
+    pub density_shift_scale_scattering: [f32; 4],
+    pub piercing_light: [f32; 4],
+    pub scale_diffuse_fill_ambient_wrap: [f32; 4],
+}
+
+impl Default for CloudHatKeyframeState {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cloud_color: [1.0; 4],
+            cloud_light_color: [1.0; 4],
+            cloud_ambient_color: [0.0, 0.0, 0.0, 1.0],
+            cloud_sky_color: [0.0, 0.0, 0.0, 1.0],
+            cloud_bounce_color: [0.0, 0.0, 0.0, 1.0],
+            cloud_east_color: [0.0, 0.0, 0.0, 1.0],
+            cloud_west_color: [0.0, 0.0, 0.0, 1.0],
+            scale_fill_colors: [1.0; 4],
+            density_shift_scale_scattering: [0.0, 1.0, 1.0, 1.0],
+            piercing_light: [1.0; 4],
+            scale_diffuse_fill_ambient_wrap: [1.0, 1.0, 1.0, 1.0],
+        }
+    }
+}
+
+impl Default for WeatherEffectsState {
+    fn default() -> Self {
+        Self {
+            current_cloud_settings: String::new(),
+            next_cloud_settings: String::new(),
+            current_timecycle: String::new(),
+            next_timecycle: String::new(),
+            current_drop_setting: String::new(),
+            next_drop_setting: String::new(),
+            current_mist_setting: String::new(),
+            next_mist_setting: String::new(),
+            current_ground_setting: String::new(),
+            next_ground_setting: String::new(),
+            current_cloud_variant: String::new(),
+            next_cloud_variant: String::new(),
+            sun: 1.0,
+            cloud: 0.0,
+            wind_min: 0.0,
+            wind_max: 0.0,
+            wind_speed: 0.0,
+            wind_direction: [1.0, 0.0],
+            rain: 0.0,
+            snow: 0.0,
+            snow_mist: 0.0,
+            fog: 0.0,
+            ripple_bumpiness: 0.0,
+            ripple_min_bumpiness: 0.0,
+            ripple_max_bumpiness: 0.0,
+            ripple_bumpiness_wind_scale: 0.0,
+            ripple_scale: 0.0,
+            ripple_speed: 0.0,
+            ripple_velocity_transfer: 0.0,
+            ocean_bumpiness: 0.0,
+            deep_ocean_scale: 0.0,
+            ocean_noise_min_amplitude: 0.0,
+            ocean_wave_amplitude: 0.0,
+            shore_wave_amplitude: 0.0,
+            ocean_wave_wind_scale: 0.0,
+            shore_wave_wind_scale: 0.0,
+            ocean_wave_min_amplitude: 0.0,
+            shore_wave_min_amplitude: 0.0,
+            ocean_wave_max_amplitude: 0.0,
+            shore_wave_max_amplitude: 0.0,
+            ocean_foam_intensity: 0.0,
+            ocean_foam_scale: 0.0,
+            ripple_disturb: 0.0,
+            lightning: 0.0,
+            sandstorm: 0.0,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Scene3dRuntime {
     title: String,
@@ -600,6 +838,8 @@ pub struct Scene3dRuntime {
     cubes: Vec<Cube>,
     asset_meshes: BTreeMap<u64, CpuAssetMesh>,
     skinned_entities: BTreeMap<u64, animation_skinning::SkinnedEntityAnimationState>,
+    animation_skinning_pool: animation_skinning::SkinningWorkerPool,
+    animation_skinning_in_flight: BTreeSet<u64>,
     main_view_mesh_visibility: mesh_visibility::MainViewMeshVisibility,
     static_asset_instance_epoch: u64,
     asset_model_cache: BTreeMap<u64, std::sync::Arc<[AssetTriangleVertex]>>,
@@ -611,11 +851,13 @@ pub struct Scene3dRuntime {
     asset_binding_contexts: BTreeMap<u64, SceneAssetBindingContext>,
     asset_vertex_data: Vec<f32>,
     asset_upload_from_float: Option<usize>,
-    asset_skin_upload_ranges: Vec<(usize, usize)>,
+    skinned_vertex_data: Vec<f32>,
+    skinned_dirty_ranges: [Vec<(usize, usize)>; SCENE_FRAME_SLOTS],
     asset_geometry_full_rebuild: bool,
     retired_asset_vertex_buffers: Vec<u32>,
     transient_spheres: Vec<SceneTransientSphere>,
     overlay_quads: Vec<SceneOverlayQuad>,
+    particles: Vec<SceneRuntimeParticle>,
     sky_visuals: BTreeMap<String, SkyVisualDesc>,
     lens_flares: BTreeMap<String, LensFlareDesc>,
     sky_clouds: SkyCloudDesc,
@@ -623,19 +865,40 @@ pub struct Scene3dRuntime {
     scene_environment: SceneEnvironmentDesc,
     timecycle_backend: TimeCycleBackendState,
     weather_backend: WeatherBackendState,
+    weather_effects: WeatherEffectsState,
+    cloudhat_keyframe: CloudHatKeyframeState,
+    weather_gpu_fx: Option<WeatherGpuFxResources>,
+    weather_fx_time_seconds: f32,
+    weather_wetness: f32,
+    weather_outdoor_exposure: f32,
     sky_time_seconds: f32,
     sky_time_scale: f32,
+    /// Wind-driven procedural base-noise phase. Kept independent from the
+    /// time-of-day clock, matching GTA's sky cloud phase integration.
+    sky_cloud_noise_phase: [f32; 2],
+    /// Continuous time-cycle position measured in days. Detail layers use this
+    /// instead of wrapped time-of-day seconds so their phase never pops at midnight.
+    sky_cloud_cycle_time_days: f32,
+    atmospheric_clouds: Option<AtmosphericCloudResources>,
+    atmospheric_cloud_runtime: Vec<AtmosphericCloudLayerRuntime>,
     runtime_entity_ids: BTreeMap<String, u64>,
     next_runtime_entity_id: u64,
     world: SceneWorld,
     frame_plan: SceneFramePlan,
     portal_visibility: Option<PortalVisibilityGraph>,
     gpu_instance_table: GpuInstanceTable,
+    mass_instances: mass_instances::MassInstanceStore,
+    gpu_mass_instances: BTreeMap<String, mass_instances::GpuMassInstanceLayer>,
+    last_submission_stats: RenderSubmissionStats,
     clear_color: [f32; 4],
     gpu: Option<GpuScene>,
     sky: Option<SkyDomeResources>,
     gpu_sky: Option<GpuSky>,
+    gpu_atmospheric_clouds: Option<GpuAtmosphericClouds>,
+    gpu_volumetric_clouds: Option<GpuVolumetricClouds>,
+    gpu_weather: Option<GpuWeatherFx>,
     frame_index: u64,
+    last_render_camera: Option<Camera>,
 }
 
 #[derive(Clone, Debug)]
@@ -649,6 +912,21 @@ pub struct Scene3dLoadReport {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SceneAssetBindingContext {
     pub texture_dictionary: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SceneDestructionActivation {
+    pub entity: u64,
+    pub scene_position: [f32; 3],
+    pub rotation_degrees: [f32; 3],
+    pub bounds_min: [f32; 3],
+    pub bounds_max: [f32; 3],
+    pub density: f32,
+    pub friction: f32,
+    pub restitution: f32,
+    pub linear_damping: f32,
+    pub angular_damping: f32,
+    pub impulse_transfer: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -748,6 +1026,13 @@ mod tests {
             far: 100.0,
         };
         let mut orbit = OrbitCamera::from_camera(&camera);
+        orbit.rotate_sensitivity = 0.005;
+        orbit.zoom_sensitivity = 0.0015;
+        orbit.min_distance = 2.0;
+        orbit.max_distance = 40.0;
+        orbit.min_pitch_degrees = -85.0;
+        orbit.max_pitch_degrees = 85.0;
+        orbit.configured = true;
         let yaw = orbit.yaw;
         orbit.apply_mouse(100.0, 0.0, 0.0, false);
         assert!((orbit.yaw - yaw).abs() < f32::EPSILON);
@@ -766,6 +1051,13 @@ mod tests {
             far: 100.0,
         };
         let mut orbit = OrbitCamera::from_camera(&camera);
+        orbit.rotate_sensitivity = 0.005;
+        orbit.zoom_sensitivity = 0.0015;
+        orbit.min_distance = 2.0;
+        orbit.max_distance = 40.0;
+        orbit.min_pitch_degrees = -85.0;
+        orbit.max_pitch_degrees = 85.0;
+        orbit.configured = true;
         let distance = orbit.distance;
         orbit.apply_mouse(0.0, 0.0, 120.0, false);
         assert!(orbit.distance < distance);

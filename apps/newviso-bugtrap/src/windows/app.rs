@@ -12,7 +12,11 @@ use super::{
     view,
 };
 
+const BASE_DPI: i32 = 96;
+
 pub(crate) unsafe fn run_window() {
+    let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
     let instance = GetModuleHandleW(null());
     let class_name = wide("NewVisoBugTrapWindow");
     let icon = LoadIconW(instance, make_int_resource(1));
@@ -38,6 +42,7 @@ pub(crate) unsafe fn run_window() {
         return;
     }
 
+    let dpi = GetDpiForSystem().max(BASE_DPI as Uint) as i32;
     let title = wide(&ui_state().title);
     let hwnd = CreateWindowExW(
         0,
@@ -46,8 +51,8 @@ pub(crate) unsafe fn run_window() {
         WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
-        1136,
-        814,
+        dpi_scale(1136, dpi),
+        dpi_scale(814, dpi),
         null_mut(),
         null_mut(),
         instance,
@@ -96,10 +101,25 @@ unsafe extern "system" fn window_proc(
             view::layout_controls(hwnd);
             0
         }
+        WM_DPICHANGED => {
+            let suggested = &*(l_param as *const Rect);
+            MoveWindow(
+                hwnd,
+                suggested.left,
+                suggested.top,
+                suggested.right - suggested.left,
+                suggested.bottom - suggested.top,
+                1,
+            );
+            view::refresh_dpi_resources(hwnd);
+            view::layout_controls(hwnd);
+            0
+        }
         WM_GETMINMAXINFO => {
+            let dpi = GetDpiForWindow(hwnd).max(BASE_DPI as Uint) as i32;
             let info = &mut *(l_param as *mut MinMaxInfo);
-            info.min_track_size.x = 760;
-            info.min_track_size.y = 680;
+            info.min_track_size.x = dpi_scale(760, dpi);
+            info.min_track_size.y = dpi_scale(680, dpi);
             0
         }
         WM_COMMAND => {
@@ -135,6 +155,9 @@ unsafe fn handle_command(hwnd: Hwnd, id: usize) {
         ID_COPY => actions::copy_report(hwnd),
         ID_COPY_ERROR => actions::copy_error(hwnd),
         ID_OPEN_FOLDER => actions::open_report_folder(hwnd),
+        ID_OPEN_LOGS => actions::open_project_logs(hwnd),
+        ID_RESTART => actions::restart_newviso(hwnd, false),
+        ID_RESTART_SAFE => actions::restart_newviso(hwnd, true),
         ID_CLOSE => {
             DestroyWindow(hwnd);
         }
@@ -195,4 +218,8 @@ unsafe fn release_ui_resources() {
     for font in &handles.fonts {
         DeleteObject(*font as Hgdobj);
     }
+}
+
+fn dpi_scale(value: i32, dpi: i32) -> i32 {
+    ((value as i64 * dpi as i64 + 48) / 96) as i32
 }

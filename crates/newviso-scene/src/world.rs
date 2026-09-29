@@ -226,6 +226,8 @@ impl SceneDirtyFlags {
     pub(crate) const RESIDENCY: Self = Self(1 << 5);
     pub(crate) const LIGHT: Self = Self(1 << 6);
     pub(crate) const PROCESS_CONTROL: Self = Self(1 << 7);
+    pub(crate) const MOBILITY: Self = Self(1 << 8);
+    pub(crate) const DAMAGE: Self = Self(1 << 9);
 
     pub(crate) const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
@@ -245,6 +247,8 @@ impl SceneDirtyFlags {
             (Self::RESIDENCY, "residency"),
             (Self::LIGHT, "light"),
             (Self::PROCESS_CONTROL, "process_control"),
+            (Self::MOBILITY, "mobility"),
+            (Self::DAMAGE, "damage"),
         ]
         .into_iter()
         .filter_map(|(flag, label)| self.contains(flag).then_some(label))
@@ -436,6 +440,68 @@ pub(crate) struct SceneMutation {
     pub(crate) process_claims: BTreeMap<String, Vec<String>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SceneDestructible {
+    pub(crate) max_health: f32,
+    pub(crate) health: f32,
+    /// Impacts below this threshold do not consume durability.
+    pub(crate) impact_damage_threshold: f32,
+    /// Damage added for every impulse unit above impact_damage_threshold.
+    pub(crate) impact_damage_scale: f32,
+    /// A single impact at or above this value breaks the object immediately.
+    pub(crate) break_impulse: f32,
+    /// Fraction of contact impulse transferred to the newly dynamic body.
+    pub(crate) impulse_transfer: f32,
+    pub(crate) density: f32,
+    pub(crate) friction: f32,
+    pub(crate) restitution: f32,
+    pub(crate) linear_damping: f32,
+    pub(crate) angular_damping: f32,
+    pub(crate) broken: bool,
+}
+
+impl SceneDestructible {
+    pub(crate) fn validate(self) -> Result<Self, String> {
+        let values = [
+            self.max_health,
+            self.health,
+            self.impact_damage_threshold,
+            self.impact_damage_scale,
+            self.break_impulse,
+            self.impulse_transfer,
+            self.density,
+            self.friction,
+            self.restitution,
+            self.linear_damping,
+            self.angular_damping,
+        ];
+        if values.iter().any(|value| !value.is_finite())
+            || self.max_health <= 0.0
+            || self.health < 0.0
+            || self.health > self.max_health
+            || self.impact_damage_threshold < 0.0
+            || self.impact_damage_scale < 0.0
+            || self.break_impulse <= 0.0
+            || self.impulse_transfer < 0.0
+            || self.density <= 0.0
+            || self.friction < 0.0
+            || self.restitution < 0.0
+            || self.linear_damping < 0.0
+            || self.angular_damping < 0.0
+        {
+            return Err("invalid SceneDestructible parameters".to_owned());
+        }
+        Ok(self)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SceneDamageOutcome {
+    pub(crate) applied_damage: f32,
+    pub(crate) remaining_health: f32,
+    pub(crate) broke_now: bool,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct SceneEntity {
     pub(crate) id: SceneEntityId,
@@ -451,6 +517,11 @@ pub(crate) struct SceneEntity {
     pub(crate) visibility: VisibilityMask,
     pub(crate) lod: SceneLodPolicy,
     pub(crate) solid: bool,
+    /// Optional model-local collision box. Render/spatial bounds remain
+    /// independent so foliage and long-arm street fixtures do not collide as
+    /// their full visual AABB.
+    pub(crate) collision_local_bounds: Option<SceneBounds>,
+    pub(crate) destructible: Option<SceneDestructible>,
     pub(crate) asset_ref: Option<String>,
     pub(crate) render_slot: Option<usize>,
     pub(crate) residency: SceneResidency,
@@ -542,6 +613,10 @@ pub(crate) struct SceneWorld {
 }
 
 impl SceneWorld {
+    pub(crate) fn process_elapsed_seconds(&self) -> f64 {
+        self.process_elapsed_seconds
+    }
+
     pub(crate) fn new(initial_focus: Vec3) -> Self {
         Self {
             entities: Vec::new(),
@@ -634,6 +709,8 @@ mod tests {
             visibility: VisibilityMask::default(),
             lod: SceneLodPolicy::default(),
             solid: false,
+            collision_local_bounds: None,
+            destructible: None,
             asset_ref: None,
             render_slot: Some(render_slot),
             residency: SceneResidency::Resident,
@@ -1363,6 +1440,72 @@ mod tests {
             vec![SceneEntityId(2), SceneEntityId(1)]
         );
         assert!(!next.requested_entities.contains(&SceneEntityId(2)));
+    }
+
+    #[test]
+    fn destructible_scene_entity_accumulates_damage_and_promotes_to_dynamic() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        let mut prop = entity(90, -8.0, 0);
+        prop.solid = true;
+        prop.destructible = Some(
+            SceneDestructible {
+                max_health: 50.0,
+                health: 50.0,
+                impact_damage_threshold: 10.0,
+                impact_damage_scale: 1.0,
+                break_impulse: 40.0,
+                impulse_transfer: 0.9,
+                density: 30.0,
+                friction: 0.6,
+                restitution: 0.05,
+                linear_damping: 0.1,
+                angular_damping: 0.2,
+                broken: false,
+            }
+            .validate()
+            .unwrap(),
+        );
+        world.add_entity(prop).unwrap();
+        world.activate_all();
+        world.seal_initial_state();
+
+        let first = world
+            .apply_damage(SceneEntityId(90), 12.0, 5.0)
+            .unwrap()
+            .expect("destructible outcome");
+        assert!(!first.broke_now);
+        assert!((first.remaining_health - 38.0).abs() < 1.0e-6);
+        assert_eq!(
+            world.entity(SceneEntityId(90)).unwrap().mobility,
+            SceneMobility::Static
+        );
+
+        let broken = world
+            .apply_damage(SceneEntityId(90), 0.0, 45.0)
+            .unwrap()
+            .expect("break outcome");
+        assert!(broken.broke_now);
+        let prop = world.entity(SceneEntityId(90)).unwrap();
+        assert_eq!(prop.mobility, SceneMobility::Dynamic);
+        assert_eq!(prop.kind, SceneEntityKind::DynamicMesh);
+        assert!(prop.destructible.unwrap().broken);
+        assert!(world.static_render_epoch() > 0);
+    }
+
+    #[test]
+    fn damage_to_unknown_or_non_destructible_entity_is_ignored() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        world.add_entity(entity(91, -8.0, 0)).unwrap();
+        world.activate_all();
+
+        assert!(world
+            .apply_damage(SceneEntityId(999_999), 25.0, 100.0)
+            .unwrap()
+            .is_none());
+        assert!(world
+            .apply_damage(SceneEntityId(91), 25.0, 100.0)
+            .unwrap()
+            .is_none());
     }
 
     #[test]

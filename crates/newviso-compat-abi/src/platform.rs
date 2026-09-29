@@ -1,4 +1,5 @@
 use abi_stable::std_types::{ROption, RResult, RString, RVec};
+use serde::{Deserialize, Serialize};
 
 pub const PLATFORM_RUNTIME_RUN_SYMBOL: &[u8] = b"newengine_platform_runtime_run_v1\0";
 
@@ -19,7 +20,7 @@ pub struct PlatformWindowPlacementV1 {
 }
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum PlatformWindowModeV1 {
     Windowed = 0,
     Borderless = 1,
@@ -27,7 +28,7 @@ pub enum PlatformWindowModeV1 {
 }
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum PlatformHdrModeV1 {
     Auto = 0,
     Enabled = 1,
@@ -35,7 +36,7 @@ pub enum PlatformHdrModeV1 {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct PlatformDisplayConfigV1 {
     pub monitor_index: i32,
     pub window_mode: PlatformWindowModeV1,
@@ -89,7 +90,7 @@ impl PlatformAppConfigV1 {
 }
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum NativeWindowBackendV1 {
     Unknown = 0,
     Win32 = 1,
@@ -99,7 +100,7 @@ pub enum NativeWindowBackendV1 {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct NativeWindowHandlesV1 {
     pub backend: NativeWindowBackendV1,
     pub window: u64,
@@ -109,7 +110,7 @@ pub struct NativeWindowHandlesV1 {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct PlatformSurfaceMetricsV1 {
     pub width: u32,
     pub height: u32,
@@ -117,7 +118,7 @@ pub struct PlatformSurfaceMetricsV1 {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct PlatformWindowReadyV1 {
     pub handles: NativeWindowHandlesV1,
     pub surface: PlatformSurfaceMetricsV1,

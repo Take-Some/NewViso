@@ -81,16 +81,17 @@ impl WorldActorPresentationBinding {
     }
 }
 
+fn heading_degrees_from_velocity(velocity: [f32; 3]) -> Option<f32> {
+    let horizontal_speed_sq = velocity[0] * velocity[0] + velocity[2] * velocity[2];
+    (horizontal_speed_sq > 1.0e-10).then(|| velocity[0].atan2(velocity[2]).to_degrees())
+}
+
 fn sample_locomotion(
     binding: &WorldActorPresentationBinding,
     velocity: [f32; 3],
 ) -> (f32, f32, &'static str, Option<String>) {
     let horizontal_speed = (velocity[0] * velocity[0] + velocity[2] * velocity[2]).sqrt();
-    let heading = if horizontal_speed > 1.0e-5 {
-        velocity[0].atan2(velocity[2]).to_degrees()
-    } else {
-        0.0
-    };
+    let heading = heading_degrees_from_velocity(velocity).unwrap_or(0.0);
     let Some(locomotion) = &binding.locomotion else {
         return (horizontal_speed, heading, "none", None);
     };
@@ -125,6 +126,7 @@ impl EngineApplication {
     pub(super) fn sync_world_actor_presentations(&mut self) -> Result<(), String> {
         const ANIMATION_OWNER: &str = "engine.animation.world_actor";
         let actor_views = self.living_world.actor_runtime_views();
+        let mut animation_actions = Vec::<(u64, Option<SceneAnimationBinding>)>::new();
         for (actor_id, binding) in &self.world_actor_presentations {
             let view = actor_views.iter().find(|view| &view.id == actor_id);
             let active = view.is_some_and(|view| {
@@ -151,6 +153,11 @@ impl EngineApplication {
                         .set_runtime_entity_materialized(&binding.scene_key, false)?;
                     state.dematerializations += 1;
                 }
+                if let Some(entity_id) = state.entity_id {
+                    if state.animation_clip.is_some() {
+                        animation_actions.push((entity_id, None));
+                    }
+                }
                 state.materialized = false;
                 state.velocity = [0.0; 3];
                 state.speed = 0.0;
@@ -161,8 +168,14 @@ impl EngineApplication {
 
             let view = view.expect("active presentation has an actor");
             let position = std::array::from_fn(|i| view.position[i] + binding.position_offset[i]);
-            let (speed, heading, locomotion_state, animation_clip) =
+            let (speed, velocity_heading, locomotion_state, animation_clip) =
                 sample_locomotion(binding, view.velocity);
+            let facing_velocity = self
+                .physical_characters
+                .presentation_facing_velocity(actor_id)
+                .unwrap_or(view.velocity);
+            let heading =
+                heading_degrees_from_velocity(facing_velocity).unwrap_or(velocity_heading);
             let mut rotation_degrees = binding.rotation_degrees;
             if binding
                 .locomotion
@@ -233,6 +246,21 @@ impl EngineApplication {
                     .set_runtime_entity_materialized(&binding.scene_key, true)?;
                 state.materializations += 1;
             }
+            let animation_changed = state.animation_clip != animation_clip;
+            if let Some(entity_id) = state.entity_id {
+                if animation_changed || created || !state.materialized {
+                    animation_actions.push((
+                        entity_id,
+                        animation_clip
+                            .as_ref()
+                            .map(|clip_ref| SceneAnimationBinding {
+                                clip_ref: clip_ref.clone(),
+                                playback_rate: 1.0,
+                                restart_if_same: false,
+                            }),
+                    ));
+                }
+            }
             state.position = position;
             state.rotation_degrees = rotation_degrees;
             state.velocity = view.velocity;
@@ -240,6 +268,23 @@ impl EngineApplication {
             state.locomotion_state = locomotion_state.to_owned();
             state.animation_clip = animation_clip;
             state.materialized = true;
+        }
+
+        // WorldActorPresentation decides the locomotion state; the generic
+        // scene animation bridge owns clip decoding, caching and playback.
+        // Queueing these actions until after the presentation-map iteration
+        // avoids borrowing the whole EngineApplication while a state entry is
+        // mutably borrowed. Bindings are retained even when the model is still
+        // streaming; application_streaming applies them after skin installation.
+        for (entity_id, animation) in animation_actions {
+            match animation {
+                Some(binding) => {
+                    let _ = self.bind_scene_entity_animation(entity_id, binding)?;
+                }
+                None => {
+                    let _ = self.unbind_scene_entity_animation(entity_id)?;
+                }
+            }
         }
         Ok(())
     }
@@ -256,6 +301,8 @@ impl EngineApplication {
                 "velocity": state.map_or([0.0; 3], |s| s.velocity),
                 "speed": state.map_or(0.0, |s| s.speed),
                 "heading_degrees": state.map_or(0.0, |s| s.rotation_degrees[1]),
+                "facing_velocity": self.physical_characters
+                    .presentation_facing_velocity(actor),
                 "locomotion_state": state.map_or("none", |s| s.locomotion_state.as_str()),
                 "animation_clip": state.and_then(|s| s.animation_clip.as_deref()),
                 "animation_rate_hz": binding.locomotion.as_ref().map(|v| v.animation_rate_hz),

@@ -36,6 +36,7 @@ pub(crate) const WM_COMMAND: Uint = 0x0111;
 pub(crate) const WM_CTLCOLOREDIT: Uint = 0x0133;
 pub(crate) const WM_CTLCOLORBTN: Uint = 0x0135;
 pub(crate) const WM_CTLCOLORSTATIC: Uint = 0x0138;
+pub(crate) const WM_DPICHANGED: Uint = 0x02E0;
 
 pub(crate) const EM_SETSEL: Uint = 0x00B1;
 pub(crate) const EM_SETMARGINS: Uint = 0x00D3;
@@ -89,6 +90,7 @@ pub(crate) const CLIP_DEFAULT_PRECIS: Dword = 0;
 pub(crate) const CLEARTYPE_QUALITY: Dword = 5;
 pub(crate) const DEFAULT_PITCH: Dword = 0;
 pub(crate) const DWMWA_USE_IMMERSIVE_DARK_MODE: Dword = 20;
+pub(crate) const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
 
 #[repr(C)]
 pub(crate) struct Point {
@@ -197,6 +199,10 @@ extern "system" {
     pub(crate) fn DispatchMessageW(msg: *const Msg) -> Lresult;
     pub(crate) fn ShowWindow(hwnd: Hwnd, command: i32) -> Bool;
     pub(crate) fn UpdateWindow(hwnd: Hwnd) -> Bool;
+    pub(crate) fn SetProcessDpiAwarenessContext(value: isize) -> Bool;
+    pub(crate) fn GetDpiForWindow(hwnd: Hwnd) -> Uint;
+    pub(crate) fn GetDpiForSystem() -> Uint;
+    pub(crate) fn EnableWindow(hwnd: Hwnd, enable: Bool) -> Bool;
     pub(crate) fn MoveWindow(
         hwnd: Hwnd,
         x: i32,

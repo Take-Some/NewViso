@@ -108,6 +108,16 @@ pub(super) fn append_sphere_vertices(
     }
 }
 
+pub(super) fn append_particle_vertex(
+    out: &mut Vec<f32>,
+    position: Vec3,
+    normal: Vec3,
+    color: [f32; 4],
+    uv: [f32; 2],
+) {
+    append_world_vertex_uv_tangent(out, position, normal, color, uv, [1.0, 0.0, 0.0, 1.0]);
+}
+
 pub(super) fn append_overlay_vertex(out: &mut Vec<f32>, clip_x: f32, clip_y: f32, color: [f32; 4]) {
     // position.w = 1 marks a pre-projected overlay vertex. World geometry uses 0.
     out.extend_from_slice(&[clip_x, clip_y, 0.0001, 1.0]);

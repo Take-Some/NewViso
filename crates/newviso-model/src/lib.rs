@@ -167,6 +167,60 @@ pub struct ModelAnimationClip {
     pub tracks: Vec<JointAnimationTrack>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModelWheelSlot {
+    FrontLeft,
+    FrontRight,
+    RearLeft,
+    RearRight,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModelFragmentPartRole {
+    Body,
+    Wheel,
+    Suspension,
+    WheelHub,
+    Door,
+    Bonnet,
+    Boot,
+    Glass,
+    BodyPanel,
+    Breakable,
+    Extra,
+    Light,
+    Siren,
+    Exhaust,
+    Engine,
+    Seat,
+    WeaponMount,
+    Roof,
+    Spoiler,
+    Steering,
+    Part,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelFragmentPart {
+    pub index: u32,
+    pub name: String,
+    pub role: ModelFragmentPartRole,
+    pub bone_tag: Option<u32>,
+    pub group_index: Option<u16>,
+    pub wheel_slot: Option<ModelWheelSlot>,
+    pub mesh_names: Vec<String>,
+    /// Rest transform in model-local NewViso Y-up space.
+    pub rest_transform: [f32; 16],
+    pub rest_position: [f32; 3],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelFragmentMetadata {
+    pub bound_center: [f32; 3],
+    pub bound_radius: f32,
+    pub parts: Vec<ModelFragmentPart>,
+}
+
 #[derive(Clone, Debug)]
 pub struct ModelResource {
     pub id: AssetId,
@@ -179,6 +233,10 @@ pub struct ModelResource {
     pub skin_source_to_model: [f32; 16],
     pub skeleton: Option<ModelSkeleton>,
     pub animations: Vec<ModelAnimationClip>,
+    /// Optional articulated-fragment presentation metadata. The geometry and
+    /// materials remain ordinary ModelResource data; this block only describes
+    /// semantic subparts and their rest pivots/roles.
+    pub fragment: Option<ModelFragmentMetadata>,
 }
 
 impl AssetResource for ModelResource {

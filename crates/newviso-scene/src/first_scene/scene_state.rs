@@ -12,6 +12,8 @@ impl Scene3dRuntime {
             return Err("scene sky time must be finite".to_owned());
         }
         self.sky_time_seconds = seconds.rem_euclid(self.timecycle_backend.duration_seconds);
+        self.sky_cloud_cycle_time_days =
+            self.sky_time_seconds / self.timecycle_backend.duration_seconds;
         Ok(())
     }
     pub fn set_sky_time_scale(&mut self, scale: f32) -> Result<(), String> {
@@ -58,6 +60,132 @@ impl Scene3dRuntime {
         &self.weather_backend
     }
 
+    pub fn weather_effects(&self) -> &WeatherEffectsState {
+        &self.weather_effects
+    }
+
+    pub fn surface_weather_state(&self) -> (f32, f32) {
+        (
+            self.weather_wetness
+                .max(self.weather_effects.rain.clamp(0.0, 1.0))
+                .clamp(0.0, 1.0),
+            self.weather_effects
+                .snow
+                .max(self.weather_effects.snow_mist)
+                .clamp(0.0, 1.0),
+        )
+    }
+
+    pub fn set_weather_effects(&mut self, state: WeatherEffectsState) -> Result<(), String> {
+        let strings = [
+            &state.current_cloud_settings,
+            &state.next_cloud_settings,
+            &state.current_timecycle,
+            &state.next_timecycle,
+            &state.current_drop_setting,
+            &state.next_drop_setting,
+            &state.current_mist_setting,
+            &state.next_mist_setting,
+            &state.current_ground_setting,
+            &state.next_ground_setting,
+            &state.current_cloud_variant,
+            &state.next_cloud_variant,
+        ];
+        if strings
+            .iter()
+            .any(|value| value.len() > 256 || value.chars().any(char::is_control))
+        {
+            return Err("invalid generic weather effects string field".to_owned());
+        }
+
+        let scalars = [
+            state.sun,
+            state.cloud,
+            state.wind_min,
+            state.wind_max,
+            state.wind_speed,
+            state.rain,
+            state.snow,
+            state.snow_mist,
+            state.fog,
+            state.ripple_bumpiness,
+            state.ripple_min_bumpiness,
+            state.ripple_max_bumpiness,
+            state.ripple_bumpiness_wind_scale,
+            state.ripple_scale,
+            state.ripple_speed,
+            state.ripple_velocity_transfer,
+            state.ocean_bumpiness,
+            state.deep_ocean_scale,
+            state.ocean_noise_min_amplitude,
+            state.ocean_wave_amplitude,
+            state.shore_wave_amplitude,
+            state.ocean_wave_wind_scale,
+            state.shore_wave_wind_scale,
+            state.ocean_wave_min_amplitude,
+            state.shore_wave_min_amplitude,
+            state.ocean_wave_max_amplitude,
+            state.shore_wave_max_amplitude,
+            state.ocean_foam_intensity,
+            state.ocean_foam_scale,
+            state.ripple_disturb,
+            state.lightning,
+            state.sandstorm,
+        ];
+        if scalars.iter().any(|value| !value.is_finite())
+            || state.wind_direction.iter().any(|value| !value.is_finite())
+            || state.wind_min < 0.0
+            || state.wind_max < state.wind_min
+            || state.wind_speed < 0.0
+            || [
+                state.sun,
+                state.cloud,
+                state.rain,
+                state.snow,
+                state.snow_mist,
+                state.fog,
+                state.lightning,
+                state.sandstorm,
+            ]
+            .iter()
+            .any(|value| *value < 0.0 || *value > 4.0)
+        {
+            return Err("invalid generic weather effects numeric field".to_owned());
+        }
+
+        self.weather_effects = state;
+        Ok(())
+    }
+
+    pub fn cloudhat_keyframe(&self) -> CloudHatKeyframeState {
+        self.cloudhat_keyframe
+    }
+
+    pub fn set_cloudhat_keyframe(&mut self, state: CloudHatKeyframeState) -> Result<(), String> {
+        let vectors = [
+            state.cloud_color,
+            state.cloud_light_color,
+            state.cloud_ambient_color,
+            state.cloud_sky_color,
+            state.cloud_bounce_color,
+            state.cloud_east_color,
+            state.cloud_west_color,
+            state.scale_fill_colors,
+            state.density_shift_scale_scattering,
+            state.piercing_light,
+            state.scale_diffuse_fill_ambient_wrap,
+        ];
+        if vectors
+            .iter()
+            .flatten()
+            .any(|value| !value.is_finite() || value.abs() > 256.0)
+        {
+            return Err("invalid CloudHat keyframe value".to_owned());
+        }
+        self.cloudhat_keyframe = state;
+        Ok(())
+    }
+
     pub fn set_weather_backend(
         &mut self,
         current: &str,
@@ -100,10 +228,10 @@ impl Scene3dRuntime {
             })
             .collect()
     }
-    pub fn physics_static_solid_aabbs_near(
+    pub fn physics_static_solid_colliders_near(
         &self,
         interests: &[([f32; 3], [f32; 3])],
-    ) -> Vec<([f32; 3], [f32; 3])> {
+    ) -> Vec<(u64, [f32; 3], [f32; 3])> {
         let interests = interests
             .iter()
             .map(|(min, max)| SceneBounds {
@@ -112,14 +240,25 @@ impl Scene3dRuntime {
             })
             .collect::<Vec<_>>();
         self.world
-            .static_solid_bounds_near(&interests)
+            .static_solid_colliders_near(&interests)
             .into_iter()
-            .map(|bounds| {
+            .map(|(id, bounds)| {
                 (
+                    id.0,
                     [bounds.min.x, bounds.min.y, bounds.min.z],
                     [bounds.max.x, bounds.max.y, bounds.max.z],
                 )
             })
+            .collect()
+    }
+
+    pub fn physics_static_solid_aabbs_near(
+        &self,
+        interests: &[([f32; 3], [f32; 3])],
+    ) -> Vec<([f32; 3], [f32; 3])> {
+        self.physics_static_solid_colliders_near(interests)
+            .into_iter()
+            .map(|(_, min, max)| (min, max))
             .collect()
     }
 
@@ -175,7 +314,8 @@ impl Scene3dRuntime {
                 "weather": {
                     "current": self.weather_backend.current,
                     "next": self.weather_backend.next,
-                    "blend": self.weather_backend.blend
+                    "blend": self.weather_backend.blend,
+                    "effects": self.weather_effects_json()
                 }
             }
         })
@@ -318,8 +458,25 @@ impl Scene3dRuntime {
                     "gpu_instance_resident_batches": self.gpu_instance_table.batches.len(),
                     "gpu_instance_rebuilds": self.gpu_instance_table.rebuild_count,
                     "gpu_instance_uploads": self.gpu_instance_table.upload_count,
-                    "gpu_instance_uploaded": self.gpu_instance_table.uploaded,
-                    "hiz_candidate_capacity": MAX_HIZ_DRAW_CANDIDATES
+                    "gpu_instance_generation": self.gpu_instance_table.generation,
+                    "gpu_instance_uploaded_slots": self.gpu_instance_table
+                        .uploaded_generation
+                        .iter()
+                        .filter(|generation| **generation == self.gpu_instance_table.generation)
+                        .count(),
+                    "gpu_instance_slot_generations": self.gpu_instance_table.uploaded_generation,
+                    "hiz_candidate_capacity": MAX_HIZ_DRAW_CANDIDATES,
+                    "submission": {
+                        "instance_batches": self.last_submission_stats.instance_batches,
+                        "instances": self.last_submission_stats.instance_count,
+                        "hiz_draws": self.last_submission_stats.hiz_draws,
+                        "opaque_indirect_groups": self.last_submission_stats.opaque_indirect_groups,
+                        "direct_opaque_draws": self.last_submission_stats.direct_opaque_draws,
+                        "alpha_draws": self.last_submission_stats.alpha_draws,
+                        "graph_executed_passes": self.last_submission_stats.graph_executed_passes,
+                        "graph_skipped_passes": self.last_submission_stats.graph_skipped_passes,
+                        "graph_cpu_record_ms": self.last_submission_stats.graph_cpu_record_ms
+                    }
                 },
                 "lighting": {
                     "active_lights": lights.len(),
@@ -352,8 +509,33 @@ impl Scene3dRuntime {
                     "shape_contrast": self.sky_clouds.shape_contrast,
                     "shear_speed": self.sky_clouds.shear_speed,
                     "seed_offset": self.sky_clouds.seed_offset,
+                    "large_speed": self.sky_clouds.large_speed,
+                    "small_speed": self.sky_clouds.small_speed,
+                    "overall_detail_speed": self.sky_clouds.overall_detail_speed,
+                    "edge_detail_speed": self.sky_clouds.edge_detail_speed,
+                    "noise_phase_scale": self.sky_clouds.noise_phase_scale,
+                    "noise_phase": self.sky_cloud_noise_phase,
+                    "cycle_time_days": self.sky_cloud_cycle_time_days,
                     "time_seconds": self.sky_time_seconds,
                     "time_scale": self.sky_time_scale
+                },
+                "volumetric_clouds": self.volumetric_cloud_runtime_state(),
+                "atmospheric_clouds": self.atmospheric_cloud_runtime_state(),
+                "cloudhat_keyframe": {
+                    "enabled": self.cloudhat_keyframe.enabled,
+                    "cloud_color": self.cloudhat_keyframe.cloud_color,
+                    "cloud_light_color": self.cloudhat_keyframe.cloud_light_color,
+                    "cloud_ambient_color": self.cloudhat_keyframe.cloud_ambient_color,
+                    "cloud_sky_color": self.cloudhat_keyframe.cloud_sky_color,
+                    "cloud_bounce_color": self.cloudhat_keyframe.cloud_bounce_color,
+                    "cloud_east_color": self.cloudhat_keyframe.cloud_east_color,
+                    "cloud_west_color": self.cloudhat_keyframe.cloud_west_color,
+                    "scale_fill_colors": self.cloudhat_keyframe.scale_fill_colors,
+                    "density_shift_scale_scattering":
+                        self.cloudhat_keyframe.density_shift_scale_scattering,
+                    "piercing_light": self.cloudhat_keyframe.piercing_light,
+                    "scale_diffuse_fill_ambient_wrap":
+                        self.cloudhat_keyframe.scale_diffuse_fill_ambient_wrap
                 },
                 "environment": {
                     "ambient_color": self.scene_environment.ambient_color,
@@ -389,15 +571,71 @@ impl Scene3dRuntime {
                 "weather": {
                     "current": self.weather_backend.current,
                     "next": self.weather_backend.next,
-                    "blend": self.weather_backend.blend
+                    "blend": self.weather_backend.blend,
+                    "effects": self.weather_effects_json(),
+                    "gpu_fx": self.weather_runtime_state()
                 },
                 "transient": {
                     "spheres": self.transient_spheres.len(),
-                    "overlay_quads": self.overlay_quads.len()
+                    "overlay_quads": self.overlay_quads.len(),
+                    "particles": self.particles.len()
                 }
             }
         })
     }
+    fn weather_effects_json(&self) -> Value {
+        let state = &self.weather_effects;
+        json!({
+            "current_cloud_settings": state.current_cloud_settings,
+            "next_cloud_settings": state.next_cloud_settings,
+            "current_timecycle": state.current_timecycle,
+            "next_timecycle": state.next_timecycle,
+            "current_drop_setting": state.current_drop_setting,
+            "next_drop_setting": state.next_drop_setting,
+            "current_mist_setting": state.current_mist_setting,
+            "next_mist_setting": state.next_mist_setting,
+            "current_ground_setting": state.current_ground_setting,
+            "next_ground_setting": state.next_ground_setting,
+            "current_cloud_variant": state.current_cloud_variant,
+            "next_cloud_variant": state.next_cloud_variant,
+            "sun": state.sun,
+            "cloud": state.cloud,
+            "wind_min": state.wind_min,
+            "wind_max": state.wind_max,
+            "wind_speed": state.wind_speed,
+            "wind_direction": state.wind_direction,
+            "rain": state.rain,
+            "snow": state.snow,
+            "snow_mist": state.snow_mist,
+            "fog": state.fog,
+            "water": {
+                "ripple_bumpiness": state.ripple_bumpiness,
+                "ripple_min_bumpiness": state.ripple_min_bumpiness,
+                "ripple_max_bumpiness": state.ripple_max_bumpiness,
+                "ripple_bumpiness_wind_scale": state.ripple_bumpiness_wind_scale,
+                "ripple_scale": state.ripple_scale,
+                "ripple_speed": state.ripple_speed,
+                "ripple_velocity_transfer": state.ripple_velocity_transfer,
+                "ocean_bumpiness": state.ocean_bumpiness,
+                "deep_ocean_scale": state.deep_ocean_scale,
+                "ocean_noise_min_amplitude": state.ocean_noise_min_amplitude,
+                "ocean_wave_amplitude": state.ocean_wave_amplitude,
+                "shore_wave_amplitude": state.shore_wave_amplitude,
+                "ocean_wave_wind_scale": state.ocean_wave_wind_scale,
+                "shore_wave_wind_scale": state.shore_wave_wind_scale,
+                "ocean_wave_min_amplitude": state.ocean_wave_min_amplitude,
+                "shore_wave_min_amplitude": state.shore_wave_min_amplitude,
+                "ocean_wave_max_amplitude": state.ocean_wave_max_amplitude,
+                "shore_wave_max_amplitude": state.shore_wave_max_amplitude,
+                "ocean_foam_intensity": state.ocean_foam_intensity,
+                "ocean_foam_scale": state.ocean_foam_scale,
+                "ripple_disturb": state.ripple_disturb
+            },
+            "lightning": state.lightning,
+            "sandstorm": state.sandstorm
+        })
+    }
+
     pub fn configure_orbit_controls(
         &mut self,
         rotate_button: u64,
@@ -445,6 +683,7 @@ impl Scene3dRuntime {
         self.orbit.zoom_sensitivity = zoom_sensitivity;
         self.orbit.min_distance = min_distance;
         self.orbit.max_distance = max_distance;
+        self.orbit.configured = true;
         self.orbit.distance = self.orbit.distance.clamp(min_distance, max_distance);
         self.camera.position = self.orbit.position(self.camera.target);
         Ok(())
@@ -492,6 +731,68 @@ impl Scene3dRuntime {
         self.orbit.sync_pose(&self.camera);
         self.sync_runtime_camera_to_flecs()
     }
+    pub fn spawn_particles(
+        &mut self,
+        particles: Vec<SceneParticleSpawnDesc>,
+    ) -> Result<(), String> {
+        if self.particles.len().saturating_add(particles.len())
+            > self.render_policy.particle_capacity
+        {
+            return Err(format!(
+                "scene.particles.spawn exceeds the configured limit of {}",
+                self.render_policy.particle_capacity
+            ));
+        }
+        for desc in particles {
+            let finite = desc
+                .position
+                .iter()
+                .chain(desc.velocity.iter())
+                .chain(desc.acceleration.iter())
+                .chain(desc.size.iter())
+                .chain(desc.end_size.iter())
+                .chain(desc.color.iter())
+                .chain(desc.end_color.iter())
+                .all(|value| value.is_finite())
+                && desc.lifetime_seconds.is_finite()
+                && desc.rotation_degrees.is_finite()
+                && desc.angular_velocity_degrees.is_finite();
+            if !finite
+                || desc.lifetime_seconds <= 0.0
+                || desc.lifetime_seconds > 120.0
+                || desc.size.iter().any(|value| *value <= 0.0)
+                || desc.end_size.iter().any(|value| *value <= 0.0)
+            {
+                return Err("scene.particles.spawn contains invalid particle data".to_owned());
+            }
+            self.particles.push(SceneRuntimeParticle {
+                desc,
+                age_seconds: 0.0,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn clear_particles(&mut self) {
+        self.particles.clear();
+    }
+
+    pub(super) fn update_particles(&mut self, dt: f32) {
+        if !dt.is_finite() || dt <= 0.0 {
+            return;
+        }
+        for particle in &mut self.particles {
+            particle.age_seconds += dt;
+            for axis in 0..3 {
+                particle.desc.velocity[axis] += particle.desc.acceleration[axis] * dt;
+                particle.desc.position[axis] += particle.desc.velocity[axis] * dt;
+            }
+            particle.desc.rotation_degrees += particle.desc.angular_velocity_degrees * dt;
+        }
+        self.particles
+            .retain(|particle| particle.age_seconds < particle.desc.lifetime_seconds);
+    }
+
     pub fn set_transient_spheres(
         &mut self,
         spheres: Vec<SceneTransientSphere>,

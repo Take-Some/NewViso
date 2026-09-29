@@ -175,6 +175,57 @@ pub(super) struct AssetDrawRange {
     pub(super) material_slot: Option<u32>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneModelPartPose {
+    /// Exact semantic mesh names belonging to this articulated part.
+    pub mesh_names: Vec<String>,
+    /// Pivot in model-local space. Imported fragment rest positions use this.
+    pub pivot: [f32; 3],
+    /// Model-local translation relative to the imported rest pose.
+    pub translation: [f32; 3],
+    /// Model-local XYZ Euler delta in degrees.
+    pub rotation_degrees: [f32; 3],
+    /// Model-local scale delta. [1,1,1] preserves the imported rest shape.
+    pub scale: [f32; 3],
+    /// Invisible parts are collapsed to their pivot, producing no raster area.
+    pub visible: bool,
+}
+
+impl Default for SceneModelPartPose {
+    fn default() -> Self {
+        Self {
+            mesh_names: Vec::new(),
+            pivot: [0.0; 3],
+            translation: [0.0; 3],
+            rotation_degrees: [0.0; 3],
+            scale: [1.0; 3],
+            visible: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ScenePreparedModelGeometry {
+    model_id: u64,
+    vertices: Arc<[AssetTriangleVertex]>,
+    draw_ranges: Arc<[AssetDrawRange]>,
+}
+
+pub fn prepare_model_geometry(model: &ModelResource) -> Result<ScenePreparedModelGeometry, String> {
+    let (vertices, ranges) = expand_model_triangles(model)?;
+    if vertices.is_empty() {
+        return Err(format!(
+            "model '{}' contains no renderable triangles",
+            model.name
+        ));
+    }
+    Ok(ScenePreparedModelGeometry {
+        model_id: model.id.0,
+        vertices: Arc::from(vertices),
+        draw_ranges: Arc::from(ranges),
+    })
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct CpuAssetMesh {
     /// Source semantic model identity. Stable across static and skinned instances.
@@ -182,10 +233,21 @@ pub(super) struct CpuAssetMesh {
     /// Render geometry identity. Skinned entities receive a unique id so their
     /// deformed vertex range is never instanced with another pose.
     pub(super) model_id: AssetId,
+    pub(super) local_bounds: SceneBounds,
     pub(super) local_draw_ranges: Arc<[AssetDrawRange]>,
+    /// Render-phase classification is immutable for an installed model/material
+    /// binding. Keep it out of the per-frame submission hot path.
+    pub(super) opaque_draw_range_indices: Arc<[u32]>,
+    pub(super) alpha_draw_range_indices: Arc<[u32]>,
     pub(super) materials: Arc<[CpuAssetMaterial]>,
     pub(super) first_vertex: u32,
     pub(super) vertex_count: u32,
+    /// Compact offset into the frame-owned skinned vertex stream.
+    /// Static meshes keep None and read from the persistent asset vertex buffer.
+    pub(super) skinned_first_vertex: Option<u32>,
+    /// Fragment models own an entity-local mutable vertex range so articulated
+    /// wheels/panels can move without modifying another instance.
+    pub(super) fragment_deformable: bool,
 }
 
 impl Scene3dRuntime {
@@ -194,6 +256,21 @@ impl Scene3dRuntime {
         stable_id: u64,
         model: &ModelResource,
         resolved_materials: &[SceneResolvedMaterial],
+    ) -> Result<bool, String> {
+        self.install_entity_model_prepared(stable_id, model, resolved_materials, None)
+    }
+
+    pub fn model_geometry_cached(&self, model_id: u64) -> bool {
+        self.asset_model_cache.contains_key(&model_id)
+            && self.asset_draw_range_cache.contains_key(&model_id)
+    }
+
+    pub fn install_entity_model_prepared(
+        &mut self,
+        stable_id: u64,
+        model: &ModelResource,
+        resolved_materials: &[SceneResolvedMaterial],
+        prepared: Option<&ScenePreparedModelGeometry>,
     ) -> Result<bool, String> {
         if self
             .asset_meshes
@@ -216,15 +293,22 @@ impl Scene3dRuntime {
         ) {
             (vertices.clone(), ranges.clone())
         } else {
-            let (vertices, ranges) = expand_model_triangles(model)?;
-            if vertices.is_empty() {
+            let owned;
+            let prepared = match prepared {
+                Some(prepared) => prepared,
+                None => {
+                    owned = prepare_model_geometry(model)?;
+                    &owned
+                }
+            };
+            if prepared.model_id != model.id.0 {
                 return Err(format!(
-                    "model '{}' contains no renderable triangles",
-                    model.name
+                    "prepared model geometry identity mismatch expected={} got={}",
+                    model.id.0, prepared.model_id
                 ));
             }
-            let vertices: Arc<[AssetTriangleVertex]> = Arc::from(vertices);
-            let ranges: Arc<[AssetDrawRange]> = Arc::from(ranges);
+            let vertices = prepared.vertices.clone();
+            let ranges = prepared.draw_ranges.clone();
             self.asset_model_cache.insert(model.id.0, vertices.clone());
             self.asset_draw_range_cache
                 .insert(model.id.0, ranges.clone());
@@ -235,20 +319,48 @@ impl Scene3dRuntime {
             && local_vertices
                 .iter()
                 .any(|vertex| vertex.skin_influences != 0);
-        // Static geometry is shared by semantic model id. A skinned entity owns a
-        // unique mutable vertex range because its current pose is entity-local.
-        let render_model_id = if skinned {
+        let fragment_deformable = model.fragment.is_some();
+        let entity_local_geometry = skinned || fragment_deformable;
+        // Static geometry is shared by semantic model id. Skinned and articulated
+        // fragment entities own unique mutable vertex ranges because their pose is
+        // entity-local.
+        let render_model_id = if entity_local_geometry {
             AssetId(model.id.0 ^ stable_id.rotate_left(23) ^ 0x534b_494e_4e45_4401_u64)
         } else {
             model.id
         };
+        let mut skinned_first_vertex = None;
         let (first_vertex, vertex_count) = if skinned {
             let first_vertex = u32::try_from(self.asset_vertex_data.len() / FLOATS_PER_VERTEX)
                 .map_err(|_| "skinned asset vertex offset exceeds u32".to_owned())?;
             let upload_from = self.asset_vertex_data.len();
             append_local_asset_vertices(&mut self.asset_vertex_data, &local_vertices);
+
+            let compact_first =
+                u32::try_from(self.skinned_vertex_data.len() / FLOATS_PER_VERTEX)
+                    .map_err(|_| "compact skinned vertex offset exceeds u32".to_owned())?;
+            let compact_start = self.skinned_vertex_data.len();
+            append_local_asset_vertices(&mut self.skinned_vertex_data, &local_vertices);
+            let compact_end = self.skinned_vertex_data.len();
+            for ranges in &mut self.skinned_dirty_ranges {
+                ranges.push((compact_start, compact_end));
+            }
+            skinned_first_vertex = Some(compact_first);
+
             let vertex_count = u32::try_from(local_vertices.len())
                 .map_err(|_| "skinned asset vertex count exceeds u32".to_owned())?;
+            self.asset_upload_from_float = Some(
+                self.asset_upload_from_float
+                    .map_or(upload_from, |existing| existing.min(upload_from)),
+            );
+            (first_vertex, vertex_count)
+        } else if fragment_deformable {
+            let first_vertex = u32::try_from(self.asset_vertex_data.len() / FLOATS_PER_VERTEX)
+                .map_err(|_| "fragment asset vertex offset exceeds u32".to_owned())?;
+            let upload_from = self.asset_vertex_data.len();
+            append_local_asset_vertices(&mut self.asset_vertex_data, &local_vertices);
+            let vertex_count = u32::try_from(local_vertices.len())
+                .map_err(|_| "fragment asset vertex count exceeds u32".to_owned())?;
             self.asset_upload_from_float = Some(
                 self.asset_upload_from_float
                     .map_or(upload_from, |existing| existing.min(upload_from)),
@@ -286,6 +398,24 @@ impl Scene3dRuntime {
                 .map(CpuAssetMaterial::from_resolved)
                 .collect::<Vec<_>>(),
         );
+        let mut opaque_draw_range_indices = Vec::new();
+        let mut alpha_draw_range_indices = Vec::new();
+        for (range_index, range) in local_draw_ranges.iter().enumerate() {
+            let alpha_mode = range
+                .material_slot
+                .and_then(|slot| materials.get(slot as usize))
+                .map(|material| material.alpha_mode)
+                .unwrap_or(AssetAlphaMode::Opaque);
+            let index = u32::try_from(range_index)
+                .map_err(|_| "asset draw range index exceeds u32".to_owned())?;
+            if alpha_mode == AssetAlphaMode::Blend {
+                alpha_draw_range_indices.push(index);
+            } else {
+                opaque_draw_range_indices.push(index);
+            }
+        }
+        let opaque_draw_range_indices: Arc<[u32]> = Arc::from(opaque_draw_range_indices);
+        let alpha_draw_range_indices: Arc<[u32]> = Arc::from(alpha_draw_range_indices);
 
         let bounds = transformed_model_bounds(model, transform)?;
         self.asset_meshes.insert(
@@ -293,10 +423,26 @@ impl Scene3dRuntime {
             CpuAssetMesh {
                 source_model_id: model.id,
                 model_id: render_model_id,
+                local_bounds: SceneBounds {
+                    min: Vec3::new(
+                        model.bounds.min[0],
+                        model.bounds.min[1],
+                        model.bounds.min[2],
+                    ),
+                    max: Vec3::new(
+                        model.bounds.max[0],
+                        model.bounds.max[1],
+                        model.bounds.max[2],
+                    ),
+                },
                 local_draw_ranges,
+                opaque_draw_range_indices,
+                alpha_draw_range_indices,
                 materials,
                 first_vertex,
                 vertex_count,
+                skinned_first_vertex,
+                fragment_deformable,
             },
         );
 
@@ -328,6 +474,149 @@ impl Scene3dRuntime {
         self.world
             .update_spatial_from(id, transform, bounds, SceneMutationSource::Streaming)?;
         Ok(true)
+    }
+
+    pub fn set_entity_model_part_poses(
+        &mut self,
+        stable_id: u64,
+        poses: &[SceneModelPartPose],
+    ) -> Result<usize, String> {
+        if poses.is_empty() {
+            return Ok(0);
+        }
+        let mesh = self
+            .asset_meshes
+            .get(&stable_id)
+            .ok_or_else(|| format!("scene entity {stable_id} has no installed model"))?;
+        if !mesh.fragment_deformable {
+            return Err(format!(
+                "scene entity {stable_id} model is not fragment-deformable"
+            ));
+        }
+        if mesh.skinned_first_vertex.is_some() {
+            return Err(format!(
+                "scene entity {stable_id} cannot use fragment CPU poses while skinning is active"
+            ));
+        }
+        let source_model_id = mesh.source_model_id.0;
+        let first_vertex = mesh.first_vertex as usize;
+        let local_draw_ranges = mesh.local_draw_ranges.clone();
+        let bind_vertices = self
+            .asset_model_cache
+            .get(&source_model_id)
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "scene entity {stable_id} fragment bind geometry model={source_model_id} is missing"
+                )
+            })?;
+
+        let mut modified_vertices = 0usize;
+        let mut first_modified_float = None::<usize>;
+        for pose in poses {
+            if pose
+                .pivot
+                .iter()
+                .chain(pose.translation.iter())
+                .chain(pose.rotation_degrees.iter())
+                .chain(pose.scale.iter())
+                .any(|value| !value.is_finite())
+            {
+                return Err(format!(
+                    "scene entity {stable_id} fragment pose contains non-finite values"
+                ));
+            }
+            let pivot = Vec3::new(pose.pivot[0], pose.pivot[1], pose.pivot[2]);
+            let translation = Vec3::new(
+                pose.translation[0],
+                pose.translation[1],
+                pose.translation[2],
+            );
+            let rotation = Vec3::new(
+                pose.rotation_degrees[0],
+                pose.rotation_degrees[1],
+                pose.rotation_degrees[2],
+            );
+            let authored_scale = if pose.visible {
+                Vec3::new(pose.scale[0], pose.scale[1], pose.scale[2])
+            } else {
+                Vec3::ZERO
+            };
+
+            for range in local_draw_ranges.iter().filter(|range| {
+                pose.mesh_names
+                    .iter()
+                    .any(|name| name.as_str() == range.mesh_name.as_ref())
+            }) {
+                let local_first = range.first_vertex as usize;
+                let local_end = local_first
+                    .checked_add(range.vertex_count as usize)
+                    .ok_or_else(|| "fragment vertex range overflow".to_owned())?;
+                if local_end > bind_vertices.len() {
+                    return Err(format!(
+                        "scene entity {stable_id} fragment range {}..{} exceeds bind vertices={}",
+                        local_first,
+                        local_end,
+                        bind_vertices.len()
+                    ));
+                }
+                for local_index in local_first..local_end {
+                    let bind = bind_vertices[local_index];
+                    let centered = bind.position.sub(pivot);
+                    let position =
+                        transform_point(centered, authored_scale, rotation, pivot.add(translation));
+                    let normal = if pose.visible {
+                        transform_point(bind.normal, Vec3::new(1.0, 1.0, 1.0), rotation, Vec3::ZERO)
+                            .normalized()
+                    } else {
+                        bind.normal
+                    };
+                    let tangent_vec = Vec3::new(bind.tangent[0], bind.tangent[1], bind.tangent[2]);
+                    let tangent = if pose.visible {
+                        transform_point(tangent_vec, Vec3::new(1.0, 1.0, 1.0), rotation, Vec3::ZERO)
+                            .normalized()
+                    } else {
+                        tangent_vec
+                    };
+
+                    let global_vertex = first_vertex
+                        .checked_add(local_index)
+                        .ok_or_else(|| "fragment global vertex overflow".to_owned())?;
+                    let base = global_vertex
+                        .checked_mul(FLOATS_PER_VERTEX)
+                        .ok_or_else(|| "fragment vertex float offset overflow".to_owned())?;
+                    let end = base + FLOATS_PER_VERTEX;
+                    if end > self.asset_vertex_data.len() {
+                        return Err(format!(
+                            "scene entity {stable_id} fragment write {}..{} exceeds vertex floats={}",
+                            base,
+                            end,
+                            self.asset_vertex_data.len()
+                        ));
+                    }
+                    let dst = &mut self.asset_vertex_data[base..end];
+                    dst[0] = position.x;
+                    dst[1] = position.y;
+                    dst[2] = position.z;
+                    dst[4] = normal.x;
+                    dst[5] = normal.y;
+                    dst[6] = normal.z;
+                    dst[13] = tangent.x;
+                    dst[14] = tangent.y;
+                    dst[15] = tangent.z;
+                    first_modified_float =
+                        Some(first_modified_float.map_or(base, |value| value.min(base)));
+                    modified_vertices = modified_vertices.saturating_add(1);
+                }
+            }
+        }
+        if let Some(offset) = first_modified_float {
+            self.asset_upload_from_float = Some(
+                self.asset_upload_from_float
+                    .map_or(offset, |existing| existing.min(offset)),
+            );
+        }
+        Ok(modified_vertices)
     }
 
     pub fn remove_entity_model(&mut self, stable_id: u64) -> bool {
@@ -761,22 +1050,32 @@ fn generate_triangle_tangent(triangle: &mut [AssetTriangleVertex; 3]) {
     }
 }
 
-fn transformed_model_bounds(
-    model: &ModelResource,
+pub(super) fn transformed_local_bounds(
+    local_bounds: SceneBounds,
     transform: SceneTransform,
 ) -> Result<SceneBounds, String> {
-    if !model.bounds.is_finite() {
-        return Err(format!("model '{}' has non-finite bounds", model.name));
+    if [
+        local_bounds.min.x,
+        local_bounds.min.y,
+        local_bounds.min.z,
+        local_bounds.max.x,
+        local_bounds.max.y,
+        local_bounds.max.z,
+    ]
+    .iter()
+    .any(|value| !value.is_finite())
+    {
+        return Err("asset model has non-finite local bounds".to_owned());
     }
 
-    let min = model.bounds.min;
-    let max = model.bounds.max;
+    let min = local_bounds.min;
+    let max = local_bounds.max;
     let mut world_min = Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
     let mut world_max = Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
 
-    for x in [min[0], max[0]] {
-        for y in [min[1], max[1]] {
-            for z in [min[2], max[2]] {
+    for x in [min.x, max.x] {
+        for y in [min.y, max.y] {
+            for z in [min.z, max.z] {
                 let p = transform_point(
                     Vec3::new(x, y, z),
                     transform.scale,
@@ -797,4 +1096,28 @@ fn transformed_model_bounds(
         min: world_min,
         max: world_max,
     })
+}
+
+fn transformed_model_bounds(
+    model: &ModelResource,
+    transform: SceneTransform,
+) -> Result<SceneBounds, String> {
+    if !model.bounds.is_finite() {
+        return Err(format!("model '{}' has non-finite bounds", model.name));
+    }
+    transformed_local_bounds(
+        SceneBounds {
+            min: Vec3::new(
+                model.bounds.min[0],
+                model.bounds.min[1],
+                model.bounds.min[2],
+            ),
+            max: Vec3::new(
+                model.bounds.max[0],
+                model.bounds.max[1],
+                model.bounds.max[2],
+            ),
+        },
+        transform,
+    )
 }

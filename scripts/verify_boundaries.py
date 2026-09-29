@@ -7,6 +7,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 ALLOWED: dict[str, set[str]] = {
     "newviso": {"newviso-bugtrap", "newviso-config", "newviso-host", "newviso-runtime"},
+    "newviso-agent": set(),
+    "newviso-navigation": set(),
+    "newviso-steering": set(),
+    "newviso-character": {"newviso-collision"},
     "newviso-assets-client": {"newviso-host"},
     "newviso-bugtrap": set(),
     "newviso-bugtrap-ui": set(),
@@ -38,6 +42,10 @@ ALLOWED: dict[str, set[str]] = {
     "newviso-materials": {"newviso-resource-runtime", "newviso-textures"},
     "newviso-model": {"newviso-materials", "newviso-resource-runtime"},
     "newviso-runtime": {
+        "newviso-steering",
+        "newviso-navigation",
+        "newviso-character",
+        "newviso-agent",
         "newviso-bugtrap",
         "newviso-compat-abi",
         "newviso-config",

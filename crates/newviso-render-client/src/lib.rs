@@ -1,22 +1,42 @@
 use newviso_host as host;
+use newviso_render_api as render_api;
+pub use render_api::{
+    Extent2D, RenderDrawListKind, RenderGraphDesc, RenderGraphPassDesc, RenderGraphPassDomain,
+    RenderGraphPassId, RenderGraphPassKind, RenderGraphResourceDesc, RenderGraphResourceId,
+    RenderGraphResourceSemantic, RenderGraphResourceUsage, RenderLight, RenderLightKind,
+    TextureFormat,
+};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const RENDER_SERVICE: &str = "engine.render";
 const RENDER_INVOKE: &str = "invoke_json";
 const RENDER_COMMAND_BATCH_BIN_V2: &str = "command_batch_bin_v2";
+const RENDER_FRAME_STATE_V1: &str = "frame_state_v1";
+const RENDER_BEGIN_FRAME_ACQUIRE_V1: &str = "begin_frame_acquire_v1";
+const FRAME_OWNED_BUFFER_PREFIX: &str = "frame_owned/";
 static TRY_BINARY_WRITE_BUFFER: AtomicBool = AtomicBool::new(true);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RenderFrameState {
+    pub active: bool,
+    pub frame_slot: usize,
+    pub frames_in_flight: usize,
+    pub engine_frame_index: u64,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ShaderStage {
     Vertex,
     Fragment,
+    Compute,
 }
 impl ShaderStage {
     fn wire_name(self) -> &'static str {
         match self {
             Self::Vertex => "Vertex",
             Self::Fragment => "Fragment",
+            Self::Compute => "Compute",
         }
     }
 }
@@ -144,6 +164,27 @@ impl RenderClient {
         )
     }
 
+    /// Creates a buffer whose writes are owned by one acquired renderer frame slot.
+    ///
+    /// The Vulkan provider recognizes the reserved label prefix and may skip the
+    /// compatibility all-frame fence barrier. Callers must only write a slot after
+    /// BeginFrame has acquired that exact slot.
+    pub fn create_frame_buffer(
+        &self,
+        frame_slot: usize,
+        label: &str,
+        size: u64,
+        usage: &str,
+        memory: &str,
+    ) -> Result<u32, String> {
+        self.create_buffer(
+            &format!("{FRAME_OWNED_BUFFER_PREFIX}{frame_slot}/{label}"),
+            size,
+            usage,
+            memory,
+        )
+    }
+
     pub fn write_buffer(&self, id: u32, offset: u64, data: &[u8]) -> Result<(), String> {
         // WriteBuffer is a frame hot-path command. Sending byte payloads through
         // invoke_json expands every byte into a JSON integer and makes animated
@@ -173,11 +214,84 @@ impl RenderClient {
     }
 
     pub fn write_buffer_f32(&self, id: u32, offset: u64, values: &[f32]) -> Result<(), String> {
-        let mut data = Vec::with_capacity(std::mem::size_of_val(values));
-        for value in values {
-            data.extend_from_slice(&value.to_le_bytes());
+        #[cfg(target_endian = "little")]
+        {
+            let data = unsafe {
+                std::slice::from_raw_parts(
+                    values.as_ptr().cast::<u8>(),
+                    std::mem::size_of_val(values),
+                )
+            };
+            return self.write_buffer(id, offset, data);
         }
-        self.write_buffer(id, offset, &data)
+
+        #[cfg(not(target_endian = "little"))]
+        {
+            let mut data = Vec::with_capacity(std::mem::size_of_val(values));
+            for value in values {
+                data.extend_from_slice(&value.to_le_bytes());
+            }
+            self.write_buffer(id, offset, &data)
+        }
+    }
+
+    /// Upload several disjoint f32 ranges from one source buffer through one
+    /// render-service call. This is the hot path for CPU-skinned characters:
+    /// the Vulkan buffer is CpuToGpu/host-visible, so the backend can memcpy
+    /// each range while holding the render API once instead of crossing the
+    /// service ABI once per character.
+    pub fn write_buffer_f32_ranges(
+        &self,
+        id: u32,
+        values: &[f32],
+        ranges: &[(usize, usize)],
+    ) -> Result<(), String> {
+        if ranges.is_empty() {
+            return Ok(());
+        }
+        if ranges.len() == 1 {
+            let (start, end) = ranges[0];
+            if start > end || end > values.len() {
+                return Err("write_buffer_f32_ranges contains invalid range".to_owned());
+            }
+            return self.write_buffer_f32(
+                id,
+                start as u64 * std::mem::size_of::<f32>() as u64,
+                &values[start..end],
+            );
+        }
+
+        #[cfg(target_endian = "little")]
+        if TRY_BINARY_WRITE_BUFFER.load(Ordering::Relaxed) {
+            let packet = encode_write_buffer_f32_ranges_bin_packet(id, values, ranges)?;
+            match host::call_service(RENDER_SERVICE, RENDER_COMMAND_BATCH_BIN_V2, &packet) {
+                Ok(_) => return Ok(()),
+                Err(error) => {
+                    let detail = error.to_string();
+                    let unsupported = detail.contains("unsupported")
+                        || detail.contains("unknown method")
+                        || detail.contains("not found")
+                        || detail.contains("unknown render command batch binary tag");
+                    if unsupported {
+                        TRY_BINARY_WRITE_BUFFER.store(false, Ordering::Relaxed);
+                    } else {
+                        return Err(detail);
+                    }
+                }
+            }
+        }
+
+        for &(start, end) in ranges {
+            if start > end || end > values.len() {
+                return Err("write_buffer_f32_ranges contains invalid range".to_owned());
+            }
+            self.write_buffer_f32(
+                id,
+                start as u64 * std::mem::size_of::<f32>() as u64,
+                &values[start..end],
+            )?;
+        }
+        Ok(())
     }
 
     pub fn create_texture(
@@ -225,6 +339,85 @@ impl RenderClient {
         )?;
         let response = host::call_service(RENDER_SERVICE, "create_texture_bin_v1", &packet)?;
         decode_texture_id_bin_packet(&response)
+    }
+
+    /// Sets the backend-owned per-frame GPU/transfer work budget.
+    ///
+    /// Upload execution belongs to the render backend. Scene/resource systems
+    /// should queue deferred work and let BeginFrame/RenderGraph consume it under
+    /// this single budget rather than running additional pumps themselves.
+    pub fn set_work_budget(
+        &self,
+        max_upload_bytes_per_frame: u64,
+        max_upload_jobs_per_frame: u32,
+        max_pipeline_builds_per_frame: u32,
+        max_blocking_ms_per_frame: f32,
+    ) -> Result<(), String> {
+        let budget = render_api::RenderWorkBudget {
+            max_upload_bytes_per_frame,
+            max_upload_jobs_per_frame,
+            max_pipeline_builds_per_frame,
+            max_blocking_ms_per_frame,
+            upload_policy: render_api::RenderUploadQueuePolicy::FrameBudgeted,
+        };
+        match self.typed_request(render_api::RenderServiceRequest::SetWorkBudget(budget))? {
+            render_api::RenderServiceResponse::Unit => Ok(()),
+            other => Err(format!(
+                "render service expected Unit for SetWorkBudget, got {other:?}"
+            )),
+        }
+    }
+
+    pub fn validate_render_graph(
+        &self,
+        graph: render_api::RenderGraphDesc,
+    ) -> Result<render_api::RenderGraphValidationReport, String> {
+        match self.typed_request(render_api::RenderServiceRequest::ValidateRenderGraph(graph))? {
+            render_api::RenderServiceResponse::GraphValidationReport(report) => Ok(report),
+            other => Err(format!(
+                "render service expected GraphValidationReport, got {other:?}"
+            )),
+        }
+    }
+
+    pub fn compile_render_graph(
+        &self,
+        graph: render_api::RenderGraphDesc,
+    ) -> Result<render_api::RenderGraphCompileReport, String> {
+        match self.typed_request(render_api::RenderServiceRequest::CompileRenderGraph(graph))? {
+            render_api::RenderServiceResponse::GraphCompileReport(report) => Ok(report),
+            other => Err(format!(
+                "render service expected GraphCompileReport, got {other:?}"
+            )),
+        }
+    }
+
+    pub fn submit_render_graph(
+        &self,
+        graph: render_api::RenderGraphDesc,
+    ) -> Result<render_api::RenderGraphSubmitReport, String> {
+        match self.typed_request(render_api::RenderServiceRequest::SubmitRenderGraph(graph))? {
+            render_api::RenderServiceResponse::GraphSubmitReport(report) => Ok(report),
+            other => Err(format!(
+                "render service expected GraphSubmitReport, got {other:?}"
+            )),
+        }
+    }
+
+    pub fn set_draw_list_kind(
+        &self,
+        kind: Option<render_api::RenderDrawListKind>,
+    ) -> Result<(), String> {
+        match self.typed_request(render_api::RenderServiceRequest::SetDrawListKind { kind })? {
+            render_api::RenderServiceResponse::Unit => Ok(()),
+            other => Err(format!(
+                "render service expected Unit for SetDrawListKind, got {other:?}"
+            )),
+        }
+    }
+
+    pub fn set_frame_lights(&self, lights: &[RenderLight]) -> Result<(), String> {
+        self.unit(json!({"SetFrameLights":lights}))
     }
 
     pub fn pump_uploads(
@@ -482,6 +675,31 @@ impl RenderClient {
         desc: GraphicsPipelineDesc<'_>,
         layouts: &[VertexLayoutDesc<'_>],
     ) -> Result<u32, String> {
+        self.create_pipeline_with_layouts_and_color_formats(desc, layouts, &[])
+    }
+
+    /// Creates a graphics pipeline with an explicit MRT color-attachment contract.
+    ///
+    /// Color formats follow fragment output locations. Passing an empty slice is
+    /// reserved for the compatibility single-attachment path above.
+    pub fn create_pipeline_mrt_with_layouts(
+        &self,
+        desc: GraphicsPipelineDesc<'_>,
+        layouts: &[VertexLayoutDesc<'_>],
+        color_formats: &[&str],
+    ) -> Result<u32, String> {
+        if color_formats.len() < 2 {
+            return Err("MRT pipeline requires at least two color formats".to_owned());
+        }
+        self.create_pipeline_with_layouts_and_color_formats(desc, layouts, color_formats)
+    }
+
+    fn create_pipeline_with_layouts_and_color_formats(
+        &self,
+        desc: GraphicsPipelineDesc<'_>,
+        layouts: &[VertexLayoutDesc<'_>],
+        color_formats: &[&str],
+    ) -> Result<u32, String> {
         let vertex_layouts = layouts
             .iter()
             .map(|layout| {
@@ -506,7 +724,7 @@ impl RenderClient {
             "topology":desc.topology,
             "vertex_layouts":vertex_layouts,
             "bind_group_layouts":desc.bind_group_layouts,
-            "color_format":desc.color_format,"color_formats":[],
+            "color_format":desc.color_format,"color_formats":color_formats,
             "depth_format":desc.depth_format,
             "depth_mode":{"test":desc.depth_test,"write":desc.depth_write,"compare":desc.depth_compare},
             "cull_mode":desc.cull_mode,"blend_mode":desc.blend_mode,
@@ -517,8 +735,92 @@ impl RenderClient {
         }}))?,"PipelineId")
     }
 
+    pub fn create_compute_pipeline(
+        &self,
+        label: &str,
+        compute_shader: u32,
+        bind_group_layouts: &[u32],
+        cache_key: &str,
+    ) -> Result<u32, String> {
+        command_id(
+            self.command(json!({"CreateComputePipeline":{
+                "label":label,
+                "cs":compute_shader,
+                "bind_group_layouts":bind_group_layouts,
+                "cache_key":cache_key
+            }}))?,
+            "PipelineId",
+        )
+    }
+
+    pub fn dispatch(&self, groups_x: u32, groups_y: u32, groups_z: u32) -> Result<(), String> {
+        self.unit(json!({"Dispatch":{
+            "groups_x":groups_x,
+            "groups_y":groups_y,
+            "groups_z":groups_z
+        }}))
+    }
+
     pub fn begin_frame(&self, clear_color: [f32; 4], frame_index: u64) -> Result<(), String> {
         self.unit(json!({"BeginFrame":{"clear_color":clear_color,"frame_index":frame_index}}))
+    }
+    pub fn frame_state(&self) -> Result<RenderFrameState, String> {
+        let value = host::call_json(RENDER_SERVICE, RENDER_FRAME_STATE_V1, &json!({}))?;
+        Ok(RenderFrameState {
+            active: value
+                .get("active")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| format!("render frame state has no active flag: {value}"))?,
+            frame_slot: value
+                .get("frame_slot")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| format!("render frame state has no frame_slot: {value}"))?
+                as usize,
+            frames_in_flight: value
+                .get("frames_in_flight")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| format!("render frame state has no frames_in_flight: {value}"))?
+                as usize,
+            engine_frame_index: value
+                .get("engine_frame_index")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| format!("render frame state has no engine_frame_index: {value}"))?,
+        })
+    }
+
+    pub fn begin_frame_acquire(
+        &self,
+        clear_color: [f32; 4],
+        frame_index: u64,
+    ) -> Result<RenderFrameState, String> {
+        let value = host::call_json(
+            RENDER_SERVICE,
+            RENDER_BEGIN_FRAME_ACQUIRE_V1,
+            &json!({"BeginFrame":{"clear_color":clear_color,"frame_index":frame_index}}),
+        )?;
+        Ok(RenderFrameState {
+            active: value
+                .get("active")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| format!("render begin-frame state has no active flag: {value}"))?,
+            frame_slot: value
+                .get("frame_slot")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| format!("render begin-frame state has no frame_slot: {value}"))?
+                as usize,
+            frames_in_flight: value
+                .get("frames_in_flight")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    format!("render begin-frame state has no frames_in_flight: {value}")
+                })? as usize,
+            engine_frame_index: value
+                .get("engine_frame_index")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    format!("render begin-frame state has no engine_frame_index: {value}")
+                })?,
+        })
     }
     pub fn set_viewport(&self, width: u32, height: u32) -> Result<(), String> {
         self.unit(json!({"SetViewport":{"x":0.0,"y":0.0,"w":width as f32,"h":height as f32,"min_depth":0.0,"max_depth":1.0}}))
@@ -672,6 +974,23 @@ impl RenderClient {
         let _ = self.unit(json!({"DestroyBindGroupLayout":{"id":id}}));
     }
 
+    fn typed_request(
+        &self,
+        request: render_api::RenderServiceRequest,
+    ) -> Result<render_api::RenderServiceResponse, String> {
+        let request = serde_json::to_value(request)
+            .map_err(|error| format!("render request serialization failed: {error}"))?;
+        let response = host::call_json(RENDER_SERVICE, RENDER_INVOKE, &request)?;
+        let response: render_api::RenderServiceResponse = serde_json::from_value(response)
+            .map_err(|error| format!("render response decode failed: {error}"))?;
+        match response {
+            render_api::RenderServiceResponse::Problem(problem) => {
+                Err(format!("render service problem: {problem:?}"))
+            }
+            other => Ok(other),
+        }
+    }
+
     fn request(&self, request: Value) -> Result<Value, String> {
         let response = host::call_json(RENDER_SERVICE, RENDER_INVOKE, &request)?;
         if let Some(problem) = response.get("Problem") {
@@ -697,11 +1016,45 @@ impl RenderClient {
     }
 }
 
-fn encode_write_buffer_bin_packet(
+#[cfg(target_endian = "little")]
+fn encode_write_buffer_f32_ranges_bin_packet(
     id: u32,
-    offset: u64,
-    data: &[u8],
+    values: &[f32],
+    ranges: &[(usize, usize)],
 ) -> Result<Vec<u8>, String> {
+    let command_count = u32::try_from(ranges.len())
+        .map_err(|_| "write-buffer range count exceeds u32".to_owned())?;
+    let payload_bytes = ranges.iter().try_fold(0usize, |total, &(start, end)| {
+        if start > end || end > values.len() {
+            return Err("write-buffer range exceeds source f32 slice".to_owned());
+        }
+        total
+            .checked_add((end - start).saturating_mul(std::mem::size_of::<f32>()))
+            .ok_or_else(|| "write-buffer batch payload size overflow".to_owned())
+    })?;
+    let mut out =
+        Vec::with_capacity(payload_bytes.saturating_add(12 + ranges.len().saturating_mul(17)));
+    out.extend_from_slice(b"NECB\x02\0\0\0");
+    put_u32(&mut out, command_count);
+    for &(start, end) in ranges {
+        let data = unsafe {
+            std::slice::from_raw_parts(
+                values[start..end].as_ptr().cast::<u8>(),
+                (end - start).saturating_mul(std::mem::size_of::<f32>()),
+            )
+        };
+        let len = u32::try_from(data.len())
+            .map_err(|_| "write-buffer range payload exceeds u32".to_owned())?;
+        out.push(1); // RenderCommand::WriteBuffer
+        put_u32(&mut out, id);
+        put_u64(&mut out, start as u64 * std::mem::size_of::<f32>() as u64);
+        put_u32(&mut out, len);
+        out.extend_from_slice(data);
+    }
+    Ok(out)
+}
+
+fn encode_write_buffer_bin_packet(id: u32, offset: u64, data: &[u8]) -> Result<Vec<u8>, String> {
     let len = u32::try_from(data.len())
         .map_err(|_| "write-buffer payload is too large for binary render packet".to_owned())?;
     let mut out = Vec::with_capacity(data.len().saturating_add(25));

@@ -77,6 +77,26 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
         let providers = probe_directory(&bootstrap.provider_dir)
             .map_err(|error| format!("provider discovery failed: {error}"))?;
         log_provider_inventory(&providers);
+        bugtrap::set_context("safe_mode", bootstrap.safe_mode.to_string());
+        bugtrap::set_context(
+            "provider_inventory",
+            providers
+                .iter()
+                .map(|provider| format!("{}@{}", provider.id, provider.version))
+                .collect::<Vec<_>>()
+                .join(";"),
+        );
+        if let Some(renderer) = providers
+            .iter()
+            .find(|provider| provider.id == roles.renderer)
+        {
+            bugtrap::set_context("renderer_provider_id", renderer.id.clone());
+            bugtrap::set_context("renderer_provider_version", renderer.version.to_string());
+            bugtrap::set_context(
+                "renderer_provider_path",
+                renderer.path.display().to_string(),
+            );
+        }
 
         host::debug("newviso.runtime", "probing provider lifecycle ABI");
         for provider in &providers {
@@ -150,7 +170,7 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
 
         let resolved_capabilities = if let Some(project) = &project {
             mount_project_files(project, &bootstrap.assets_dir)?;
-            let resolved = resolve_project_capabilities(project, &providers)?;
+            let resolved = resolve_project_capabilities(project, &providers, bootstrap.safe_mode)?;
             activate_project_capabilities(&resolved, &mut bootstrap_providers)?;
             resolved
         } else {
@@ -158,14 +178,18 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
         };
 
         let loaded_project = if let Some(project) = &project {
-            Some(load_project_files(project)?)
+            Some(load_project_files(project, &bootstrap.assets_dir)?)
         } else {
             None
         };
 
-        let ui_template = loaded_project
-            .as_ref()
-            .and_then(|files| files.ui_surface.clone());
+        let ui_template = if bootstrap.safe_mode {
+            None
+        } else {
+            loaded_project
+                .as_ref()
+                .and_then(|files| files.ui_surface.clone())
+        };
 
         let ui_backend_active = resolved_capabilities.iter().any(|item| {
             item.candidate
@@ -183,7 +207,7 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
             .then(PhysicsRuntime::connect)
             .transpose()?;
 
-        let content_manager = if ui_backend_active {
+        let content_manager = if ui_backend_active && !bootstrap.safe_mode {
             project
                 .as_ref()
                 .map(|project| ContentManager::open(&project.root))
@@ -207,7 +231,13 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
 
         log_resolved_capabilities(&resolved_capabilities);
 
-        let mut scripts = if let Some(files) = &loaded_project {
+        let mut scripts = if bootstrap.safe_mode {
+            host::warn(
+                "newviso.scripting",
+                "project scripting suppressed by safe mode",
+            );
+            None
+        } else if let Some(files) = &loaded_project {
             start_project_scripting(
                 files.scripts.as_ref(),
                 &providers,
@@ -218,14 +248,18 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
             None
         };
 
-        let runtime_settings = loaded_project
-            .as_ref()
-            .map(|files| files.runtime.clone())
-            .unwrap_or_default();
-        let environment = loaded_project
-            .as_ref()
-            .map(|files| files.environment.clone())
-            .unwrap_or_default();
+        let loaded_files = loaded_project.as_ref().ok_or_else(|| {
+            "NewViso runtime is project-driven; launch with --project <project-root>".to_owned()
+        })?;
+        let mut runtime_settings = loaded_files.runtime.clone();
+        if bootstrap.safe_mode {
+            runtime_settings.startup_commands.clear();
+            runtime_settings.scheduling.native_navigation_enabled = true;
+            runtime_settings.world_persistence.load_on_start = false;
+            runtime_settings.world_persistence.save_on_shutdown = false;
+            runtime_settings.world_persistence.autosave_interval_seconds = 0.0;
+        }
+        let environment = loaded_files.environment.clone();
 
         let project_ref = project.as_ref().ok_or_else(|| {
             "NewViso runtime is project-driven; launch with --project <project-root>".to_owned()
@@ -234,9 +268,49 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
             Scene3dRuntime::load_from_asset(&project_ref.manifest.files.scene)
                 .map_err(|error| format!("startup scene load failed: {error}"))?;
 
+        if let Some(files) = loaded_project.as_ref() {
+            scene
+                .configure_render_policy(&files.render_defaults)
+                .map_err(|error| format!("Shared Assets render defaults rejected: {error}"))?;
+        }
+
         scene.set_clear_color(environment.clear_color);
+        if let Some(weather) = application_weather::load_shared_weather_gpu_fx()? {
+            scene.set_weather_gpu_fx_resources(weather)?;
+        }
+
+        // Weather is part of the default world contract. The backend state is
+        // always generic; a mounted shared catalog may enrich it with authored
+        // physical/effect channels. Projects remain free to replace the ids,
+        // blend them, or disable profile activation entirely.
+        if environment.weather.enabled {
+            let current = environment.weather.current.trim();
+            let next = environment.weather.next.trim();
+            let blend = environment.weather.blend;
+            let previous = scene.weather_effects().clone();
+            let resolved_effects = application_weather::resolve_shared_weather_effects(
+                current, next, blend, &previous,
+            )?;
+            scene.set_weather_backend(current, next, blend)?;
+            if let Some(effects) = resolved_effects {
+                scene.set_weather_effects(effects)?;
+            }
+            host::info(
+                "newviso.weather",
+                format!(
+                    "default world weather active current='{}' next='{}' blend={:.3}",
+                    current, next, blend
+                ),
+            );
+        }
+
         if let Some(sky_config) = environment.sky.as_ref() {
             scene.set_sky_dome(load_environment_sky(sky_config)?)?;
+        }
+        if !environment.atmospheric_clouds.layers.is_empty() {
+            scene.set_atmospheric_clouds(load_environment_atmospheric_clouds(
+                &environment.atmospheric_clouds,
+            )?)?;
         }
         scene.configure_orbit_controls(
             runtime_settings.camera.rotate_button,
@@ -356,9 +430,19 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
 
     // Every provider shutdown runs while all provider DLLs are still resident.
     for provider in bootstrap_providers.iter_mut().rev() {
-        bugtrap::set_context("provider_shutdown", provider.path().display().to_string());
+        let provider_id = provider.id().to_owned();
+        let provider_path = provider.path().display().to_string();
+        host::info(
+            "newviso.providers",
+            format!("shutdown begin provider='{provider_id}' path={provider_path}"),
+        );
+        bugtrap::set_context("provider_shutdown", provider_path);
         bugtrap::checkpoint("provider.shutdown");
         provider.shutdown();
+        host::info(
+            "newviso.providers",
+            format!("shutdown complete provider='{provider_id}'"),
+        );
     }
 
     // Host ABI objects (services/event sinks) may contain vtables implemented

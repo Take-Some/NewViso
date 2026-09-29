@@ -160,7 +160,7 @@ mod asset_type_path_tests {
     use super::AssetTypesService;
 
     #[test]
-    fn rage_at_sign_inside_basename_keeps_extension() {
+    fn rsc7_at_sign_inside_basename_keeps_extension() {
         assert_eq!(
             AssetTypesService::extension_from_path("maps/ybn/hi@bh1_06_0.ybn"),
             "ybn"

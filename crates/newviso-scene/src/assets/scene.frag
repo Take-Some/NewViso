@@ -34,6 +34,14 @@ layout(set = 1, binding = 6, std140) uniform MaterialParams {
     vec4 shading2; // x environment reflection strength
 } material;
 
+layout(set = 2, binding = 0) uniform texture2D t_weather_puddle_layout;
+layout(set = 2, binding = 1) uniform texture2D t_weather_puddle_normal;
+layout(set = 2, binding = 2) uniform sampler s_weather;
+layout(set = 2, binding = 3, std140) uniform WeatherMaterial {
+    vec4 state0; // x rain, y accumulated wetness, z lightning flash, w time
+    vec4 state1; // x ripple scale, y ripple bumpiness, z wind speed, w puddle frame
+} weather;
+
 layout(location = 0) in vec4 v_color;
 layout(location = 1) in vec3 v_normal;
 layout(location = 2) in vec3 v_world_position;
@@ -87,7 +95,7 @@ float sample_shadow(vec3 normal, float n_dot_l) {
     return occluded / 9.0;
 }
 
-vec3 rage_surface_normal(int flags) {
+vec3 rsc7_surface_normal(int flags) {
     vec3 n = normalize(v_normal);
     if ((flags & MATERIAL_HAS_NORMAL) == 0) {
         return n;
@@ -123,7 +131,7 @@ void main() {
 
     int flags = int(material.shading1.z + 0.5);
     vec4 base_texel = texture(sampler2D(t_base_color, s_material), v_uv);
-    // COLOR0 is not implicitly an albedo tint. Imported RAGE shaders often
+    // COLOR0 is not implicitly an albedo tint. Imported RSC7 shaders often
     // use vertex-colour channels as masks/AO/auxiliary data; direct colour
     // modulation is therefore an explicit material capability.
     vec4 base_color = base_texel;
@@ -139,7 +147,44 @@ void main() {
         discard;
     }
 
-    vec3 n = rage_surface_normal(flags);
+    vec3 n = rsc7_surface_normal(flags);
+
+    // Weather wetness is global renderer state rather than a material flag.
+    // Horizontal authored surfaces progressively darken, gain a moving GTA
+    // puddle normal and become more specular while vertical walls remain
+    // largely unchanged.
+    float rain_amount = clamp(weather.state0.x, 0.0, 1.0);
+    float accumulated_wetness = clamp(weather.state0.y, 0.0, 1.0);
+    float wet_surface = 0.0;
+    // Uniform across the draw, so implicit texture derivatives remain valid.
+    // Dry weather preserves the original normal without two texture fetches.
+    if (accumulated_wetness > 0.0) {
+        float horizontal = smoothstep(0.28, 0.86, max(n.y, 0.0));
+        vec2 weather_uv = v_world_position.xz * max(weather.state1.x, 0.001);
+        float puddle_layout = texture(
+            sampler2D(t_weather_puddle_layout, s_weather),
+            weather_uv
+        ).r;
+        vec3 puddle_encoded = texture(
+            sampler2D(t_weather_puddle_normal, s_weather),
+            weather_uv * 1.75
+        ).rgb;
+        vec2 puddle_xy = puddle_encoded.rg * 2.0 - 1.0;
+        float puddle_z = sqrt(max(1.0 - dot(puddle_xy, puddle_xy), 0.0));
+        vec3 puddle_normal = normalize(vec3(puddle_xy.x, puddle_z, puddle_xy.y));
+        float ripple_strength = clamp(weather.state1.y, 0.0, 2.0);
+        puddle_normal = normalize(mix(
+            vec3(0.0, 1.0, 0.0),
+            puddle_normal,
+            clamp(ripple_strength, 0.0, 1.0)
+        ));
+        wet_surface = accumulated_wetness
+            * horizontal
+            * mix(0.32, 1.0, clamp(puddle_layout, 0.0, 1.0));
+        n = normalize(mix(n, puddle_normal, wet_surface * 0.48));
+    }
+    base_color.rgb *= mix(1.0, 0.72, wet_surface);
+
     vec3 v = normalize(frame.camera_position.xyz - v_world_position);
     vec3 diffuse_lighting =
         max(frame.environment_ambient.rgb, vec3(0.0))
@@ -149,8 +194,13 @@ void main() {
     vec3 specular_map = (flags & MATERIAL_HAS_SPECULAR) != 0
         ? texture(sampler2D(t_specular, s_material), v_uv).rgb
         : vec3(1.0);
-    float specular_intensity = max(material.shading0.y, 0.0);
-    float specular_falloff = clamp(material.shading0.z, 1.0, 512.0);
+    float specular_intensity = max(material.shading0.y, 0.0)
+        + wet_surface * (0.9 + rain_amount * 1.4);
+    float specular_falloff = mix(
+        clamp(material.shading0.z, 1.0, 512.0),
+        112.0,
+        wet_surface
+    );
     float authored_fresnel = clamp(material.shading0.w, 0.0, 1.0);
     float view_fresnel = pow(1.0 - max(dot(n, v), 0.0), 5.0);
     float fresnel_gain = mix(1.0, 0.25 + 0.75 * view_fresnel, authored_fresnel);
@@ -230,7 +280,7 @@ void main() {
         if ((flags & MATERIAL_HAS_ENVIRONMENT_TEXTURE) != 0) {
             environment_color = texture(sampler2D(t_environment, s_material), env_uv).rgb;
         } else {
-            // RAGE glass_env/glass_pv_env can reference the global scene
+            // RSC7 glass_env/glass_pv_env can reference the global scene
             // environment without a material-local sampler. Approximate that
             // source-neutrally from the active NewViso environment instead of
             // sampling the intentionally black missing-texture fallback.
@@ -263,10 +313,24 @@ void main() {
             environment_color * glass_fresnel * reflection_gain;
     }
 
+    float wet_view_fresnel = pow(1.0 - max(dot(n, v), 0.0), 5.0);
+    vec3 wet_environment = max(
+        mix(
+            frame.environment_clear_color.rgb,
+            frame.environment_haze_color_density.rgb,
+            0.45
+        ),
+        vec3(0.0)
+    ) * wet_surface * (0.10 + 0.42 * wet_view_fresnel);
+    vec3 lightning_ambient = vec3(0.92, 0.96, 1.0)
+        * clamp(weather.state0.z, 0.0, 1.0)
+        * 1.35;
+
     vec3 surface_color =
-        base_color.rgb * diffuse_lighting
+        base_color.rgb * (diffuse_lighting + lightning_ambient)
         + specular_lighting
         + environment_reflection
+        + wet_environment
         + emissive;
     float camera_distance = length(v_world_position - frame.camera_position.xyz);
 

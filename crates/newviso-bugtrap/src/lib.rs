@@ -17,6 +17,7 @@ static INSTALLED: AtomicBool = AtomicBool::new(false);
 #[cfg(windows)]
 static NATIVE_CAPTURE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static STATE: OnceLock<Mutex<BugTrapState>> = OnceLock::new();
+static SESSION_ID: OnceLock<String> = OnceLock::new();
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Breadcrumb {
@@ -45,8 +46,31 @@ impl Default for BugTrapState {
 }
 
 #[derive(Debug, Serialize)]
+struct BuildMetadata {
+    engine_version: &'static str,
+    profile: &'static str,
+    target_os: &'static str,
+    target_arch: &'static str,
+    revision: Option<&'static str>,
+}
+
+#[derive(Debug, Serialize)]
+struct RecoveryMetadata {
+    executable: Option<String>,
+    working_dir: Option<String>,
+    args: Vec<String>,
+    project_root: Option<String>,
+    log_path: Option<String>,
+    safe_mode_supported: bool,
+}
+
+#[derive(Debug, Serialize)]
 struct CrashReport {
     schema: &'static str,
+    crash_id: String,
+    session_id: String,
+    build: BuildMetadata,
+    recovery: RecoveryMetadata,
     kind: String,
     timestamp_unix_ms: u128,
     process_id: u32,
@@ -204,6 +228,47 @@ fn now_unix_ms() -> u128 {
         .unwrap_or_default()
 }
 
+fn session_id() -> &'static str {
+    SESSION_ID
+        .get_or_init(|| {
+            format!(
+                "NVSESSION-{:013X}-{:08X}",
+                now_unix_ms(),
+                std::process::id()
+            )
+        })
+        .as_str()
+}
+
+fn build_metadata() -> BuildMetadata {
+    BuildMetadata {
+        engine_version: env!("CARGO_PKG_VERSION"),
+        profile: if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+        target_os: std::env::consts::OS,
+        target_arch: std::env::consts::ARCH,
+        revision: option_env!("NEWVISO_BUILD_REVISION"),
+    }
+}
+
+fn recovery_metadata(context: &BTreeMap<String, String>) -> RecoveryMetadata {
+    RecoveryMetadata {
+        executable: std::env::current_exe()
+            .ok()
+            .map(|path| path.display().to_string()),
+        working_dir: std::env::current_dir()
+            .ok()
+            .map(|path| path.display().to_string()),
+        args: std::env::args().collect(),
+        project_root: context.get("project_root").cloned(),
+        log_path: context.get("log_path").cloned(),
+        safe_mode_supported: true,
+    }
+}
+
 fn snapshot() -> (PathBuf, String, BTreeMap<String, String>, Vec<Breadcrumb>) {
     if let Ok(state) = state().try_lock() {
         (
@@ -239,10 +304,15 @@ fn write_report(
     fs::create_dir_all(&report_dir).map_err(|error| error.to_string())?;
 
     let stem = format!("crash-{timestamp}-{process_id}");
+    let crash_id = format!("NVCRASH-{timestamp:013X}-{process_id:08X}");
     let crash_path = report_dir.join(format!("{stem}.json"));
 
     let report = CrashReport {
-        schema: "newviso.bugtrap.crash.v1",
+        schema: "newviso.bugtrap.crash.v2",
+        crash_id,
+        session_id: session_id().to_owned(),
+        build: build_metadata(),
+        recovery: recovery_metadata(&context),
         kind: kind.to_owned(),
         timestamp_unix_ms: timestamp,
         process_id,
@@ -508,7 +578,14 @@ mod tests {
         .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
 
-        assert_eq!(value["schema"], "newviso.bugtrap.crash.v1");
+        assert_eq!(value["schema"], "newviso.bugtrap.crash.v2");
+        assert!(value["crash_id"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("NVCRASH-")));
+        assert!(value["session_id"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("NVSESSION-")));
+        assert_eq!(value["recovery"]["safe_mode_supported"], true);
         assert_eq!(value["kind"], "test_error");
         assert_eq!(value["phase"], "test.phase");
         assert_eq!(value["context"]["provider"], "test.provider");

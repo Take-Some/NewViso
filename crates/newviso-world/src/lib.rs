@@ -43,8 +43,26 @@ pub struct WorldActorRuntimeView {
     pub position: [f32; 3],
     pub velocity: [f32; 3],
     pub travel_mode: Option<String>,
+    pub travel_destination: Option<String>,
+    pub travel_target_position: Option<[f32; 3]>,
+    pub travel_speed: Option<f32>,
+    pub external_motion_authority: bool,
+    pub simulation_tier: &'static str,
     pub representation: &'static str,
     pub enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldStimulusRuntimeView {
+    pub id: String,
+    pub kind: String,
+    pub source: String,
+    pub position: [f32; 3],
+    pub radius: f32,
+    pub intensity: f32,
+    pub remaining_seconds: f32,
+    pub tags: Vec<String>,
+    pub payload: Value,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -83,6 +101,8 @@ pub struct LivingWorldRuntime {
     nav_edges: BTreeMap<String, WorldNavEdgeDesc>,
     travel: BTreeMap<String, WorldTravelRecord>,
     #[serde(skip)]
+    external_motion_velocities: BTreeMap<String, [f32; 3]>,
+    #[serde(skip)]
     frame_travel_completions: Vec<WorldTravelCompletion>,
     #[serde(skip)]
     frame_representation_changes: Vec<WorldRepresentationChange>,
@@ -120,6 +140,7 @@ impl Default for LivingWorldRuntime {
             nav_nodes: BTreeMap::new(),
             nav_edges: BTreeMap::new(),
             travel: BTreeMap::new(),
+            external_motion_velocities: BTreeMap::new(),
             frame_travel_completions: Vec::new(),
             frame_representation_changes: Vec::new(),
             next_reality_event_id: 1,
@@ -134,22 +155,35 @@ impl LivingWorldRuntime {
             .values()
             .map(|actor| {
                 let travel = self.travel.get(&actor.desc.id);
-                let velocity = travel
-                    .and_then(|travel| {
-                        travel.route[travel.next_waypoint_index..]
-                            .iter()
-                            .find_map(|waypoint| {
-                                let target = self.nav_nodes.get(waypoint)?.position;
-                                let dx = target[0] - actor.desc.position[0];
-                                let dy = target[1] - actor.desc.position[1];
-                                let dz = target[2] - actor.desc.position[2];
-                                let length = (dx * dx + dy * dy + dz * dz).sqrt();
-                                (length > 1.0e-5).then_some([
-                                    dx / length * travel.speed,
-                                    dy / length * travel.speed,
-                                    dz / length * travel.speed,
-                                ])
-                            })
+                let travel_target_position = travel.and_then(|travel| {
+                    travel.route[travel.next_waypoint_index..]
+                        .iter()
+                        .filter_map(|waypoint| {
+                            self.nav_nodes.get(waypoint).map(|node| node.position)
+                        })
+                        .find(|target| {
+                            let dx = target[0] - actor.desc.position[0];
+                            let dy = target[1] - actor.desc.position[1];
+                            let dz = target[2] - actor.desc.position[2];
+                            dx * dx + dy * dy + dz * dz > 1.0e-10
+                        })
+                });
+                let velocity = self
+                    .external_motion_velocities
+                    .get(&actor.desc.id)
+                    .copied()
+                    .or_else(|| {
+                        let travel = travel?;
+                        let target = travel_target_position?;
+                        let dx = target[0] - actor.desc.position[0];
+                        let dy = target[1] - actor.desc.position[1];
+                        let dz = target[2] - actor.desc.position[2];
+                        let length = (dx * dx + dy * dy + dz * dz).sqrt();
+                        (length > 1.0e-5).then_some([
+                            dx / length * travel.speed,
+                            dy / length * travel.speed,
+                            dz / length * travel.speed,
+                        ])
                     })
                     .unwrap_or([0.0; 3]);
                 WorldActorRuntimeView {
@@ -157,11 +191,83 @@ impl LivingWorldRuntime {
                     position: actor.desc.position,
                     velocity,
                     travel_mode: travel.map(|travel| travel.mode.clone()),
+                    travel_destination: travel.map(|travel| travel.destination_node.clone()),
+                    travel_target_position,
+                    travel_speed: travel.map(|travel| travel.speed),
+                    external_motion_authority: self
+                        .external_motion_velocities
+                        .contains_key(&actor.desc.id),
+                    simulation_tier: actor.last_tier.as_str(),
                     representation: representation_for_tier(actor.last_tier),
                     enabled: actor.desc.enabled,
                 }
             })
             .collect()
+    }
+
+    pub fn world_seconds(&self) -> f64 {
+        self.clock.world_seconds
+    }
+
+    pub fn stimulus_runtime_views(&self) -> Vec<WorldStimulusRuntimeView> {
+        self.stimuli
+            .values()
+            .map(|active| WorldStimulusRuntimeView {
+                id: active.desc.id.clone(),
+                kind: active.desc.kind.clone(),
+                source: active.desc.source.clone(),
+                position: active.desc.position,
+                radius: active.desc.radius,
+                intensity: active.desc.intensity,
+                remaining_seconds: (active.expires_world_seconds - self.clock.world_seconds)
+                    .max(0.0) as f32,
+                tags: active.desc.tags.clone(),
+                payload: active.desc.payload.clone(),
+            })
+            .collect()
+    }
+
+    pub fn set_actor_external_motion(
+        &mut self,
+        actor_id: &str,
+        position: [f32; 3],
+        velocity: [f32; 3],
+    ) -> Result<(), String> {
+        if position
+            .iter()
+            .chain(velocity.iter())
+            .any(|value| !value.is_finite())
+        {
+            return Err("external actor motion contains non-finite state".to_owned());
+        }
+        let actor_id = actor_id.trim();
+        let previous_position = self
+            .actors
+            .get(actor_id)
+            .ok_or_else(|| format!("world actor '{}' does not exist", actor_id))?
+            .desc
+            .position;
+        let dx = position[0] - previous_position[0];
+        let dy = position[1] - previous_position[1];
+        let dz = position[2] - previous_position[2];
+        let travelled = (dx * dx + dy * dy + dz * dz).sqrt();
+        if let Some(travel) = self.travel.get_mut(actor_id) {
+            travel.distance_travelled += f64::from(travelled);
+        }
+        self.actors
+            .get_mut(actor_id)
+            .expect("actor checked above")
+            .desc
+            .position = position;
+        self.external_motion_velocities
+            .insert(actor_id.to_owned(), velocity);
+        Ok(())
+    }
+
+    pub fn release_actor_external_motion(&mut self, actor_id: &str) -> bool {
+        self.external_motion_velocities
+            .remove(actor_id.trim())
+            .is_some()
     }
 
     pub fn configure_clock(&mut self, policy: WorldClockPolicyDesc) -> Result<(), String> {
@@ -220,6 +326,7 @@ impl LivingWorldRuntime {
     pub fn remove_actor(&mut self, id: &str) {
         self.actors.remove(id.trim());
         self.travel.remove(id.trim());
+        self.external_motion_velocities.remove(id.trim());
         self.scenario_reservations
             .retain(|_, record| record.desc.actor_id != id.trim());
     }
@@ -474,13 +581,33 @@ impl LivingWorldRuntime {
             &start_node,
             &desc.destination_node,
         )?;
+        let next_waypoint_index = if desc.start_node.is_some() {
+            // An explicit start node is a routing assertion by the caller, not a
+            // waypoint that the actor must physically revisit. This matters for
+            // materialized characters whose collision-resolved feet position may
+            // differ slightly in Y (or sit on another overlapping nav layer) from
+            // the coarse graph anchor used to select the route.
+            usize::from(route.len() > 1)
+        } else {
+            route
+                .iter()
+                .take_while(|node_id| {
+                    self.nav_nodes.get(*node_id).is_some_and(|node| {
+                        let dx = node.position[0] - actor_position[0];
+                        let dy = node.position[1] - actor_position[1];
+                        let dz = node.position[2] - actor_position[2];
+                        dx * dx + dy * dy + dz * dz <= 1.0e-10
+                    })
+                })
+                .count()
+        };
         let actor_id = desc.actor_id.clone();
         self.travel.insert(
             actor_id.clone(),
             WorldTravelRecord {
                 actor_id: actor_id.clone(),
                 route,
-                next_waypoint_index: 0,
+                next_waypoint_index,
                 destination_node: desc.destination_node.clone(),
                 speed: desc.speed,
                 mode: desc.mode.clone(),
@@ -513,7 +640,9 @@ impl LivingWorldRuntime {
     }
 
     pub fn cancel_travel(&mut self, actor_id: &str) {
-        self.travel.remove(actor_id.trim());
+        let actor_id = actor_id.trim();
+        self.travel.remove(actor_id);
+        self.external_motion_velocities.remove(actor_id);
     }
 
     pub fn set_fact(&mut self, key: &str, value: Value) -> Result<(), String> {
@@ -991,6 +1120,66 @@ impl LivingWorldRuntime {
             return;
         };
 
+        if self.external_motion_velocities.contains_key(actor_id) {
+            travel.last_update_world_seconds = step.world_seconds;
+            while travel.next_waypoint_index < travel.route.len() {
+                let node_id = &travel.route[travel.next_waypoint_index];
+                let Some(node) = self.nav_nodes.get(node_id) else {
+                    break;
+                };
+                let dx = node.position[0] - actor.desc.position[0];
+                let dy = node.position[1] - actor.desc.position[1];
+                let dz = node.position[2] - actor.desc.position[2];
+                if (dx * dx + dy * dy + dz * dz).sqrt() > 0.18 {
+                    break;
+                }
+                let dx = node.position[0] - actor.desc.position[0];
+                let dy = node.position[1] - actor.desc.position[1];
+                let dz = node.position[2] - actor.desc.position[2];
+                travel.distance_travelled += f64::from((dx * dx + dy * dy + dz * dz).sqrt());
+                actor.desc.position = node.position;
+                travel.next_waypoint_index += 1;
+            }
+
+            if travel.next_waypoint_index < travel.route.len() {
+                self.travel.insert(actor_id.to_owned(), travel);
+                return;
+            }
+
+            let completion = WorldTravelCompletion {
+                actor_id: actor_id.to_owned(),
+                destination_node: travel.destination_node.clone(),
+                mode: travel.mode.clone(),
+                payload: travel.payload.clone(),
+                world_seconds: step.world_seconds,
+                distance_travelled: travel.distance_travelled,
+            };
+            let position = actor.desc.position;
+            self.external_motion_velocities.remove(actor_id);
+            self.frame_travel_completions.push(completion.clone());
+            self.push_reality_event(
+                WorldRealityEventDesc {
+                    id: String::new(),
+                    kind: "world.travel.completed".to_owned(),
+                    source: "world.navigation".to_owned(),
+                    cause: None,
+                    participants: vec![actor_id.to_owned()],
+                    position: Some(position),
+                    importance: 1.0,
+                    tags: vec!["navigation".to_owned(), "travel".to_owned()],
+                    payload: json!({
+                        "destination_node": completion.destination_node,
+                        "mode": completion.mode,
+                        "distance_travelled": completion.distance_travelled,
+                        "started_world_seconds": travel.started_world_seconds,
+                        "payload": completion.payload,
+                    }),
+                },
+                step.world_seconds,
+            );
+            return;
+        }
+
         // A new route must not consume time from before its own start.
         let delta_seconds = (step.world_seconds - travel.last_update_world_seconds).max(0.0);
         travel.last_update_world_seconds = step.world_seconds;
@@ -1079,7 +1268,19 @@ impl LivingWorldRuntime {
     /// scripting ABI every rendered frame. Scripts receive frame_events for
     /// current causality and can use event delivery for incremental history.
     pub fn frame_state(&self) -> Value {
-        self.runtime_state_with_history(false)
+        let mut state = self.runtime_state_with_history(false);
+        // Static navigation topology can be very large for a city and is
+        // already owned authoritatively by LivingWorld. Per-frame scripts need
+        // current travel/completion state, not a full copy of every authored
+        // node and edge on every QuickJS call. Keep the arrays present for ABI
+        // compatibility, but omit their static contents from the hot snapshot.
+        if let Some(navigation) = state.get_mut("navigation").and_then(Value::as_object_mut) {
+            navigation.insert("node_count".to_owned(), json!(self.nav_nodes.len()));
+            navigation.insert("edge_count".to_owned(), json!(self.nav_edges.len()));
+            navigation.insert("nodes".to_owned(), Value::Array(Vec::new()));
+            navigation.insert("edges".to_owned(), Value::Array(Vec::new()));
+        }
+        state
     }
 
     fn runtime_state_with_history(&self, include_history: bool) -> Value {
@@ -1590,6 +1791,126 @@ mod tests {
     }
 
     #[test]
+    fn explicit_travel_start_overrides_nearest_disconnected_node() {
+        let mut runtime = LivingWorldRuntime::default();
+        runtime
+            .upsert_actor(actor("walker.explicit", [0.01, 0.0, 0.0]))
+            .unwrap();
+
+        for (id, position) in [
+            ("wrong.nearest", [0.0, 0.0, 0.0]),
+            ("route.start", [1.0, 0.0, 0.0]),
+            ("route.goal", [5.0, 0.0, 0.0]),
+        ] {
+            runtime
+                .upsert_nav_node(WorldNavNodeDesc {
+                    id: id.to_owned(),
+                    position,
+                    tags: Vec::new(),
+                    parameters: BTreeMap::new(),
+                })
+                .unwrap();
+        }
+        runtime
+            .upsert_nav_edge(WorldNavEdgeDesc {
+                id: "route.edge".to_owned(),
+                from: "route.start".to_owned(),
+                to: "route.goal".to_owned(),
+                bidirectional: true,
+                distance: None,
+                cost_scale: 1.0,
+                enabled: true,
+                tags: Vec::new(),
+                parameters: BTreeMap::new(),
+            })
+            .unwrap();
+
+        runtime
+            .start_travel(WorldTravelRequestDesc {
+                actor_id: "walker.explicit".to_owned(),
+                start_node: Some("route.start".to_owned()),
+                destination_node: "route.goal".to_owned(),
+                speed: 1.0,
+                mode: "walk".to_owned(),
+                payload: Value::Null,
+            })
+            .unwrap();
+
+        let state = runtime.runtime_state();
+        let travel = state["navigation"]["active_travel"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["actor_id"] == "walker.explicit")
+            .unwrap();
+        assert_eq!(travel["route"], json!(["route.start", "route.goal"]));
+        assert_eq!(travel["next_waypoint_index"], json!(1));
+    }
+
+    #[test]
+    fn frame_state_omits_static_navigation_topology_but_keeps_runtime_navigation() {
+        let mut runtime = LivingWorldRuntime::default();
+        runtime
+            .upsert_actor(actor("walker.frame", [0.0, 0.0, 0.0]))
+            .unwrap();
+        for (id, position) in [("a.frame", [0.0, 0.0, 0.0]), ("b.frame", [5.0, 0.0, 0.0])] {
+            runtime
+                .upsert_nav_node(WorldNavNodeDesc {
+                    id: id.to_owned(),
+                    position,
+                    tags: Vec::new(),
+                    parameters: BTreeMap::new(),
+                })
+                .unwrap();
+        }
+        runtime
+            .upsert_nav_edge(WorldNavEdgeDesc {
+                id: "ab.frame".to_owned(),
+                from: "a.frame".to_owned(),
+                to: "b.frame".to_owned(),
+                bidirectional: true,
+                distance: None,
+                cost_scale: 1.0,
+                enabled: true,
+                tags: Vec::new(),
+                parameters: BTreeMap::new(),
+            })
+            .unwrap();
+        runtime
+            .start_travel(WorldTravelRequestDesc {
+                actor_id: "walker.frame".to_owned(),
+                start_node: Some("a.frame".to_owned()),
+                destination_node: "b.frame".to_owned(),
+                speed: 1.0,
+                mode: "walk".to_owned(),
+                payload: Value::Null,
+            })
+            .unwrap();
+
+        let frame = runtime.frame_state();
+        assert_eq!(frame["navigation"]["node_count"], json!(2));
+        assert_eq!(frame["navigation"]["edge_count"], json!(1));
+        assert_eq!(frame["navigation"]["nodes"], json!([]));
+        assert_eq!(frame["navigation"]["edges"], json!([]));
+        assert_eq!(
+            frame["navigation"]["active_travel"]
+                .as_array()
+                .map(Vec::len),
+            Some(1)
+        );
+
+        let full = runtime.runtime_state();
+        assert_eq!(
+            full["navigation"]["nodes"].as_array().map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            full["navigation"]["edges"].as_array().map(Vec::len),
+            Some(1)
+        );
+    }
+
+    #[test]
     fn background_world_advances_without_observer() {
         let mut runtime = LivingWorldRuntime::default();
         runtime
@@ -1903,6 +2224,76 @@ mod tests {
         assert!(view.velocity[0].abs() < 1.0e-6);
         assert!(view.velocity[1].abs() < 1.0e-6);
         assert!((view.velocity[2] - 2.5).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn external_motion_authority_holds_coarse_travel_and_resumes_cleanly() {
+        let mut runtime = LivingWorldRuntime::default();
+        runtime
+            .configure_simulation(WorldSimulationPolicyDesc {
+                full_interval_seconds: 0.05,
+                reduced_interval_seconds: 0.05,
+                background_interval_seconds: 0.05,
+                ..WorldSimulationPolicyDesc::default()
+            })
+            .unwrap();
+        runtime
+            .upsert_actor(actor("physical", [0.0, 0.0, 0.0]))
+            .unwrap();
+        for (id, position) in [("a", [0.0, 0.0, 0.0]), ("b", [2.0, 0.0, 0.0])] {
+            runtime
+                .upsert_nav_node(WorldNavNodeDesc {
+                    id: id.to_owned(),
+                    position,
+                    tags: Vec::new(),
+                    parameters: BTreeMap::new(),
+                })
+                .unwrap();
+        }
+        runtime
+            .upsert_nav_edge(WorldNavEdgeDesc {
+                id: "ab-physical".to_owned(),
+                from: "a".to_owned(),
+                to: "b".to_owned(),
+                bidirectional: true,
+                distance: None,
+                cost_scale: 1.0,
+                enabled: true,
+                tags: Vec::new(),
+                parameters: BTreeMap::new(),
+            })
+            .unwrap();
+        runtime
+            .start_travel(WorldTravelRequestDesc {
+                actor_id: "physical".to_owned(),
+                start_node: Some("a".to_owned()),
+                destination_node: "b".to_owned(),
+                speed: 1.0,
+                mode: "walk".to_owned(),
+                payload: Value::Null,
+            })
+            .unwrap();
+
+        runtime
+            .set_actor_external_motion("physical", [0.4, 0.0, 0.0], [1.0, 0.0, 0.0])
+            .unwrap();
+        runtime.tick_frame(1.0, &[]);
+        let held = runtime
+            .actor_runtime_views()
+            .into_iter()
+            .find(|view| view.id == "physical")
+            .unwrap();
+        assert!((held.position[0] - 0.4).abs() < 1.0e-6);
+        assert!(held.external_motion_authority);
+
+        runtime.release_actor_external_motion("physical");
+        runtime.tick_frame(0.5, &[]);
+        let resumed = runtime
+            .actor_runtime_views()
+            .into_iter()
+            .find(|view| view.id == "physical")
+            .unwrap();
+        assert!(resumed.position[0] > 0.4);
     }
 
     #[test]

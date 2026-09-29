@@ -143,18 +143,36 @@ fn validate_world(w: &LivingWorldRuntime) -> Result<(), String> {
         .validate()?;
         time(travel.started_world_seconds)?;
         time(travel.last_update_world_seconds)?;
-        if !w.actors.contains_key(id)
-            || travel.route.is_empty()
-            || travel.next_waypoint_index >= travel.route.len()
-            || travel.route.last() != Some(&travel.destination_node)
-            || travel
-                .route
-                .iter()
-                .any(|node| !w.nav_nodes.contains_key(node))
-            || !travel.distance_travelled.is_finite()
-            || travel.distance_travelled < 0.0
+        let missing_nodes = travel
+            .route
+            .iter()
+            .filter(|node| !w.nav_nodes.contains_key(*node))
+            .cloned()
+            .collect::<Vec<_>>();
+        let actor_missing = !w.actors.contains_key(id);
+        let route_empty = travel.route.is_empty();
+        let waypoint_out_of_range = travel.next_waypoint_index >= travel.route.len();
+        let destination_mismatch = travel.route.last() != Some(&travel.destination_node);
+        let distance_invalid =
+            !travel.distance_travelled.is_finite() || travel.distance_travelled < 0.0;
+        if actor_missing
+            || route_empty
+            || waypoint_out_of_range
+            || destination_mismatch
+            || !missing_nodes.is_empty()
+            || distance_invalid
         {
-            return Err("invalid checkpoint actor route".into());
+            return Err(format!(
+                "invalid checkpoint actor route actor='{}' actor_missing={} route_len={} next_waypoint_index={} destination='{}' route_last={:?} missing_nodes={:?} distance_travelled={}",
+                id,
+                actor_missing,
+                travel.route.len(),
+                travel.next_waypoint_index,
+                travel.destination_node,
+                travel.route.last(),
+                missing_nodes,
+                travel.distance_travelled
+            ));
         }
     }
     let mut reservations: BTreeMap<&str, Vec<&WorldScenarioReservationRecord>> = BTreeMap::new();

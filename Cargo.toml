@@ -1,6 +1,17 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/newviso-contract-api",
+    "crates/newviso-service-api",
+    "crates/newviso-ui-draw",
+    "crates/newviso-render-api",
+    "crates/newviso-visibility-api",
+    "crates/newviso-loading-api",
+    "crates/newviso-task-api",
+    "crates/newviso-steering",
+    "crates/newviso-character",
+    "crates/newviso-navigation",
+    "crates/newviso-agent",
     "crates/newviso-bugtrap",
     "crates/newviso-audio-client",
     "crates/newviso-audio-api",
@@ -19,8 +30,10 @@ members = [
     "crates/newviso-events",
     "crates/newviso-host",
     "crates/newviso-input-client",
+    "crates/newviso-items",
     "crates/newviso-noise-api",
     "crates/newviso-platform",
+    "crates/newviso-physics-api",
     "crates/newviso-physics-client",
     "crates/newviso-provider-runtime",
     "crates/newviso-project",
@@ -30,9 +43,10 @@ members = [
     "crates/newviso-textures",
     "crates/newviso-materials",
     "crates/newviso-model",
-    "crates/newviso-rage-import",
+    "crates/newviso-rsc7-import",
     "crates/newviso-scene",
     "crates/newviso-world",
+    "crates/newviso-vehicle",
 ]
 default-members = ["apps/newviso"]
 
@@ -42,6 +56,17 @@ license = "Proprietary"
 version = "0.1.0"
 
 [workspace.dependencies]
+newviso-contract-api = { path = "crates/newviso-contract-api" }
+newviso-service-api = { path = "crates/newviso-service-api" }
+newviso-ui-draw = { path = "crates/newviso-ui-draw" }
+newviso-render-api = { path = "crates/newviso-render-api" }
+newviso-visibility-api = { path = "crates/newviso-visibility-api" }
+newviso-loading-api = { path = "crates/newviso-loading-api" }
+newviso-task-api = { path = "crates/newviso-task-api" }
+newviso-steering = { path = "crates/newviso-steering" }
+newviso-character = { path = "crates/newviso-character" }
+newviso-navigation = { path = "crates/newviso-navigation" }
+newviso-agent = { path = "crates/newviso-agent" }
 newviso-bugtrap = { path = "crates/newviso-bugtrap" }
 newviso-audio-api = { path = "crates/newviso-audio-api" }
 newviso-audio-client = { path = "crates/newviso-audio-client" }
@@ -58,8 +83,10 @@ newviso-core = { path = "crates/newviso-core" }
 newviso-events = { path = "crates/newviso-events" }
 newviso-host = { path = "crates/newviso-host" }
 newviso-input-client = { path = "crates/newviso-input-client" }
+newviso-items = { path = "crates/newviso-items" }
 newviso-noise-api = { path = "crates/newviso-noise-api" }
 newviso-platform = { path = "crates/newviso-platform" }
+newviso-physics-api = { path = "crates/newviso-physics-api" }
 newviso-physics-client = { path = "crates/newviso-physics-client" }
 newviso-provider-runtime = { path = "crates/newviso-provider-runtime" }
 newviso-project = { path = "crates/newviso-project" }
@@ -69,9 +96,10 @@ newviso-resource-runtime = { path = "crates/newviso-resource-runtime" }
 newviso-textures = { path = "crates/newviso-textures" }
 newviso-materials = { path = "crates/newviso-materials" }
 newviso-model = { path = "crates/newviso-model" }
-newviso-semantic-assets = { path = "crates/newviso-rage-import" }
+newviso-semantic-assets = { path = "crates/newviso-rsc7-import" }
 newviso-scene = { path = "crates/newviso-scene" }
 newviso-world = { path = "crates/newviso-world" }
+newviso-vehicle = { path = "crates/newviso-vehicle" }
 
 abi_stable = "0.11"
 blake3 = "1"

@@ -1,11 +1,16 @@
 use crate::{
     AssetAddress, AssetId, AssetResource, AssetSource, ResolvedAssetSource, ResourceLoad,
-    ResourceManager,
+    ResourceManager, ResourcePrepareFn,
 };
 use std::{
     cmp::Ordering,
-    collections::{HashMap, HashSet},
-    sync::Arc,
+    collections::{HashMap, HashSet, VecDeque},
+    sync::{
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
+        mpsc::{self, Receiver, Sender, TryRecvError},
+        Arc, Condvar, Mutex,
+    },
+    thread::{self, JoinHandle},
 };
 
 mod dependencies;
@@ -232,25 +237,153 @@ struct ResidentSource {
     references: usize,
 }
 
+#[derive(Debug)]
+struct StreamingLoadTask {
+    generation: u64,
+    address: AssetAddress,
+}
+
+struct StreamingLoadResult {
+    generation: u64,
+    address: AssetAddress,
+    prepared: Result<ResourceLoad, String>,
+}
+
+struct StreamingLoadShared {
+    queue: Mutex<VecDeque<StreamingLoadTask>>,
+    wake: Condvar,
+    stopping: AtomicBool,
+}
+
+struct StreamingLoadPool {
+    shared: Arc<StreamingLoadShared>,
+    completed_rx: Receiver<StreamingLoadResult>,
+    completed_tx: Sender<StreamingLoadResult>,
+    prepare: ResourcePrepareFn,
+    workers: Vec<JoinHandle<()>>,
+}
+
+impl StreamingLoadPool {
+    fn new(prepare: ResourcePrepareFn, worker_count: usize) -> Result<Self, String> {
+        let shared = Arc::new(StreamingLoadShared {
+            queue: Mutex::new(VecDeque::new()),
+            wake: Condvar::new(),
+            stopping: AtomicBool::new(false),
+        });
+        let (completed_tx, completed_rx) = mpsc::channel();
+        let mut pool = Self {
+            shared,
+            completed_rx,
+            completed_tx,
+            prepare,
+            workers: Vec::new(),
+        };
+        pool.ensure_workers(worker_count)?;
+        Ok(pool)
+    }
+
+    fn ensure_workers(&mut self, worker_count: usize) -> Result<(), String> {
+        while self.workers.len() < worker_count.max(1) {
+            let index = self.workers.len();
+            let shared = Arc::clone(&self.shared);
+            let completed = self.completed_tx.clone();
+            let prepare = Arc::clone(&self.prepare);
+            let worker = thread::Builder::new()
+                .name(format!("newviso-stream-{index}"))
+                .spawn(move || loop {
+                    let task = {
+                        let mut queue = shared.queue.lock().expect("streaming queue poisoned");
+                        loop {
+                            if let Some(task) = queue.pop_front() {
+                                break Some(task);
+                            }
+                            if shared.stopping.load(AtomicOrdering::Acquire) {
+                                break None;
+                            }
+                            queue = shared.wake.wait(queue).expect("streaming queue poisoned");
+                        }
+                    };
+                    let Some(task) = task else {
+                        return;
+                    };
+                    let prepared = prepare(&task.address);
+                    if completed
+                        .send(StreamingLoadResult {
+                            generation: task.generation,
+                            address: task.address,
+                            prepared,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                })
+                .map_err(|error| format!("failed to spawn streaming worker: {error}"))?;
+            self.workers.push(worker);
+        }
+        Ok(())
+    }
+
+    fn submit(&self, task: StreamingLoadTask) {
+        self.shared
+            .queue
+            .lock()
+            .expect("streaming queue poisoned")
+            .push_back(task);
+        self.shared.wake.notify_one();
+    }
+
+    fn try_recv(&self) -> Result<StreamingLoadResult, TryRecvError> {
+        self.completed_rx.try_recv()
+    }
+
+    fn clear_queued(&self) {
+        self.shared
+            .queue
+            .lock()
+            .expect("streaming queue poisoned")
+            .clear();
+    }
+}
+
+impl Drop for StreamingLoadPool {
+    fn drop(&mut self) {
+        self.shared.stopping.store(true, AtomicOrdering::Release);
+        self.shared.wake.notify_all();
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
+    }
+}
+
 pub struct AssetStreamer<S: AssetSource> {
     resources: ResourceManager<S>,
     policy: StreamingPolicy,
     entries: HashMap<AssetAddress, StreamingEntry>,
     resident_sources: HashMap<ResolvedAssetSource, ResidentSource>,
+    load_pool: StreamingLoadPool,
+    in_flight: HashSet<AssetAddress>,
+    completed_loads: VecDeque<StreamingLoadResult>,
+    load_generation: u64,
     frame: u64,
     total_loads: u64,
     total_evictions: u64,
     total_failures: u64,
 }
 
-impl<S: AssetSource> AssetStreamer<S> {
+impl<S: AssetSource + 'static> AssetStreamer<S> {
     pub fn new(resources: ResourceManager<S>, policy: StreamingPolicy) -> Result<Self, String> {
         policy.validate()?;
+        let load_pool = StreamingLoadPool::new(resources.prepare_fn(), policy.parallel_loads)?;
         Ok(Self {
             resources,
             policy,
             entries: HashMap::new(),
             resident_sources: HashMap::new(),
+            load_pool,
+            in_flight: HashSet::new(),
+            completed_loads: VecDeque::new(),
+            load_generation: 1,
             frame: 0,
             total_loads: 0,
             total_evictions: 0,
@@ -305,7 +438,7 @@ mod tests {
                         hash.as_bytes()[0..8].try_into().expect("hash prefix"),
                     ),
                 },
-                bytes,
+                bytes: Arc::from(bytes),
                 dependencies,
             })
         }
@@ -319,6 +452,20 @@ mod tests {
             assets: Arc::new(assets),
         });
         AssetStreamer::new(resources, policy).unwrap()
+    }
+
+    fn pump_until<S: AssetSource + 'static>(
+        streaming: &mut AssetStreamer<S>,
+        mut predicate: impl FnMut(&AssetStreamer<S>) -> bool,
+    ) {
+        for _ in 0..500 {
+            streaming.pump();
+            if predicate(streaming) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        panic!("streaming condition was not reached");
     }
 
     #[test]
@@ -341,13 +488,14 @@ mod tests {
             )
             .unwrap();
 
-        streaming.pump();
-        assert_eq!(
-            streaming.state(&root),
-            StreamingState::WaitingForDependencies
-        );
-        assert_eq!(streaming.state(&child), StreamingState::Queued);
-        streaming.pump();
+        pump_until(&mut streaming, |streaming| {
+            streaming.state(&root) == StreamingState::WaitingForDependencies
+        });
+        assert!(matches!(
+            streaming.state(&child),
+            StreamingState::Queued | StreamingState::Loading
+        ));
+        pump_until(&mut streaming, |streaming| streaming.is_resident(&root));
         assert_eq!(streaming.state(&child), StreamingState::Resident);
         assert_eq!(streaming.state(&root), StreamingState::Resident);
     }
@@ -368,7 +516,7 @@ mod tests {
                 StreamingClaim::new(10.0),
             )
             .unwrap();
-        streaming.pump();
+        pump_until(&mut streaming, |streaming| streaming.is_resident(&root));
         let mut policy = streaming.policy().clone();
         policy.dependency_priority_scale = 0.25;
         streaming.set_policy(policy).unwrap();
@@ -400,9 +548,11 @@ mod tests {
         streaming
             .request(owner, high.clone(), StreamingClaim::new(50.0))
             .unwrap();
-        streaming.pump();
-        assert_eq!(streaming.state(&high), StreamingState::Resident);
+        let first = streaming.pump();
+        assert!(first.loaded.is_empty());
+        assert_eq!(streaming.state(&high), StreamingState::Loading);
         assert_eq!(streaming.state(&low), StreamingState::Queued);
+        pump_until(&mut streaming, |streaming| streaming.is_resident(&high));
     }
 
     #[test]
@@ -432,7 +582,7 @@ mod tests {
                             hash.as_bytes()[0..8].try_into().expect("hash prefix"),
                         ),
                     },
-                    bytes,
+                    bytes: Arc::from(bytes),
                     dependencies: Vec::new(),
                 })
             }
@@ -461,11 +611,18 @@ mod tests {
                 .unwrap();
         }
 
+        let started = std::time::Instant::now();
         let report = streaming.pump();
-        assert_eq!(report.loaded.len(), 4);
+        let submit_elapsed = started.elapsed();
+        assert!(report.loaded.is_empty());
+        assert!(
+            submit_elapsed < Duration::from_millis(10),
+            "pump blocked on background decode for {submit_elapsed:?}"
+        );
+        pump_until(&mut streaming, |streaming| streaming.stats().resident == 4);
         assert!(
             peak.load(AtomicOrdering::SeqCst) >= 2,
-            "parallel batch never overlapped source resolution"
+            "persistent workers never overlapped source resolution"
         );
     }
 
@@ -486,7 +643,9 @@ mod tests {
         streaming
             .request(owner, second.clone(), StreamingClaim::new(1.0))
             .unwrap();
-        streaming.pump();
+        pump_until(&mut streaming, |streaming| {
+            streaming.is_resident(&first) && streaming.is_resident(&second)
+        });
         assert!(streaming.is_resident(&first));
         assert!(streaming.is_resident(&second));
         assert_eq!(streaming.stats().resident_sources, 1);

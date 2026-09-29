@@ -1,0 +1,667 @@
+{
+  "frame_index": 5701,
+  "graph": {
+    "passes": 7,
+    "resources": 8,
+    "target_extent": [
+      1600,
+      900
+    ],
+    "swapchain_extent": [
+      1600,
+      900
+    ],
+    "render_targets": 10,
+    "textures": 863,
+    "buffers": 1111,
+    "pipelines": 13
+  },
+  "resources": [
+    {
+      "id": "RenderGraphResourceId(1)",
+      "label": "newviso.main.surface",
+      "usage": "color_attachment",
+      "extent": [
+        1600,
+        900
+      ],
+      "format": "Bgra8Srgb",
+      "bound_render_target": null,
+      "bound_texture": null,
+      "external": false
+    },
+    {
+      "id": "RenderGraphResourceId(2)",
+      "label": "newviso.main.gbuffer.albedo",
+      "usage": "color_attachment",
+      "extent": [
+        1600,
+        900
+      ],
+      "format": "Rgba8Unorm",
+      "bound_render_target": 1879048194,
+      "bound_texture": "TextureId(1879048194)",
+      "external": false
+    },
+    {
+      "id": "RenderGraphResourceId(3)",
+      "label": "newviso.main.gbuffer.normal",
+      "usage": "color_attachment",
+      "extent": [
+        1600,
+        900
+      ],
+      "format": "Rgba16Float",
+      "bound_render_target": 1879048194,
+      "bound_texture": "TextureId(1879048195)",
+      "external": false
+    },
+    {
+      "id": "RenderGraphResourceId(4)",
+      "label": "newviso.main.gbuffer.material",
+      "usage": "color_attachment",
+      "extent": [
+        1600,
+        900
+      ],
+      "format": "Rgba8Unorm",
+      "bound_render_target": 1879048194,
+      "bound_texture": "TextureId(1879048196)",
+      "external": false
+    },
+    {
+      "id": "RenderGraphResourceId(5)",
+      "label": "newviso.main.gbuffer.depth",
+      "usage": "depth_attachment_sampled",
+      "extent": [
+        1600,
+        900
+      ],
+      "format": "Depth32Float",
+      "bound_render_target": 1879048194,
+      "bound_texture": "TextureId(1879048197)",
+      "external": false
+    },
+    {
+      "id": "RenderGraphResourceId(6)",
+      "label": "newviso.main.scene_hdr",
+      "usage": "color_attachment",
+      "extent": [
+        1600,
+        900
+      ],
+      "format": "Rgba16Float",
+      "bound_render_target": 1879048198,
+      "bound_texture": "TextureId(1879048198)",
+      "external": false
+    },
+    {
+      "id": "RenderGraphResourceId(7)",
+      "label": "newviso.main.ssr_reflection",
+      "usage": "color_attachment",
+      "extent": [
+        1600,
+        900
+      ],
+      "format": "Rgba16Float",
+      "bound_render_target": 1879048199,
+      "bound_texture": "TextureId(1879048199)",
+      "external": false
+    },
+    {
+      "id": "RenderGraphResourceId(8)",
+      "label": "newviso.main.bloom_composite",
+      "usage": "color_attachment",
+      "extent": [
+        1600,
+        900
+      ],
+      "format": "Rgba16Float",
+      "bound_render_target": 1879048200,
+      "bound_texture": "TextureId(1879048200)",
+      "external": false
+    }
+  ],
+  "targets": [
+    {
+      "render_target_id": 1346787344,
+      "extent": [
+        1600,
+        900
+      ],
+      "color_format": "R16G16B16A16_SFLOAT",
+      "depth_format": "UNDEFINED",
+      "color_count": 1,
+      "has_depth": false,
+      "sampled_color": true,
+      "sampled_depth": false,
+      "msaa_resolve": false,
+      "samples": "TYPE_1"
+    },
+    {
+      "render_target_id": 1346787360,
+      "extent": [
+        800,
+        450
+      ],
+      "color_format": "R16G16B16A16_SFLOAT",
+      "depth_format": "UNDEFINED",
+      "color_count": 1,
+      "has_depth": false,
+      "sampled_color": true,
+      "sampled_depth": false,
+      "msaa_resolve": false,
+      "samples": "TYPE_1"
+    },
+    {
+      "render_target_id": 1879048199,
+      "extent": [
+        1600,
+        900
+      ],
+      "color_format": "R16G16B16A16_SFLOAT",
+      "depth_format": "UNDEFINED",
+      "color_count": 1,
+      "has_depth": false,
+      "sampled_color": true,
+      "sampled_depth": false,
+      "msaa_resolve": false,
+      "samples": "TYPE_1"
+    },
+    {
+      "render_target_id": 481,
+      "extent": [
+        2048,
+        2048
+      ],
+      "color_format": "R32_SFLOAT",
+      "depth_format": "D32_SFLOAT",
+      "color_count": 1,
+      "has_depth": true,
+      "sampled_color": true,
+      "sampled_depth": true,
+      "msaa_resolve": false,
+      "samples": "TYPE_1"
+    },
+    {
+      "render_target_id": 1346787329,
+      "extent": [
+        1600,
+        900
+      ],
+      "color_format": "R16G16B16A16_SFLOAT",
+      "depth_format": "UNDEFINED",
+      "color_count": 1,
+      "has_depth": false,
+      "sampled_color": true,
+      "sampled_depth": false,
+      "msaa_resolve": false,
+      "samples": "TYPE_1"
+    },
+    {
+      "render_target_id": 1346787361,
+      "extent": [
+        400,
+        225
+      ],
+      "color_format": "R16G16B16A16_SFLOAT",
+      "depth_format": "UNDEFINED",
+      "color_count": 1,
+      "has_depth": false,
+      "sampled_color": true,
+      "sampled_depth": false,
+      "msaa_resolve": false,
+      "samples": "TYPE_1"
+    },
+    {
+      "render_target_id": 1879048200,
+      "extent": [
+        1600,
+        900
+      ],
+      "color_format": "R16G16B16A16_SFLOAT",
+      "depth_format": "UNDEFINED",
+      "color_count": 1,
+      "has_depth": false,
+      "sampled_color": true,
+      "sampled_depth": false,
+      "msaa_resolve": false,
+      "samples": "TYPE_1"
+    },
+    {
+      "render_target_id": 1879048194,
+      "extent": [
+        1600,
+        900
+      ],
+      "color_format": "R8G8B8A8_UNORM",
+      "depth_format": "D32_SFLOAT",
+      "color_count": 3,
+      "has_depth": true,
+      "sampled_color": true,
+      "sampled_depth": true,
+      "msaa_resolve": false,
+      "samples": "TYPE_1"
+    },
+    {
+      "render_target_id": 1346787330,
+      "extent": [
+        1600,
+        900
+      ],
+      "color_format": "R16G16B16A16_SFLOAT",
+      "depth_format": "UNDEFINED",
+      "color_count": 1,
+      "has_depth": false,
+      "sampled_color": true,
+      "sampled_depth": false,
+      "msaa_resolve": false,
+      "samples": "TYPE_1"
+    },
+    {
+      "render_target_id": 1879048198,
+      "extent": [
+        1600,
+        900
+      ],
+      "color_format": "R16G16B16A16_SFLOAT",
+      "depth_format": "UNDEFINED",
+      "color_count": 1,
+      "has_depth": false,
+      "sampled_color": true,
+      "sampled_depth": false,
+      "msaa_resolve": false,
+      "samples": "TYPE_1"
+    }
+  ],
+  "phases": [
+    {
+      "pass_id": "RenderGraphPassId(1)",
+      "pass_kind": "ForwardOpaque",
+      "phase_class": "drawscene_opaque",
+      "reference_name": "DL_DRAWSCENE_PRE_ALPHA",
+      "reads": [],
+      "writes": [
+        "newviso.main.scene_hdr"
+      ],
+      "queues": [
+        "opaque_forward"
+      ],
+      "scanned_visibility": true,
+      "offscreen": false
+    },
+    {
+      "pass_id": "RenderGraphPassId(2)",
+      "pass_kind": "GBuffer",
+      "phase_class": "scene_to_gbuffer",
+      "reference_name": "DL_GBUF",
+      "reads": [],
+      "writes": [
+        "newviso.main.gbuffer.albedo",
+        "newviso.main.gbuffer.normal",
+        "newviso.main.gbuffer.material",
+        "newviso.main.gbuffer.depth"
+      ],
+      "queues": [
+        "gbuffer_opaque",
+        "gbuffer_alpha_test"
+      ],
+      "scanned_visibility": true,
+      "offscreen": true
+    },
+    {
+      "pass_id": "RenderGraphPassId(3)",
+      "pass_kind": "DeferredLighting",
+      "phase_class": "deferred_lighting",
+      "reference_name": "DL_LIGHTING",
+      "reads": [
+        "newviso.main.gbuffer.albedo",
+        "newviso.main.gbuffer.normal",
+        "newviso.main.gbuffer.material",
+        "newviso.main.gbuffer.depth"
+      ],
+      "writes": [
+        "newviso.main.scene_hdr"
+      ],
+      "queues": [
+        "postfx"
+      ],
+      "scanned_visibility": false,
+      "offscreen": false
+    },
+    {
+      "pass_id": "RenderGraphPassId(4)",
+      "pass_kind": "Transparent",
+      "phase_class": "drawscene_alpha",
+      "reference_name": "DL_DRAWSCENE_ALPHA",
+      "reads": [
+        "newviso.main.gbuffer.depth"
+      ],
+      "writes": [
+        "newviso.main.scene_hdr"
+      ],
+      "queues": [
+        "transparent_depth_sorted"
+      ],
+      "scanned_visibility": true,
+      "offscreen": false
+    },
+    {
+      "pass_id": "RenderGraphPassId(5)",
+      "pass_kind": "ScreenSpaceReflections",
+      "phase_class": "reflection",
+      "reference_name": "DL_SCREEN_SPACE_REFLECTIONS",
+      "reads": [
+        "newviso.main.scene_hdr",
+        "newviso.main.gbuffer.depth",
+        "newviso.main.gbuffer.normal",
+        "newviso.main.gbuffer.material"
+      ],
+      "writes": [
+        "newviso.main.ssr_reflection"
+      ],
+      "queues": [
+        "postfx"
+      ],
+      "scanned_visibility": false,
+      "offscreen": true
+    },
+    {
+      "pass_id": "RenderGraphPassId(6)",
+      "pass_kind": "BloomExtract",
+      "phase_class": "postfx",
+      "reference_name": "DL_POSTFX_BLOOM_EXTRACT",
+      "reads": [
+        "newviso.main.scene_hdr"
+      ],
+      "writes": [
+        "newviso.main.bloom_composite"
+      ],
+      "queues": [
+        "postfx"
+      ],
+      "scanned_visibility": false,
+      "offscreen": true
+    },
+    {
+      "pass_id": "RenderGraphPassId(7)",
+      "pass_kind": "PostFx",
+      "phase_class": "postfx",
+      "reference_name": "DL_DRAWSCENE_NON_DEPTH_FX",
+      "reads": [
+        "newviso.main.scene_hdr",
+        "newviso.main.gbuffer.depth",
+        "newviso.main.ssr_reflection",
+        "newviso.main.bloom_composite"
+      ],
+      "writes": [
+        "newviso.main.surface"
+      ],
+      "queues": [
+        "postfx"
+      ],
+      "scanned_visibility": false,
+      "offscreen": true
+    }
+  ],
+  "phase_timings": [
+    {
+      "pass_kind": "ForwardOpaque",
+      "phase_class": "drawscene_opaque",
+      "elapsed_ms": 0.0101,
+      "executed": true,
+      "error": null
+    },
+    {
+      "pass_kind": "GBuffer",
+      "phase_class": "scene_to_gbuffer",
+      "elapsed_ms": 0.024799999,
+      "executed": true,
+      "error": null
+    },
+    {
+      "pass_kind": "DeferredLighting",
+      "phase_class": "deferred_lighting",
+      "elapsed_ms": 0.0047,
+      "executed": true,
+      "error": null
+    },
+    {
+      "pass_kind": "Transparent",
+      "phase_class": "drawscene_alpha",
+      "elapsed_ms": 0.007,
+      "executed": true,
+      "error": null
+    },
+    {
+      "pass_kind": "ScreenSpaceReflections",
+      "phase_class": "reflection",
+      "elapsed_ms": 0.0055,
+      "executed": true,
+      "error": null
+    },
+    {
+      "pass_kind": "BloomExtract",
+      "phase_class": "postfx",
+      "elapsed_ms": 0.0067000003,
+      "executed": true,
+      "error": null
+    },
+    {
+      "pass_kind": "PostFx",
+      "phase_class": "postfx",
+      "elapsed_ms": 0.0138,
+      "executed": true,
+      "error": null
+    }
+  ],
+  "phase_execution_nodes": [
+    {
+      "order": 0,
+      "phase_class": "drawscene_opaque",
+      "graph_pass_kind": "ForwardOpaque",
+      "effect_kind": null,
+      "pass_kind": "native_graph_pass",
+      "reads": [],
+      "writes": [
+        "newviso.main.scene_hdr"
+      ],
+      "native_executor": "phase.drawscene_opaque.native"
+    },
+    {
+      "order": 1,
+      "phase_class": "scene_to_gbuffer",
+      "graph_pass_kind": "GBuffer",
+      "effect_kind": null,
+      "pass_kind": "gbuffer_mrt",
+      "reads": [],
+      "writes": [
+        "newviso.main.gbuffer.albedo",
+        "newviso.main.gbuffer.normal",
+        "newviso.main.gbuffer.material",
+        "newviso.main.gbuffer.depth"
+      ],
+      "native_executor": "phase.scene_to_gbuffer.native"
+    },
+    {
+      "order": 2,
+      "phase_class": "deferred_lighting",
+      "graph_pass_kind": "DeferredLighting",
+      "effect_kind": null,
+      "pass_kind": "deferred_lighting",
+      "reads": [
+        "newviso.main.gbuffer.albedo",
+        "newviso.main.gbuffer.normal",
+        "newviso.main.gbuffer.material",
+        "newviso.main.gbuffer.depth"
+      ],
+      "writes": [
+        "newviso.main.scene_hdr"
+      ],
+      "native_executor": "phase.deferred_lighting.native"
+    },
+    {
+      "order": 3,
+      "phase_class": "drawscene_alpha",
+      "graph_pass_kind": "Transparent",
+      "effect_kind": null,
+      "pass_kind": "native_graph_pass",
+      "reads": [
+        "newviso.main.gbuffer.depth"
+      ],
+      "writes": [
+        "newviso.main.scene_hdr"
+      ],
+      "native_executor": "phase.drawscene_alpha.native"
+    },
+    {
+      "order": 4,
+      "phase_class": "reflection",
+      "graph_pass_kind": "ScreenSpaceReflections",
+      "effect_kind": null,
+      "pass_kind": "native_graph_pass",
+      "reads": [
+        "newviso.main.scene_hdr",
+        "newviso.main.gbuffer.depth",
+        "newviso.main.gbuffer.normal",
+        "newviso.main.gbuffer.material"
+      ],
+      "writes": [
+        "newviso.main.ssr_reflection"
+      ],
+      "native_executor": "phase.reflection.native"
+    },
+    {
+      "order": 5,
+      "phase_class": "postfx",
+      "graph_pass_kind": "BloomExtract",
+      "effect_kind": "render.effect.bloom",
+      "pass_kind": "bloom_extract",
+      "reads": [
+        "newviso.main.scene_hdr"
+      ],
+      "writes": [
+        "newviso.main.bloom_composite"
+      ],
+      "native_executor": "phase.postfx.native"
+    },
+    {
+      "order": 6,
+      "phase_class": "postfx",
+      "graph_pass_kind": "PostFx",
+      "effect_kind": "render.effect.tonemap",
+      "pass_kind": "tonemap_composite",
+      "reads": [
+        "newviso.main.scene_hdr",
+        "newviso.main.gbuffer.depth",
+        "newviso.main.ssr_reflection",
+        "newviso.main.bloom_composite"
+      ],
+      "writes": [
+        "newviso.main.surface"
+      ],
+      "native_executor": "phase.postfx.native"
+    }
+  ],
+  "draw_lists": [
+    {
+      "kind": "OpaqueForward",
+      "recorded_commands": 7,
+      "draw_calls": 0,
+      "indexed_draw_calls": 1,
+      "skipped_commands": 0
+    },
+    {
+      "kind": "OpaqueForward",
+      "recorded_commands": 727,
+      "draw_calls": 1,
+      "indexed_draw_calls": 361,
+      "skipped_commands": 0
+    },
+    {
+      "kind": "Transparent",
+      "recorded_commands": 175,
+      "draw_calls": 0,
+      "indexed_draw_calls": 92,
+      "skipped_commands": 0
+    }
+  ],
+  "shadow_cascades": {
+    "enabled": false,
+    "cascade_count": 0,
+    "atlas_extent": [
+      0,
+      0
+    ],
+    "cascade_resolution": 0,
+    "cache_owner": "engine.render-graph",
+    "cache_hit": false,
+    "cache_invalidations": 0,
+    "stable_policy": false,
+    "debug_viewer": "shadow.cascade.viewer"
+  },
+  "gbuffer": {
+    "enabled": false,
+    "gbuffer_complete": false,
+    "attachments": 0,
+    "color_attachments": 0,
+    "depth_attachments": 0,
+    "sampled": 4,
+    "material_packing": "albedo+ssa / normal+twiddle / material+shadow / depth",
+    "viewer": "gbuffer.attachment.viewer"
+  },
+  "postfx": {
+    "chain": "runtime.standard.color_preserving",
+    "color_preserving": true,
+    "native_registry_routes": 22,
+    "diagnostic": "full postfx keeps scene color in primary stream; analysis passes require named transient targets"
+  },
+  "gpu_pipeline_stats": {
+    "supported": true,
+    "enabled": false,
+    "frame_index": 0,
+    "input_assembly_vertices": 0,
+    "input_assembly_primitives": 0,
+    "vertex_shader_invocations": 0,
+    "geometry_shader_invocations": 0,
+    "geometry_shader_primitives": 0,
+    "clipping_invocations": 0,
+    "clipping_primitives": 0,
+    "fragment_shader_invocations": 0,
+    "tess_control_patches": 0,
+    "tess_eval_invocations": 0,
+    "compute_shader_invocations": 0
+  },
+  "effects_bridge": {
+    "routes": 10,
+    "phases": [
+      "cascade_shadows",
+      "scene_to_gbuffer",
+      "deferred_lighting",
+      "postfx",
+      "water",
+      "vegetation",
+      "depth_prepass"
+    ],
+    "programs": [
+      "effect.shadow.csm.depth",
+      "effect.shadow.csm.histogram",
+      "phase.scene.gbuffer_mrt",
+      "phase.deferred.lighting",
+      "phase.lights.tiled_list",
+      "postfx.tonemap_composite",
+      "water.surface.native",
+      "effect.vegetation.grass_instanced",
+      "effect.vegetation.tree_imposter_update",
+      "visibility.hiz_pyramid"
+    ]
+  },
+  "resource_lifetime": {
+    "graph_bindings": 7,
+    "external_bindings": 0,
+    "transient_allocations": 4,
+    "transient_reuses": 34202,
+    "transient_recreates": 0,
+    "destroyed_transients": 0
+  }
+}

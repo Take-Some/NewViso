@@ -1,24 +1,26 @@
 # Runtime configuration and script ownership
 
-The host exposes neutral capabilities. Project JSON owns launch configuration;
-project scripts own behavior and can change supported policies without rebuilding.
-Values in `src/assets/*_defaults.json` are compatibility defaults, not forced values.
-Project data and script commands override them. ABI layouts, shader uniform array
-sizes, numerical identities and validation invariants remain compiled contracts.
+The host exposes neutral capabilities. Authoritative engine defaults live in
+`Shared/Content/config/engine/*.xml`, using the same XML-style data convention as
+other Shared engine data. Project assets are an override layer; project scripts can
+change supported live policies without rebuilding. ABI layouts, shader uniform
+array sizes, numerical identities and validation invariants remain compiled contracts.
 
 ## Configuration sources
 
-1. `config.json`, environment and CLI select bootstrap paths and providers.
-2. The project's `files.runtime` asset is decoded through AssetManager/VFS.
-3. Packaged runtime defaults are merged with the project runtime document.
-4. `startup_commands` execute in order before project `on_start`.
-5. Commands returned by `on_start` execute before scene GPU allocations.
-6. `runtime.configure` changes supported policies at subsequent command boundaries.
+1. Environment/CLI select the physical Shared Assets root and bootstrap providers.
+2. `Shared/Content/config/engine/vfs_mounts.xml` defines VFS layer priorities.
+3. `runtime.defaults.xml`, `environment.defaults.xml`, and `render.defaults.xml`
+   are loaded directly from the Shared Assets authority.
+4. Project runtime/environment assets are deep-merged over the Shared base.
+5. Shared render defaults are installed before project `startup_commands`.
+6. `startup_commands`, script `on_start`, and later `runtime.configure` calls form
+   progressively higher-precedence override layers.
 
 `schema: "newviso.project.runtime.v1"` remains required. Unknown fields, malformed
 values, zero queue capacity, invalid camera limits and overflowing byte budgets
-are errors. Omitted fields retain compatibility defaults on load. Live patches
-merge into CURRENT settings, preserving earlier patches. Object values merge
+are errors. Omitted project fields inherit the corresponding Shared XML value.
+Live patches merge into CURRENT settings, preserving earlier patches. Object values merge
 recursively; arrays and scalar values replace; null is a literal value, not a delete.
 
 ## Supported settings

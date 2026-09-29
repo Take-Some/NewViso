@@ -10,87 +10,101 @@ impl<S: AssetSource> AssetStreamer<S> {
 
         self.requeue_retryable_failures();
         self.reconcile_unclaimed_entries();
-        self.promote_ready_entries(&mut report);
 
-        let max_loads = if self.policy.max_loads_per_tick == 0 {
+        // Never wait for I/O/decode on the caller thread. Workers publish
+        // completed immutable ResourceLoad values; pump only drains what is
+        // already ready and commits a bounded amount of work.
+        loop {
+            match self.load_pool.try_recv() {
+                Ok(completed) => self.completed_loads.push_back(completed),
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+            }
+        }
+
+        let max_commits = if self.policy.max_loads_per_tick == 0 {
             usize::MAX
         } else {
             self.policy.max_loads_per_tick
         };
-        let worker_count = self.policy.parallel_loads.max(1);
+        let mut committed = 0usize;
+        while committed < max_commits {
+            let Some(completed) = self.completed_loads.pop_front() else {
+                break;
+            };
 
-        while report.loaded.len() + report.failed.len() < max_loads {
+            self.in_flight.remove(&completed.address);
+            if completed.generation != self.load_generation {
+                continue;
+            }
+
+            let still_claimed = self
+                .entries
+                .get(&completed.address)
+                .is_some_and(StreamingEntry::has_claims);
+            if !still_claimed {
+                if let Some(entry) = self.entries.get_mut(&completed.address) {
+                    entry.state = StreamingState::Unloaded;
+                    entry.error = None;
+                    entry.failure_frame = None;
+                }
+                continue;
+            }
+
+            let prepared_bytes = completed
+                .prepared
+                .as_ref()
+                .map(|load| load.source_size_bytes)
+                .unwrap_or(0);
             if self.policy.max_source_bytes_per_tick != 0
-                && report.source_bytes_loaded >= self.policy.max_source_bytes_per_tick
+                && report.source_bytes_loaded != 0
+                && report.source_bytes_loaded.saturating_add(prepared_bytes)
+                    > self.policy.max_source_bytes_per_tick
             {
+                self.completed_loads.push_front(completed);
                 break;
             }
 
-            let completed = report.loaded.len() + report.failed.len();
-            let batch_limit = worker_count.min(max_loads.saturating_sub(completed));
-            let batch = self.next_load_candidates(batch_limit);
-            if batch.is_empty() {
-                break;
+            match self.finish_prepared_load(&completed.address, completed.prepared) {
+                Ok(source_bytes) => {
+                    report.source_bytes_loaded =
+                        report.source_bytes_loaded.saturating_add(source_bytes);
+                    report.loaded.push(completed.address);
+                }
+                Err(error) => {
+                    report.failed.push((completed.address, error));
+                }
             }
+            committed = committed.saturating_add(1);
+        }
 
-            for address in &batch {
-                if let Some(entry) = self.entries.get_mut(address) {
+        self.promote_ready_entries(&mut report);
+
+        // Keep only the configured number of source/decode jobs in flight.
+        // Scheduling is cheap and non-blocking: no thread creation and no join.
+        let available_slots = self
+            .policy
+            .parallel_loads
+            .saturating_sub(self.in_flight.len());
+        let max_submissions = if self.policy.max_loads_per_tick == 0 {
+            available_slots
+        } else {
+            available_slots.min(self.policy.max_loads_per_tick)
+        };
+        if max_submissions != 0 {
+            let batch = self.next_load_candidates(max_submissions);
+            for address in batch {
+                if !self.in_flight.insert(address.clone()) {
+                    continue;
+                }
+                if let Some(entry) = self.entries.get_mut(&address) {
                     entry.state = StreamingState::Loading;
                     entry.error = None;
                 }
+                self.load_pool.submit(StreamingLoadTask {
+                    generation: self.load_generation,
+                    address,
+                });
             }
-
-            // Source resolution + semantic decode are independent for different
-            // asset addresses and dominate large-map startup cost. Execute them
-            // concurrently, then commit state/cache/dependency changes on this
-            // owner thread in deterministic candidate order.
-            let prepared = if batch.len() == 1 {
-                let address = batch[0].clone();
-                let result = self.resources.prepare_erased_with_info(&address);
-                vec![(address, result)]
-            } else {
-                let resources = &self.resources;
-                std::thread::scope(|scope| {
-                    let handles = batch
-                        .iter()
-                        .cloned()
-                        .map(|address| {
-                            let worker_address = address.clone();
-                            let handle = scope
-                                .spawn(move || resources.prepare_erased_with_info(&worker_address));
-                            (address, handle)
-                        })
-                        .collect::<Vec<_>>();
-
-                    handles
-                        .into_iter()
-                        .map(|(address, handle)| {
-                            let result = handle.join().unwrap_or_else(|_| {
-                                Err(format!(
-                                    "streaming decode worker panicked asset='{}'",
-                                    address.canonical()
-                                ))
-                            });
-                            (address, result)
-                        })
-                        .collect::<Vec<_>>()
-                })
-            };
-
-            for (address, prepared_load) in prepared {
-                match self.finish_prepared_load(&address, prepared_load) {
-                    Ok(source_bytes) => {
-                        report.source_bytes_loaded =
-                            report.source_bytes_loaded.saturating_add(source_bytes);
-                        report.loaded.push(address);
-                    }
-                    Err(error) => {
-                        report.failed.push((address, error));
-                    }
-                }
-            }
-
-            self.promote_ready_entries(&mut report);
         }
 
         self.evict_expired_unclaimed(&mut report);
@@ -107,6 +121,10 @@ impl<S: AssetSource> AssetStreamer<S> {
         self.evict_entry(address, true)
     }
     pub fn bump_vfs_generation(&mut self) {
+        self.load_generation = self.load_generation.wrapping_add(1).max(1);
+        self.load_pool.clear_queued();
+        self.in_flight.clear();
+        self.completed_loads.clear();
         self.resources.bump_vfs_generation();
         self.resident_sources.clear();
 

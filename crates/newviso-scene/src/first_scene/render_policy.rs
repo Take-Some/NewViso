@@ -7,6 +7,7 @@ pub(super) struct RenderPolicy {
     pub runtime_cube_capacity: usize,
     pub transient_sphere_capacity: usize,
     pub overlay_quad_capacity: usize,
+    pub particle_capacity: usize,
     pub lens_flare_capacity: usize,
     pub flare_element_capacity: usize,
     pub shadow_resolution: u32,
@@ -14,8 +15,17 @@ pub(super) struct RenderPolicy {
 
 impl Default for RenderPolicy {
     fn default() -> Self {
-        serde_json::from_str(include_str!("../assets/render_defaults.json"))
-            .expect("packaged render defaults must match schema")
+        // Deliberately unconfigured. Engine/project policy is injected before
+        // renderer initialization from Shared Assets and project overrides.
+        Self {
+            runtime_cube_capacity: 0,
+            transient_sphere_capacity: 0,
+            overlay_quad_capacity: 0,
+            particle_capacity: 0,
+            lens_flare_capacity: 0,
+            flare_element_capacity: 0,
+            shadow_resolution: 0,
+        }
     }
 }
 
@@ -34,9 +44,11 @@ impl RenderPolicy {
             .overlay_quad_capacity
             .checked_mul(6)
             .ok_or_else(invalid)?;
+        let particles = self.particle_capacity.checked_mul(6).ok_or_else(invalid)?;
         let total = vertices
             .checked_add(spheres)
             .and_then(|v| v.checked_add(overlays))
+            .and_then(|v| v.checked_add(particles))
             .ok_or_else(invalid)?;
         let flares = self
             .lens_flare_capacity
@@ -78,6 +90,7 @@ impl Scene3dRuntime {
         let next = self.render_policy.patched(patch, self.cubes.len())?;
         if self.transient_spheres.len() > next.transient_sphere_capacity
             || self.overlay_quads.len() > next.overlay_quad_capacity
+            || self.particles.len() > next.particle_capacity
             || self.lens_flares.len() > next.lens_flare_capacity
             || self
                 .lens_flares
@@ -100,7 +113,15 @@ mod tests {
     use super::*;
     #[test]
     fn render_patch_validates_limits_and_keeps_other_settings() {
-        let policy = RenderPolicy::default();
+        let policy = RenderPolicy {
+            runtime_cube_capacity: 4096,
+            transient_sphere_capacity: 256,
+            overlay_quad_capacity: 256,
+            particle_capacity: 4096,
+            lens_flare_capacity: 16,
+            flare_element_capacity: 16,
+            shadow_resolution: 2048,
+        };
         let next = policy
             .patched(
                 &json!({"shadow_resolution": 1024, "runtime_cube_capacity": 8192}),

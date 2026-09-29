@@ -11,6 +11,7 @@ use std::{
 
 const THREADING_SERVICE_ID: &str = "threading.api";
 const ENGINE_THREADING_GATEWAY: &str = "engine.threading";
+const MAX_EXTERNAL_PROCESSES: usize = 2;
 
 #[derive(Clone, Debug)]
 struct ServiceCallJob {
@@ -61,6 +62,10 @@ struct ThreadingShared {
     queue: Mutex<BinaryHeap<QueueEntry>>,
     wake: Condvar,
     statuses: Mutex<BTreeMap<String, JobStatus>>,
+    process_results: Mutex<BTreeMap<String, Vec<u8>>>,
+    process_active: Mutex<usize>,
+    process_wake: Condvar,
+    process_waiting: AtomicU64,
     stopping: AtomicBool,
     seq: AtomicU64,
     submitted: AtomicU64,
@@ -75,6 +80,10 @@ impl Default for ThreadingShared {
             queue: Mutex::new(BinaryHeap::new()),
             wake: Condvar::new(),
             statuses: Mutex::new(BTreeMap::new()),
+            process_results: Mutex::new(BTreeMap::new()),
+            process_active: Mutex::new(0),
+            process_wake: Condvar::new(),
+            process_waiting: AtomicU64::new(0),
             stopping: AtomicBool::new(false),
             seq: AtomicU64::new(1),
             submitted: AtomicU64::new(0),
@@ -88,6 +97,7 @@ impl Default for ThreadingShared {
 struct ThreadingService {
     shared: Arc<ThreadingShared>,
     workers: Mutex<Vec<JoinHandle<()>>>,
+    process_workers: Mutex<Vec<JoinHandle<()>>>,
     worker_count: usize,
 }
 
@@ -109,6 +119,7 @@ impl ThreadingService {
         Self {
             shared,
             workers: Mutex::new(workers),
+            process_workers: Mutex::new(Vec::new()),
             worker_count,
         }
     }
@@ -222,6 +233,283 @@ impl ThreadingService {
         }))
     }
 
+    fn start_process(&self, value: serde_json::Value) -> RResult<Blob, RString> {
+        let request: newviso_task_api::TaskRunProcessStartRequestV1 =
+            match serde_json::from_value(value) {
+                Ok(request) => request,
+                Err(error) => {
+                    return RResult::RErr(RString::from(format!(
+                        "engine.threading task.run_process_start_v1 invalid request: {error}"
+                    )))
+                }
+            };
+
+        let task_id = if request.task_id.trim().is_empty() {
+            let seq = self.shared.seq.fetch_add(1, Ordering::Relaxed);
+            format!("newviso.process.{seq}")
+        } else {
+            request.task_id.clone()
+        };
+        if request.executable.trim().is_empty() {
+            return RResult::RErr(RString::from(
+                "engine.threading process task requires executable",
+            ));
+        }
+
+        {
+            let mut statuses = self
+                .shared
+                .statuses
+                .lock()
+                .expect("threading status map poisoned");
+            if statuses
+                .get(&task_id)
+                .is_some_and(|status| !matches!(status.phase, "Completed" | "Failed" | "Cancelled"))
+            {
+                return Self::encode(serde_json::json!({
+                    "task_id": task_id,
+                    "job_id": task_id,
+                    "accepted": false,
+                    "status": "rejected",
+                    "detail": "task id already active",
+                    "result_path": request.result_path,
+                }));
+            }
+            statuses.insert(
+                task_id.clone(),
+                JobStatus {
+                    name: request.name.clone(),
+                    lane: request.lane.clone(),
+                    priority: request.priority.clone(),
+                    phase: "Scheduled",
+                    detail: format!("process queued executable={}", request.executable),
+                },
+            );
+        }
+        self.shared
+            .process_results
+            .lock()
+            .expect("threading process result map poisoned")
+            .remove(&task_id);
+        self.shared.submitted.fetch_add(1, Ordering::Relaxed);
+
+        let shared = Arc::clone(&self.shared);
+        let worker_task_id = task_id.clone();
+        let executable = request.executable.clone();
+        let args = request.args.clone();
+        let cwd = request.cwd.clone();
+        let env = request.env.clone();
+        let result_path = request.result_path.clone();
+
+        let spawn = thread::Builder::new()
+            .name(format!("newviso-process-{}", worker_task_id))
+            .spawn(move || {
+                let mut active = shared
+                    .process_active
+                    .lock()
+                    .expect("threading process gate poisoned");
+                if *active >= MAX_EXTERNAL_PROCESSES {
+                    shared.process_waiting.fetch_add(1, Ordering::Relaxed);
+                    if let Some(status) = shared
+                        .statuses
+                        .lock()
+                        .expect("threading status map poisoned")
+                        .get_mut(&worker_task_id)
+                    {
+                        status.phase = "Blocked";
+                        status.detail = format!(
+                            "waiting for external process slot max={MAX_EXTERNAL_PROCESSES}"
+                        );
+                    }
+                    while *active >= MAX_EXTERNAL_PROCESSES
+                        && !shared.stopping.load(Ordering::Acquire)
+                    {
+                        active = shared
+                            .process_wake
+                            .wait(active)
+                            .expect("threading process gate poisoned");
+                    }
+                    shared.process_waiting.fetch_sub(1, Ordering::Relaxed);
+                }
+                if shared.stopping.load(Ordering::Acquire) {
+                    drop(active);
+                    mark_process_failed(
+                        &shared,
+                        &worker_task_id,
+                        "host shutdown before external process acquired a slot".to_owned(),
+                    );
+                    return;
+                }
+                *active += 1;
+                drop(active);
+                let _process_slot = ProcessSlotGuard { shared: &shared };
+
+                shared.running.fetch_add(1, Ordering::Relaxed);
+                if let Some(status) = shared
+                    .statuses
+                    .lock()
+                    .expect("threading status map poisoned")
+                    .get_mut(&worker_task_id)
+                {
+                    status.phase = "Running";
+                    status.detail = format!("process running executable={executable}");
+                }
+
+                let mut command = std::process::Command::new(&executable);
+                command.args(&args);
+                if !cwd.trim().is_empty() {
+                    command.current_dir(&cwd);
+                }
+                command.envs(&env);
+                #[cfg(windows)]
+                {
+                    use std::os::windows::process::CommandExt;
+                    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                    command.creation_flags(CREATE_NO_WINDOW);
+                }
+
+                let output = command.output();
+                shared.running.fetch_sub(1, Ordering::Relaxed);
+
+                let outcome = match output {
+                    Ok(output) if output.status.success() => {
+                        let bytes = if result_path.trim().is_empty() {
+                            output.stdout
+                        } else {
+                            match std::fs::read(&result_path) {
+                                Ok(bytes) => bytes,
+                                Err(error) => {
+                                    let detail = format!(
+                                        "process succeeded but result read failed path='{}': {}",
+                                        result_path, error
+                                    );
+                                    mark_process_failed(&shared, &worker_task_id, detail);
+                                    return;
+                                }
+                            }
+                        };
+                        shared
+                            .process_results
+                            .lock()
+                            .expect("threading process result map poisoned")
+                            .insert(worker_task_id.clone(), bytes);
+                        Ok(format!(
+                            "process completed executable={} result_path={}",
+                            executable, result_path
+                        ))
+                    }
+                    Ok(output) => {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        let stderr = stderr.trim();
+                        let stderr = stderr.chars().take(2048).collect::<String>();
+                        Err(format!(
+                            "process exited status={} executable={} stderr={}",
+                            output.status, executable, stderr
+                        ))
+                    }
+                    Err(error) => Err(format!(
+                        "process spawn failed executable={} error={}",
+                        executable, error
+                    )),
+                };
+
+                match outcome {
+                    Ok(detail) => {
+                        shared.completed.fetch_add(1, Ordering::Relaxed);
+                        if let Some(status) = shared
+                            .statuses
+                            .lock()
+                            .expect("threading status map poisoned")
+                            .get_mut(&worker_task_id)
+                        {
+                            status.phase = "Completed";
+                            status.detail = detail;
+                        }
+                    }
+                    Err(detail) => mark_process_failed(&shared, &worker_task_id, detail),
+                }
+            });
+
+        let handle = match spawn {
+            Ok(handle) => handle,
+            Err(error) => {
+                mark_process_failed(
+                    &self.shared,
+                    &task_id,
+                    format!("failed to spawn process worker thread: {error}"),
+                );
+                return RResult::RErr(RString::from(format!(
+                    "engine.threading failed to create process worker: {error}"
+                )));
+            }
+        };
+        {
+            let mut process_workers = self
+                .process_workers
+                .lock()
+                .expect("threading process worker list poisoned");
+            let mut index = 0;
+            while index < process_workers.len() {
+                if process_workers[index].is_finished() {
+                    let finished = process_workers.swap_remove(index);
+                    let _ = finished.join();
+                } else {
+                    index += 1;
+                }
+            }
+            process_workers.push(handle);
+        }
+
+        Self::encode(serde_json::json!({
+            "task_id": task_id,
+            "job_id": task_id,
+            "accepted": true,
+            "status": "scheduled",
+            "detail": "external process queued on NewViso engine.threading",
+            "result_path": request.result_path,
+        }))
+    }
+
+    fn result_bin(&self, value: serde_json::Value) -> RResult<Blob, RString> {
+        let task_id = value
+            .get("task_id")
+            .or_else(|| value.get("job_id"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if task_id.is_empty() {
+            return RResult::RErr(RString::from(
+                "engine.threading task.result_bin_v1 requires task_id",
+            ));
+        }
+
+        if let Some(bytes) = self
+            .shared
+            .process_results
+            .lock()
+            .expect("threading process result map poisoned")
+            .remove(task_id)
+        {
+            return RResult::ROk(Blob::from(bytes));
+        }
+
+        let status = self
+            .shared
+            .statuses
+            .lock()
+            .expect("threading status map poisoned")
+            .get(task_id)
+            .cloned();
+        match status {
+            Some(status) => RResult::RErr(RString::from(format!(
+                "engine.threading process result unavailable task_id='{}' phase={} detail={}",
+                task_id, status.phase, status.detail
+            ))),
+            None => RResult::RErr(RString::from(format!(
+                "engine.threading process task not found task_id='{task_id}'"
+            ))),
+        }
+    }
+
     fn status(&self, value: serde_json::Value) -> RResult<Blob, RString> {
         let task_id = value
             .get("task_id")
@@ -272,6 +560,9 @@ impl ThreadingService {
             "worker_threads": self.worker_count,
             "pending_threading": pending,
             "running_threading": self.shared.running.load(Ordering::Relaxed),
+            "running_external_processes": *self.shared.process_active.lock().expect("threading process gate poisoned"),
+            "pending_external_processes": self.shared.process_waiting.load(Ordering::Relaxed),
+            "max_external_processes": MAX_EXTERNAL_PROCESSES,
             "submitted_threading": self.shared.submitted.load(Ordering::Relaxed),
             "completed_threading": self.shared.completed.load(Ordering::Relaxed),
             "failed_threading": self.shared.failed.load(Ordering::Relaxed),
@@ -295,6 +586,8 @@ impl ServiceV1 for ThreadingService {
                 "ownership": "NewViso host",
                 "methods": [
                     "task.invoke_service_v1",
+                    "task.run_process_start_v1",
+                    "task.result_bin_v1",
                     "task.status_json_v1",
                     "task.snapshot_json_v1",
                     "job.invoke_service_v1",
@@ -322,6 +615,8 @@ impl ServiceV1 for ThreadingService {
         };
 
         match method.as_str() {
+            "task.run_process_start_v1" | "job.run_process_start_v1" => self.start_process(value),
+            "task.result_bin_v1" | "job.result_bin_v1" => self.result_bin(value),
             "task.invoke_service_v1" | "job.invoke_service_v1" | "threading.invoke_service_v1" => {
                 self.submit_service_call(value)
             }
@@ -348,12 +643,58 @@ impl Drop for ThreadingService {
     fn drop(&mut self) {
         self.shared.stopping.store(true, Ordering::Release);
         self.shared.wake.notify_all();
+        self.shared.process_wake.notify_all();
+
         let workers =
             std::mem::take(&mut *self.workers.lock().expect("threading worker list poisoned"));
         for worker in workers {
             let _ = worker.join();
         }
+
+        let process_workers = std::mem::take(
+            &mut *self
+                .process_workers
+                .lock()
+                .expect("threading process worker list poisoned"),
+        );
+        for worker in process_workers {
+            let _ = worker.join();
+        }
     }
+}
+
+struct ProcessSlotGuard<'a> {
+    shared: &'a ThreadingShared,
+}
+
+impl Drop for ProcessSlotGuard<'_> {
+    fn drop(&mut self) {
+        let mut active = self
+            .shared
+            .process_active
+            .lock()
+            .expect("threading process gate poisoned");
+        *active = active.saturating_sub(1);
+        drop(active);
+        self.shared.process_wake.notify_one();
+    }
+}
+
+fn mark_process_failed(shared: &ThreadingShared, task_id: &str, detail: String) {
+    shared.failed.fetch_add(1, Ordering::Relaxed);
+    if let Some(status) = shared
+        .statuses
+        .lock()
+        .expect("threading status map poisoned")
+        .get_mut(task_id)
+    {
+        status.phase = "Failed";
+        status.detail = detail.clone();
+    }
+    warn(
+        "newviso.threading",
+        format!("process task '{}' failed: {}", task_id, detail),
+    );
 }
 
 fn worker_loop(shared: Arc<ThreadingShared>) {
@@ -448,5 +789,83 @@ pub fn ensure_threading_service() -> Result<(), String> {
             Ok(())
         }
         RResult::RErr(error) => Err(error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use newviso_task_api::{TaskRunProcessStartRequestV1, TaskRunProcessStartedV1};
+    use std::time::{Duration, Instant};
+
+    fn unwrap_blob(result: RResult<Blob, RString>) -> Vec<u8> {
+        result
+            .into_result()
+            .unwrap_or_else(|error| panic!("threading service call failed: {error}"))
+            .into_vec()
+    }
+
+    #[test]
+    fn external_process_completes_and_result_is_one_shot() {
+        let service = ThreadingService::new();
+        let executable = std::env::current_exe()
+            .expect("test executable path")
+            .display()
+            .to_string();
+        let request = TaskRunProcessStartRequestV1 {
+            task_id: "test.external-process".to_owned(),
+            name: "host process contract test".to_owned(),
+            owner: "newviso-host-test".to_owned(),
+            category: "test".to_owned(),
+            lane: "background".to_owned(),
+            priority: "background".to_owned(),
+            executable,
+            args: vec!["--list".to_owned()],
+            result_path: String::new(),
+            can_cancel: false,
+            ..Default::default()
+        };
+
+        let started: TaskRunProcessStartedV1 = serde_json::from_slice(&unwrap_blob(
+            service.start_process(serde_json::to_value(&request).expect("request json")),
+        ))
+        .expect("started response");
+        assert!(started.accepted);
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let status: serde_json::Value = serde_json::from_slice(&unwrap_blob(
+                service.status(serde_json::json!({"task_id": started.task_id})),
+            ))
+            .expect("status response");
+            match status.get("phase").and_then(serde_json::Value::as_str) {
+                Some("Completed") => break,
+                Some("Failed") => panic!(
+                    "external process failed: {}",
+                    status
+                        .get("detail")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("<no detail>")
+                ),
+                _ if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+                other => panic!("external process did not complete, phase={other:?}"),
+            }
+        }
+
+        let result = unwrap_blob(service.result_bin(serde_json::json!({
+            "task_id": started.task_id
+        })));
+        assert!(
+            !result.is_empty(),
+            "test process should return the libtest --list output"
+        );
+
+        assert!(
+            service
+                .result_bin(serde_json::json!({"task_id": "test.external-process"}))
+                .into_result()
+                .is_err(),
+            "binary process result must be consumed exactly once"
+        );
     }
 }

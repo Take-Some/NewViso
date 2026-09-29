@@ -293,6 +293,8 @@ impl Scene3dRuntime {
             visibility: VisibilityMask::default(),
             lod,
             solid: desc.solid,
+            collision_local_bounds: None,
+            destructible: None,
             asset_ref: desc.asset_ref,
             render_slot,
             residency,
@@ -446,6 +448,66 @@ impl Scene3dRuntime {
             .set_process_rate_hz(SceneEntityId(stable_id), reason, hz)
     }
 
+    pub fn apply_entity_damage(
+        &mut self,
+        stable_id: u64,
+        direct_damage: f32,
+        contact_impulse: f32,
+    ) -> Result<Option<SceneDestructionActivation>, String> {
+        let id = SceneEntityId(stable_id);
+        let outcome = self
+            .world
+            .apply_damage(id, direct_damage, contact_impulse)?;
+        let Some(outcome) = outcome else {
+            return Ok(None);
+        };
+        if !outcome.broke_now {
+            return Ok(None);
+        }
+
+        let collision_bounds = self
+            .world
+            .collision_bounds(id)
+            .ok_or_else(|| format!("scene entity {} lost collision bounds", stable_id))?;
+        let entity = self
+            .world
+            .entity(id)
+            .ok_or_else(|| format!("scene entity {} disappeared after damage", stable_id))?;
+        let destructible = entity
+            .destructible
+            .ok_or_else(|| format!("scene entity {} lost destructible state", stable_id))?;
+
+        Ok(Some(SceneDestructionActivation {
+            entity: stable_id,
+            scene_position: [
+                entity.transform.position.x,
+                entity.transform.position.y,
+                entity.transform.position.z,
+            ],
+            rotation_degrees: [
+                entity.transform.rotation_degrees.x,
+                entity.transform.rotation_degrees.y,
+                entity.transform.rotation_degrees.z,
+            ],
+            bounds_min: [
+                collision_bounds.min.x,
+                collision_bounds.min.y,
+                collision_bounds.min.z,
+            ],
+            bounds_max: [
+                collision_bounds.max.x,
+                collision_bounds.max.y,
+                collision_bounds.max.z,
+            ],
+            density: destructible.density,
+            friction: destructible.friction,
+            restitution: destructible.restitution,
+            linear_damping: destructible.linear_damping,
+            angular_damping: destructible.angular_damping,
+            impulse_transfer: destructible.impulse_transfer,
+        }))
+    }
+
     pub fn set_physics_process_active(
         &mut self,
         stable_id: u64,
@@ -478,10 +540,7 @@ impl Scene3dRuntime {
             SceneMutationSource::Animation,
         )
     }
-    pub fn entity_asset_binding_context(
-        &self,
-        stable_id: u64,
-    ) -> SceneAssetBindingContext {
+    pub fn entity_asset_binding_context(&self, stable_id: u64) -> SceneAssetBindingContext {
         self.asset_binding_contexts
             .get(&stable_id)
             .cloned()
@@ -670,6 +729,10 @@ impl Scene3dRuntime {
         };
 
         let (render_slot, previous_bounds) = (entity.render_slot, entity.bounds);
+        let local_model_bounds = self
+            .asset_meshes
+            .get(&stable_id)
+            .map(|mesh| mesh.local_bounds);
         let bounds = if let Some(render_slot) = render_slot {
             let cube = self
                 .cubes
@@ -683,10 +746,19 @@ impl Scene3dRuntime {
                 min: Vec3::new(bounds.min[0], bounds.min[1], bounds.min[2]),
                 max: Vec3::new(bounds.max[0], bounds.max[1], bounds.max[2]),
             }
+        } else if let Some(local_bounds) = local_model_bounds {
+            // Rebuild the world AABB from immutable model-local bounds. GTA
+            // props often place the pivot at their base, so centering the old
+            // world AABB on transform.position causes collisions/culling to
+            // drift as soon as physics rotates the object.
+            asset_models::transformed_local_bounds(local_bounds, transform)?
         } else {
             let old_center = previous_bounds.center();
-            let old_half = previous_bounds.max.sub(old_center);
-            SceneBounds::from_center_half_extent(transform.position, old_half)
+            let world_center_offset = old_center.sub(entity.transform.position);
+            SceneBounds::from_center_half_extent(
+                transform.position.add(world_center_offset),
+                previous_bounds.max.sub(old_center),
+            )
         };
 
         self.world
@@ -829,8 +901,24 @@ impl Scene3dRuntime {
             "visibility_mask": entity.visibility.raw(),
             "priority_score": entity.priority_score,
             "lod_alpha": entity.lod_alpha,
+            "lod": {
+                "visible_distance": entity.lod.visible_distance,
+                "stream_distance": entity.lod.stream_distance,
+                "fade_range": entity.lod.fade_range
+            },
             "revision": entity.revision,
             "last_mutation_frame": entity.last_mutation_frame,
+            "bounds": {
+                "min": [entity.bounds.min.x, entity.bounds.min.y, entity.bounds.min.z],
+                "max": [entity.bounds.max.x, entity.bounds.max.y, entity.bounds.max.z]
+            },
+            "destructible": entity.destructible.map(|destructible| json!({
+                "health": destructible.health,
+                "max_health": destructible.max_health,
+                "broken": destructible.broken,
+                "impact_damage_threshold": destructible.impact_damage_threshold,
+                "break_impulse": destructible.break_impulse
+            })),
             "process_control": {
                 "active": self.world.process_is_active(entity.id),
                 "requested": entity.process_claims.active(),

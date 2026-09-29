@@ -1,11 +1,218 @@
 use super::*;
 
-pub(super) fn builtin_vfs_mount_policy() -> Result<VfsMountPolicy, String> {
-    let policy: VfsMountPolicy = serde_json::from_str(BUILTIN_VFS_MOUNTS_JSON)
-        .map_err(|error| format!("invalid built-in VFS mount policy: {error}"))?;
+const SHARED_RUNTIME_DEFAULTS: &str = "config/engine/runtime.defaults.xml";
+const SHARED_ENVIRONMENT_DEFAULTS: &str = "config/engine/environment.defaults.xml";
+const SHARED_RENDER_DEFAULTS: &str = "config/engine/render.defaults.xml";
+const SHARED_VFS_MOUNTS: &str = "config/engine/vfs_mounts.xml";
+
+#[derive(Debug)]
+struct EngineConfigXmlNode {
+    name: String,
+    attrs: BTreeMap<String, String>,
+    children: Vec<EngineConfigXmlNode>,
+}
+
+fn load_shared_engine_xml(
+    shared_assets_dir: &Path,
+    relative_path: &str,
+    label: &str,
+) -> Result<Value, String> {
+    let path = shared_assets_dir.join(relative_path);
+    let bytes = fs::read(&path).map_err(|error| {
+        format!(
+            "Shared Assets {label} defaults are required at '{}': {error}",
+            path.display()
+        )
+    })?;
+    parse_engine_config_xml(&bytes, &path)
+        .map_err(|error| format!("Shared Assets {label} defaults XML is invalid: {error}"))
+}
+
+fn parse_engine_config_xml(bytes: &[u8], path: &Path) -> Result<Value, String> {
+    use quick_xml::{events::Event, Reader, XmlVersion};
+
+    fn attrs(
+        event: &quick_xml::events::BytesStart<'_>,
+    ) -> Result<BTreeMap<String, String>, String> {
+        let mut out = BTreeMap::new();
+        for attribute in event.attributes().with_checks(false) {
+            let attribute = attribute.map_err(|error| format!("XML attribute error: {error}"))?;
+            let key = attribute.key.into_inner().to_owned();
+            let value = attribute
+                .normalized_value(XmlVersion::Implicit1_0)
+                .map_err(|error| format!("XML attribute decode failed: {error}"))?
+                .into_owned();
+            out.insert(key, value);
+        }
+        Ok(out)
+    }
+
+    fn scalar(raw: &str) -> Value {
+        let raw = raw.trim();
+        if raw.eq_ignore_ascii_case("true") {
+            return Value::Bool(true);
+        }
+        if raw.eq_ignore_ascii_case("false") {
+            return Value::Bool(false);
+        }
+        if let Ok(value) = raw.parse::<i64>() {
+            return Value::Number(value.into());
+        }
+        if let Ok(value) = raw.parse::<u64>() {
+            return Value::Number(value.into());
+        }
+        if let Ok(value) = raw.parse::<f64>() {
+            if let Some(value) = serde_json::Number::from_f64(value) {
+                return Value::Number(value);
+            }
+        }
+        Value::String(raw.to_owned())
+    }
+
+    fn node_value(node: EngineConfigXmlNode) -> Result<Value, String> {
+        let kind = node.attrs.get("type").map(String::as_str);
+        if kind == Some("array") {
+            return node
+                .children
+                .into_iter()
+                .map(node_value)
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Array);
+        }
+        if kind == Some("object") && node.children.is_empty() {
+            return Ok(Value::Object(serde_json::Map::new()));
+        }
+        if node
+            .attrs
+            .get("null")
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"))
+        {
+            return Ok(Value::Null);
+        }
+
+        let axes = ["x", "y", "z", "w"]
+            .into_iter()
+            .filter_map(|axis| node.attrs.get(axis).map(|value| scalar(value)))
+            .collect::<Vec<_>>();
+        if axes.len() >= 2 {
+            return Ok(Value::Array(axes));
+        }
+
+        if node.children.is_empty() {
+            if let Some(value) = node.attrs.get("value") {
+                return Ok(scalar(value));
+            }
+            if node.attrs.is_empty() {
+                return Ok(Value::Object(serde_json::Map::new()));
+            }
+        }
+
+        let mut object = serde_json::Map::new();
+        for (key, value) in node.attrs {
+            if key != "type" && key != "null" && key != "value" {
+                object.insert(key, scalar(&value));
+            }
+        }
+        for child in node.children {
+            let key = child.name.clone();
+            let value = node_value(child)?;
+            if let Some(previous) = object.remove(&key) {
+                let mut values = match previous {
+                    Value::Array(values) => values,
+                    other => vec![other],
+                };
+                values.push(value);
+                object.insert(key, Value::Array(values));
+            } else {
+                object.insert(key, value);
+            }
+        }
+        Ok(Value::Object(object))
+    }
+
+    let mut reader = Reader::from_reader(bytes);
+    reader.config_mut().trim_text(true);
+    let mut buffer = Vec::new();
+    let mut stack = Vec::<EngineConfigXmlNode>::new();
+    let mut root = None::<EngineConfigXmlNode>;
+
+    loop {
+        match reader
+            .read_event_into(&mut buffer)
+            .map_err(|error| format!("XML read failed path='{}': {error}", path.display()))?
+        {
+            Event::Start(event) => {
+                let name = event.name().into_inner().to_owned();
+                stack.push(EngineConfigXmlNode {
+                    name,
+                    attrs: attrs(&event)?,
+                    children: Vec::new(),
+                });
+            }
+            Event::Empty(event) => {
+                let name = event.name().into_inner().to_owned();
+                let node = EngineConfigXmlNode {
+                    name,
+                    attrs: attrs(&event)?,
+                    children: Vec::new(),
+                };
+                if let Some(parent) = stack.last_mut() {
+                    parent.children.push(node);
+                } else if root.replace(node).is_some() {
+                    return Err("XML contains more than one root element".to_owned());
+                }
+            }
+            Event::End(_) => {
+                let node = stack
+                    .pop()
+                    .ok_or_else(|| "XML closing element has no matching start".to_owned())?;
+                if let Some(parent) = stack.last_mut() {
+                    parent.children.push(node);
+                } else if root.replace(node).is_some() {
+                    return Err("XML contains more than one root element".to_owned());
+                }
+            }
+            Event::Text(text) if !text.as_ref().chars().all(char::is_whitespace) => {
+                return Err(
+                    "engine defaults XML uses attribute values; non-whitespace text is not allowed"
+                        .to_owned(),
+                );
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+        buffer.clear();
+    }
+
+    if !stack.is_empty() {
+        return Err("XML ended with unclosed elements".to_owned());
+    }
+    let root = root.ok_or_else(|| "XML contains no root element".to_owned())?;
+    node_value(root)
+}
+
+fn merge_engine_defaults(target: &mut Value, patch: &Value) {
+    if let (Some(target), Some(patch)) = (target.as_object_mut(), patch.as_object()) {
+        for (key, value) in patch {
+            match target.get_mut(key) {
+                Some(current) => merge_engine_defaults(current, value),
+                None => {
+                    target.insert(key.clone(), value.clone());
+                }
+            }
+        }
+    } else {
+        *target = patch.clone();
+    }
+}
+
+pub(super) fn shared_vfs_mount_policy(shared_assets_dir: &Path) -> Result<VfsMountPolicy, String> {
+    let value = load_shared_engine_xml(shared_assets_dir, SHARED_VFS_MOUNTS, "VFS mount policy")?;
+    let policy: VfsMountPolicy = serde_json::from_value(value)
+        .map_err(|error| format!("Shared Assets VFS mount policy decode failed: {error}"))?;
     if policy.schema != "newviso.runtime.vfs_mount_policy.v1" {
         return Err(format!(
-            "unsupported built-in VFS mount policy schema '{}'",
+            "unsupported Shared Assets VFS mount policy schema '{}'",
             policy.schema
         ));
     }
@@ -14,6 +221,7 @@ pub(super) fn builtin_vfs_mount_policy() -> Result<VfsMountPolicy, String> {
 pub(super) fn resolve_project_capabilities(
     project: &ResolvedProject,
     providers: &[ProviderInfo],
+    safe_mode: bool,
 ) -> Result<Vec<ResolvedCapability>, String> {
     let required = project
         .manifest
@@ -38,7 +246,7 @@ pub(super) fn resolve_project_capabilities(
             required: false,
         });
 
-    resolve_capabilities(providers, required.chain(optional))
+    resolve_capabilities(providers, required.chain(optional.filter(|_| !safe_mode)))
 }
 pub(super) fn activate_project_capabilities(
     resolved: &[ResolvedCapability],
@@ -157,7 +365,7 @@ pub(super) fn mount_project_files(
     shared_assets_dir: &Path,
 ) -> Result<(), String> {
     let assets = AssetClient::new();
-    let policy = builtin_vfs_mount_policy()?;
+    let policy = shared_vfs_mount_policy(shared_assets_dir)?;
 
     if shared_assets_dir.is_dir() {
         assets.mount_filesystem(
@@ -215,22 +423,41 @@ pub(super) fn mount_project_files(
 
     Ok(())
 }
-pub(super) fn load_project_files(project: &ResolvedProject) -> Result<LoadedProjectFiles, String> {
+pub(super) fn load_project_files(
+    project: &ResolvedProject,
+    shared_assets_dir: &Path,
+) -> Result<LoadedProjectFiles, String> {
     let assets = AssetClient::new();
 
-    let runtime = ProjectRuntimeSettings::from_value(
-        assets
-            .json(&project.manifest.files.runtime)
-            .map_err(|error| format!("runtime settings asset load failed: {error}"))?,
-    )
-    .map_err(|error| error.to_string())?;
+    // Engine defaults are canonical Shared Assets, read from their physical
+    // authority rather than through the project-overlaid VFS. This prevents a
+    // project from replacing the base document wholesale; project files are
+    // explicitly deep-merged below instead.
+    let shared_runtime =
+        load_shared_engine_xml(shared_assets_dir, SHARED_RUNTIME_DEFAULTS, "runtime")?;
+    let project_runtime = assets
+        .json(&project.manifest.files.runtime)
+        .map_err(|error| format!("runtime settings asset load failed: {error}"))?;
+    let runtime = ProjectRuntimeSettings::from_base_and_override(shared_runtime, project_runtime)
+        .map_err(|error| error.to_string())?;
 
-    let environment = ProjectEnvironment::from_value(
-        assets
-            .json(&project.manifest.files.environment)
-            .map_err(|error| format!("environment asset load failed: {error}"))?,
-    )
-    .map_err(|error| error.to_string())?;
+    let mut environment = load_shared_engine_xml(
+        shared_assets_dir,
+        SHARED_ENVIRONMENT_DEFAULTS,
+        "environment",
+    )?;
+    let project_environment = assets
+        .json(&project.manifest.files.environment)
+        .map_err(|error| format!("environment asset load failed: {error}"))?;
+    merge_engine_defaults(&mut environment, &project_environment);
+    let environment =
+        ProjectEnvironment::from_value(environment).map_err(|error| error.to_string())?;
+
+    let render_defaults =
+        load_shared_engine_xml(shared_assets_dir, SHARED_RENDER_DEFAULTS, "render")?;
+    if !render_defaults.is_object() {
+        return Err("Shared Assets render defaults must be a JSON object".to_owned());
+    }
 
     let scripts = if let Some(manifest_scripts) = project.manifest.scripts.as_ref() {
         Some(manifest_scripts.as_runtime_config())
@@ -273,13 +500,20 @@ pub(super) fn load_project_files(project: &ResolvedProject) -> Result<LoadedProj
         "scripts": project.manifest.scripts,
         "runtime": runtime,
         "environment": environment,
+        "render_defaults": render_defaults,
+        "engine_defaults": {
+            "authority": "shared_assets",
+            "runtime": SHARED_RUNTIME_DEFAULTS,
+            "environment": SHARED_ENVIRONMENT_DEFAULTS,
+            "render": SHARED_RENDER_DEFAULTS
+        },
         "capabilities": project.manifest.capabilities,
     });
 
     host::info(
         "newviso.project",
         format!(
-            "project files loaded runtime='{}' environment='{}' scene='{}' scripts={} ui={}",
+            "project files loaded runtime='{}' environment='{}' scene='{}' scripts={} ui={} defaults='Shared/Content/config/engine'",
             project.manifest.files.runtime,
             project.manifest.files.environment,
             project.manifest.files.scene,
@@ -297,6 +531,7 @@ pub(super) fn load_project_files(project: &ResolvedProject) -> Result<LoadedProj
     Ok(LoadedProjectFiles {
         runtime,
         environment,
+        render_defaults,
         scripts,
         ui_surface,
         context,
@@ -410,10 +645,11 @@ pub(super) fn log_bootstrap(bootstrap: &ResolvedBootstrapConfig) {
     host::info(
         "newviso.bootstrap",
         format!(
-            "starting config={} base={} providers={}",
+            "starting config={} base={} providers={} safe_mode={}",
             config_source,
             bootstrap.base_dir.display(),
-            bootstrap.provider_dir.display()
+            bootstrap.provider_dir.display(),
+            bootstrap.safe_mode
         ),
     );
 
@@ -421,6 +657,13 @@ pub(super) fn log_bootstrap(bootstrap: &ResolvedBootstrapConfig) {
         host::info(
             "newviso.bootstrap",
             format!("project request={}", project_path.display()),
+        );
+    }
+
+    if bootstrap.safe_mode {
+        host::warn(
+            "newviso.bootstrap",
+            "safe mode enabled: optional capabilities, project scripts/UI startup logic and world persistence are suppressed",
         );
     }
 

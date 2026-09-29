@@ -142,6 +142,8 @@ impl Scene3dRuntime {
             visibility: VisibilityMask::default(),
             lod: SceneLodPolicy::default(),
             solid: false,
+            collision_local_bounds: None,
+            destructible: None,
             asset_ref: None,
             render_slot: None,
             residency: SceneResidency::Resident,
@@ -212,6 +214,8 @@ impl Scene3dRuntime {
                     visibility: read_visibility_mask(record),
                     lod: read_lod_policy(record)?,
                     solid: record.pointer("/collider/solid").and_then(Value::as_bool) == Some(true),
+                    collision_local_bounds: read_collision_local_bounds(record)?,
+                    destructible: read_destructible(record)?,
                     asset_ref: Some(asset_ref),
                     render_slot: None,
                     residency: SceneResidency::Unloaded,
@@ -278,6 +282,8 @@ impl Scene3dRuntime {
                 visibility,
                 lod,
                 solid,
+                collision_local_bounds: read_collision_local_bounds(record)?,
+                destructible: read_destructible(record)?,
                 asset_ref: None,
                 render_slot: Some(render_slot),
                 residency: SceneResidency::Resident,
@@ -342,6 +348,8 @@ impl Scene3dRuntime {
                 visibility: read_visibility_mask(record),
                 lod: read_lod_policy(record)?,
                 solid: false,
+                collision_local_bounds: read_collision_local_bounds(record)?,
+                destructible: read_destructible(record)?,
                 asset_ref: record
                     .pointer("/asset/ref")
                     .or_else(|| record.pointer("/mesh/asset"))
@@ -407,6 +415,8 @@ impl Scene3dRuntime {
                 cubes,
                 asset_meshes: BTreeMap::new(),
                 skinned_entities: BTreeMap::new(),
+                animation_skinning_pool: animation_skinning::SkinningWorkerPool::new()?,
+                animation_skinning_in_flight: BTreeSet::new(),
                 main_view_mesh_visibility: Default::default(),
                 static_asset_instance_epoch: 0,
                 asset_model_cache: BTreeMap::new(),
@@ -418,11 +428,13 @@ impl Scene3dRuntime {
                 asset_binding_contexts: BTreeMap::new(),
                 asset_vertex_data: Vec::new(),
                 asset_upload_from_float: None,
-                asset_skin_upload_ranges: Vec::new(),
+                skinned_vertex_data: Vec::new(),
+                skinned_dirty_ranges: std::array::from_fn(|_| Vec::new()),
                 asset_geometry_full_rebuild: false,
                 retired_asset_vertex_buffers: Vec::new(),
                 transient_spheres: Vec::new(),
                 overlay_quads: Vec::new(),
+                particles: Vec::new(),
                 sky_visuals: BTreeMap::new(),
                 lens_flares: BTreeMap::new(),
                 sky_clouds: SkyCloudDesc::default(),
@@ -430,21 +442,101 @@ impl Scene3dRuntime {
                 scene_environment: SceneEnvironmentDesc::default(),
                 timecycle_backend: TimeCycleBackendState::default(),
                 weather_backend: WeatherBackendState::default(),
+                weather_effects: WeatherEffectsState::default(),
+                cloudhat_keyframe: CloudHatKeyframeState::default(),
+                weather_gpu_fx: None,
+                weather_fx_time_seconds: 0.0,
+                weather_wetness: 0.0,
+                weather_outdoor_exposure: 1.0,
                 sky_time_seconds: 0.0,
                 sky_time_scale: 1.0,
+                sky_cloud_noise_phase: [1.0, 1.0],
+                sky_cloud_cycle_time_days: 0.0,
+                atmospheric_clouds: None,
+                atmospheric_cloud_runtime: Vec::new(),
                 runtime_entity_ids: BTreeMap::new(),
                 next_runtime_entity_id: 0x4e56_5343_0000_0000,
                 world,
                 frame_plan,
                 portal_visibility,
                 gpu_instance_table: GpuInstanceTable::default(),
+                mass_instances: mass_instances::MassInstanceStore::default(),
+                gpu_mass_instances: BTreeMap::new(),
+                last_submission_stats: RenderSubmissionStats::default(),
                 clear_color: [0.0, 0.0, 0.0, 1.0],
                 gpu: None,
                 sky: None,
                 gpu_sky: None,
+                gpu_atmospheric_clouds: None,
+                gpu_volumetric_clouds: None,
+                gpu_weather: None,
                 frame_index: 0,
+                last_render_camera: None,
             },
             report,
         ))
     }
+}
+
+fn read_collision_local_bounds(record: &Value) -> Result<Option<SceneBounds>, String> {
+    let Some(value) = record.pointer("/collider/local_bounds") else {
+        return Ok(None);
+    };
+    let min = read_vec3(value, "min", Vec3::ZERO)?;
+    let max = read_vec3(value, "max", Vec3::ZERO)?;
+    if min.x > max.x || min.y > max.y || min.z > max.z {
+        return Err("scene collider.local_bounds min must not exceed max".to_owned());
+    }
+    if [min.x, min.y, min.z, max.x, max.y, max.z]
+        .iter()
+        .any(|value| !value.is_finite())
+    {
+        return Err("scene collider.local_bounds must be finite".to_owned());
+    }
+    Ok(Some(SceneBounds { min, max }))
+}
+
+fn read_destructible(record: &Value) -> Result<Option<SceneDestructible>, String> {
+    let Some(value) = record.get("destructible") else {
+        return Ok(None);
+    };
+    let object = value
+        .as_object()
+        .ok_or_else(|| "scene destructible component must be an object".to_owned())?;
+    if object
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .is_some_and(|enabled| !enabled)
+    {
+        return Ok(None);
+    }
+
+    let number = |key: &str, default: f32| -> Result<f32, String> {
+        match object.get(key) {
+            Some(value) => value
+                .as_f64()
+                .map(|value| value as f32)
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| format!("scene destructible '{key}' must be finite numeric")),
+            None => Ok(default),
+        }
+    };
+
+    let max_health = number("health", 100.0)?;
+    SceneDestructible {
+        max_health,
+        health: max_health,
+        impact_damage_threshold: number("impact_damage_threshold", 8.0)?,
+        impact_damage_scale: number("impact_damage_scale", 0.5)?,
+        break_impulse: number("break_impulse", 80.0)?,
+        impulse_transfer: number("impulse_transfer", 0.85)?,
+        density: number("density", 40.0)?,
+        friction: number("friction", 0.65)?,
+        restitution: number("restitution", 0.08)?,
+        linear_damping: number("linear_damping", 0.12)?,
+        angular_damping: number("angular_damping", 0.18)?,
+        broken: false,
+    }
+    .validate()
+    .map(Some)
 }

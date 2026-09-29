@@ -40,7 +40,13 @@ impl Scene3dRuntime {
         &mut self,
         render: &RenderClient,
         gpu: GpuScene,
+        frame_slot: usize,
     ) -> Result<(), String> {
+        if frame_slot >= SCENE_FRAME_SLOTS {
+            return Err(format!(
+                "scene frame slot {frame_slot} exceeds ring size {SCENE_FRAME_SLOTS}"
+            ));
+        }
         let render_epoch = self.world.static_render_epoch();
         let asset_epoch = self.static_asset_instance_epoch;
         let rebuild = self.gpu_instance_table.source_render_epoch != render_epoch
@@ -49,6 +55,7 @@ impl Scene3dRuntime {
         if rebuild {
             let rebuild_count = self.gpu_instance_table.rebuild_count.wrapping_add(1);
             let upload_count = self.gpu_instance_table.upload_count;
+            let generation = self.gpu_instance_table.generation.wrapping_add(1).max(1);
             let mut grouped = BTreeMap::<GpuInstanceBatchKey, Vec<u64>>::new();
 
             for (stable_id, mesh) in &self.asset_meshes {
@@ -83,7 +90,8 @@ impl Scene3dRuntime {
                 batches: BTreeMap::new(),
                 entity_slots: BTreeMap::new(),
                 entity_batches: BTreeMap::new(),
-                uploaded: false,
+                generation,
+                uploaded_generation: [0; SCENE_FRAME_SLOTS],
                 rebuild_count,
                 upload_count,
             };
@@ -126,15 +134,18 @@ impl Scene3dRuntime {
             self.gpu_instance_table = table;
         }
 
-        if !self.gpu_instance_table.uploaded {
+        if self.gpu_instance_table.uploaded_generation[frame_slot]
+            != self.gpu_instance_table.generation
+        {
             if !self.gpu_instance_table.instance_data.is_empty() {
                 render.write_buffer_f32(
-                    gpu.asset_instance_buffer,
+                    gpu.asset_instance_buffers[frame_slot],
                     0,
                     &self.gpu_instance_table.instance_data,
                 )?;
             }
-            self.gpu_instance_table.uploaded = true;
+            self.gpu_instance_table.uploaded_generation[frame_slot] =
+                self.gpu_instance_table.generation;
             self.gpu_instance_table.upload_count =
                 self.gpu_instance_table.upload_count.wrapping_add(1);
         }
@@ -142,6 +153,6 @@ impl Scene3dRuntime {
     }
 
     pub(super) fn invalidate_gpu_instance_upload(&mut self) {
-        self.gpu_instance_table.uploaded = false;
+        self.gpu_instance_table.uploaded_generation = [u64::MAX; SCENE_FRAME_SLOTS];
     }
 }

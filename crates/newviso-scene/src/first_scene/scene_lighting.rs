@@ -24,6 +24,8 @@ fn runtime_visual_entity(
         visibility: VisibilityMask::default(),
         lod: SceneLodPolicy::default(),
         solid: false,
+        collision_local_bounds: None,
+        destructible: None,
         asset_ref: None,
         render_slot: None,
         residency: SceneResidency::Resident,
@@ -318,6 +320,16 @@ impl Scene3dRuntime {
                 .seed_offset
                 .iter()
                 .any(|value| !value.is_finite() || value.abs() > 4096.0)
+            || !desc.large_speed.is_finite()
+            || desc.large_speed.abs() > 64.0
+            || !desc.small_speed.is_finite()
+            || desc.small_speed.abs() > 64.0
+            || !desc.overall_detail_speed.is_finite()
+            || desc.overall_detail_speed.abs() > 64.0
+            || !desc.edge_detail_speed.is_finite()
+            || desc.edge_detail_speed.abs() > 64.0
+            || !desc.noise_phase_scale.is_finite()
+            || !(0.0..=1.0).contains(&desc.noise_phase_scale)
         {
             return Err("invalid generic SkyCloudDesc parameters".to_owned());
         }
@@ -364,6 +376,13 @@ impl Scene3dRuntime {
             return Err(
                 "sky dome resources must be assigned before renderer initialization".to_owned(),
             );
+        }
+
+        if !sky.dome_scale.is_finite()
+            || !(100.0..=1_000_000.0).contains(&sky.dome_scale)
+            || !sky.horizon_level.is_finite()
+        {
+            return Err("sky dome scale or horizon level is invalid".to_owned());
         }
 
         if sky.mesh.vertices.is_empty() {

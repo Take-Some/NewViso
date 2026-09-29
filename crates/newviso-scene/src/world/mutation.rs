@@ -93,13 +93,14 @@ impl SceneWorld {
         let static_renderable = self
             .entity(id)
             .is_some_and(|entity| entity.mobility == SceneMobility::Static);
-        if static_renderable
-            && (dirty.contains(SceneDirtyFlags::TRANSFORM)
-                || dirty.contains(SceneDirtyFlags::BOUNDS)
-                || dirty.contains(SceneDirtyFlags::VISIBILITY)
-                || dirty.contains(SceneDirtyFlags::HIERARCHY)
-                || dirty.contains(SceneDirtyFlags::LIFECYCLE)
-                || dirty.contains(SceneDirtyFlags::RESIDENCY))
+        if dirty.contains(SceneDirtyFlags::MOBILITY)
+            || (static_renderable
+                && (dirty.contains(SceneDirtyFlags::TRANSFORM)
+                    || dirty.contains(SceneDirtyFlags::BOUNDS)
+                    || dirty.contains(SceneDirtyFlags::VISIBILITY)
+                    || dirty.contains(SceneDirtyFlags::HIERARCHY)
+                    || dirty.contains(SceneDirtyFlags::LIFECYCLE)
+                    || dirty.contains(SceneDirtyFlags::RESIDENCY)))
         {
             self.static_render_epoch = self.static_render_epoch.wrapping_add(1);
         }
@@ -264,6 +265,94 @@ impl SceneWorld {
     pub(crate) fn entity_mut(&mut self, id: SceneEntityId) -> Option<&mut SceneEntity> {
         let index = *self.by_id.get(&id)?;
         self.entities.get_mut(index)
+    }
+
+    pub(crate) fn set_mobility(
+        &mut self,
+        id: SceneEntityId,
+        mobility: SceneMobility,
+        source: SceneMutationSource,
+    ) -> Result<bool, String> {
+        let changed = {
+            let entity = self
+                .entity_mut(id)
+                .ok_or_else(|| format!("scene entity {} does not exist", id.0))?;
+            if entity.mobility == mobility {
+                false
+            } else {
+                entity.mobility = mobility;
+                if matches!(
+                    entity.kind,
+                    SceneEntityKind::StaticMesh | SceneEntityKind::DynamicMesh
+                ) {
+                    entity.kind = match mobility {
+                        SceneMobility::Static => SceneEntityKind::StaticMesh,
+                        SceneMobility::Dynamic => SceneEntityKind::DynamicMesh,
+                    };
+                }
+                true
+            }
+        };
+        if changed {
+            self.record_mutation(id, source, SceneDirtyFlags::MOBILITY)?;
+        }
+        Ok(changed)
+    }
+
+    pub(crate) fn apply_damage(
+        &mut self,
+        id: SceneEntityId,
+        direct_damage: f32,
+        contact_impulse: f32,
+    ) -> Result<Option<SceneDamageOutcome>, String> {
+        if !direct_damage.is_finite() || direct_damage < 0.0 {
+            return Err("scene direct damage must be finite and non-negative".to_owned());
+        }
+        if !contact_impulse.is_finite() || contact_impulse < 0.0 {
+            return Err("scene contact impulse must be finite and non-negative".to_owned());
+        }
+
+        let outcome = {
+            let Some(entity) = self.entity_mut(id) else {
+                return Ok(None);
+            };
+            let Some(destructible) = entity.destructible.as_mut() else {
+                return Ok(None);
+            };
+            if destructible.broken {
+                return Ok(Some(SceneDamageOutcome {
+                    applied_damage: 0.0,
+                    remaining_health: destructible.health,
+                    broke_now: false,
+                }));
+            }
+
+            let impact_damage = (contact_impulse - destructible.impact_damage_threshold).max(0.0)
+                * destructible.impact_damage_scale;
+            let applied_damage = direct_damage + impact_damage;
+            if applied_damage > 0.0 {
+                destructible.health = (destructible.health - applied_damage).max(0.0);
+            }
+            let broke_now =
+                destructible.health <= 0.0 || contact_impulse >= destructible.break_impulse;
+            if broke_now {
+                destructible.health = 0.0;
+                destructible.broken = true;
+            }
+            SceneDamageOutcome {
+                applied_damage,
+                remaining_health: destructible.health,
+                broke_now,
+            }
+        };
+
+        if outcome.applied_damage > 0.0 || outcome.broke_now {
+            self.record_mutation(id, SceneMutationSource::Physics, SceneDirtyFlags::DAMAGE)?;
+        }
+        if outcome.broke_now {
+            self.set_mobility(id, SceneMobility::Dynamic, SceneMutationSource::Physics)?;
+        }
+        Ok(Some(outcome))
     }
 
     pub(crate) fn set_light(

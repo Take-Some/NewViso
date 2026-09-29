@@ -56,6 +56,16 @@ layout(set = 0, binding = 0, std140) uniform SkyFrame {
     vec4 cloud_sculpt;
     // xy = differential layer/shear velocity, zw = stable seed offset.
     vec4 cloud_shear_seed;
+
+    // GTA-derived motion model, kept source-format neutral:
+    // xy = integrated wind-driven base-noise phase,
+    // z = continuous time-cycle in days, w = phase multiplier.
+    vec4 cloud_phase;
+    // x = small/filler phase speed, y = overall-detail speed,
+    // z = edge-detail speed, w = large/base speed (telemetry parity).
+    vec4 cloud_layer_speeds;
+    // x = dome scale, y = fixed horizon level, z = camera world height.
+    vec4 dome_geometry;
 } sky;
 
 layout(set = 0, binding = 1) uniform texture2D t_base_noise;
@@ -89,35 +99,18 @@ float smootherstep_range(float edge0, float edge1, float value) {
     return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
 }
 
-vec3 triplanar_weights(vec3 direction) {
-    vec3 weights = pow(abs(normalize(direction)), vec3(4.0));
-    return weights / max(weights.x + weights.y + weights.z, 0.0001);
-}
-
-// GTA cloud hats are separate camera-relative cloud geometry with authored UVs;
-// they are not lat/long texture coordinates on the sky dome.  Our procedural
-// equivalent uses an analytic finite-altitude layer for the upper sky.
-//
-// Intersecting the view ray with y = constant gives xz / y.  This preserves a
-// stable world-space texel size at the zenith: cloud structures do not become
-// smaller merely because the imported dome has denser/sparser vertices there.
-// Near the horizon the tangent grows without bound, so we smoothly return to
-// the seamless triplanar domain before that singularity.
+// Procedural clouds are sampled on a horizontal atmospheric plane. The sky
+// sphere is only a rasterization hull; it must never become the cloud domain.
 vec2 cloud_layer_uv(vec3 direction, float scale, vec2 offset) {
     vec3 n = normalize(direction);
-    float elevation = max(n.y, 0.16);
+    // Rays below the atmospheric horizon never contribute cloud. Near the
+    // horizon we clamp the denominator only to keep derivatives finite; alpha
+    // is faded out separately before this region becomes visible.
+    float elevation = max(n.y, 0.055);
     vec2 plane = n.xz / elevation;
-
-    // This factor keeps the new finite-layer projection close to the previous
-    // visual frequency around mid elevations while fixing zenith scale.
     return plane * scale * 0.34 + offset;
 }
 
-float cloud_layer_blend(vec3 direction) {
-    // Full finite-altitude projection above ~33 degrees elevation, seamless
-    // triplanar fallback below ~12 degrees.
-    return smoothstep(0.20, 0.55, normalize(direction).y);
-}
 
 vec3 reconstruct_world_view_ray() {
     // v_view_plane is screen-linear (noperspective).  The dome is therefore
@@ -131,71 +124,25 @@ vec3 reconstruct_world_view_ray() {
 }
 
 float detail_noise_3d(vec3 direction, float scale, vec2 offset) {
-    vec3 n = normalize(direction);
-    vec3 p = n * scale;
-    vec3 w = triplanar_weights(n);
-
-    float x = texture(
+    vec2 uv = cloud_layer_uv(direction, scale, offset);
+    float a = texture(sampler2D(t_detail_noise, s_sky), uv).r;
+    float b = texture(
         sampler2D(t_detail_noise, s_sky),
-        p.yz * 0.50 + offset
+        uv * vec2(1.071, 0.937) + vec2(0.173, -0.291)
     ).r;
-    float y = texture(
-        sampler2D(t_detail_noise, s_sky),
-        p.xz * 0.50 + offset * vec2(0.91, 1.07) + vec2(0.23, 0.41)
-    ).r;
-    float z = texture(
-        sampler2D(t_detail_noise, s_sky),
-        p.xy * 0.50 + offset * vec2(-1.03, 0.89) + vec2(0.47, -0.19)
-    ).r;
-    float triplanar = dot(vec3(x, y, z), w);
-
-    float layer = texture(
-        sampler2D(t_detail_noise, s_sky),
-        cloud_layer_uv(n, scale, offset)
-    ).r;
-
-    return mix(triplanar, layer, cloud_layer_blend(n));
+    return mix(a, b, 0.32);
 }
 
 vec3 base_noise_rgb_3d(vec3 direction, float scale, vec2 offset) {
-    // Keep all three authored noise channels independent.  The previous path
-    // collapsed RGB into luminance, which made every scale reuse essentially
-    // the same stamped silhouette.
-    vec3 n = normalize(direction);
-    vec3 p = n * scale;
-    vec3 w = triplanar_weights(n);
-
-    vec3 x = texture(
+    vec2 uv = cloud_layer_uv(direction, scale, offset);
+    vec3 a = texture(sampler2D(t_base_noise, s_sky), uv).rgb;
+    vec3 b = texture(
         sampler2D(t_base_noise, s_sky),
-        p.yz * 0.50 + offset
-    ).rgb;
-    vec3 y = texture(
-        sampler2D(t_base_noise, s_sky),
-        p.xz * 0.50
-            + offset * vec2(-0.93, 1.11)
-            + vec2(0.271, 0.619)
-    ).rgb;
-    vec3 z = texture(
-        sampler2D(t_base_noise, s_sky),
-        p.xy * 0.50
-            + offset * vec2(1.07, -0.89)
-            + vec2(-0.413, 0.337)
-    ).rgb;
-    vec3 triplanar = x * w.x + y * w.y + z * w.z;
-
-    // Finite-altitude projection for the upper hemisphere.  Each RGB channel
-    // keeps its own decorrelated phase while sharing one physically coherent
-    // world-space footprint.
-    vec2 layer_uv = cloud_layer_uv(n, scale, offset);
-    vec3 layer_a = texture(sampler2D(t_base_noise, s_sky), layer_uv).rgb;
-    vec3 layer_b = texture(
-        sampler2D(t_base_noise, s_sky),
-        layer_uv * vec2(1.013, 0.987) + vec2(0.193, -0.271)
+        uv * vec2(1.013, 0.987) + vec2(0.193, -0.271)
     ).gbr;
-    vec3 layer = mix(layer_a, layer_b, 0.22);
-
-    return mix(triplanar, layer, cloud_layer_blend(n));
+    return mix(a, b, 0.20);
 }
+
 
 vec3 warp_cloud_direction(
     vec3 direction,
@@ -225,9 +172,20 @@ vec3 warp_cloud_direction(
     // The user-facing warp is normalized to [0,1]; keep the angular
     // displacement bounded so large weather changes never fold the sky field.
     vec3 warped = n
-        + tangent * warp_x * strength * 0.36
-        + bitangent * warp_y * strength * 0.36;
+        + tangent * warp_x * strength * 0.20
+        + bitangent * warp_y * strength * 0.20;
+    warped.y = n.y;
     return normalize(warped);
+}
+
+float phase_from_cycle(float speed, float cycle_days) {
+    // GTA's sky uses 0.5 + speed * cycleTime / 11 and wraps to [0,1).
+    return fract(0.5 + speed * cycle_days / 11.0);
+}
+
+vec2 directional_phase_offset(vec2 wind_direction, float phase, float cross_bias) {
+    vec2 perpendicular = vec2(-wind_direction.y, wind_direction.x);
+    return wind_direction * phase + perpendicular * phase * cross_bias;
 }
 
 float cloud_mask(vec3 direction) {
@@ -235,7 +193,6 @@ float cloud_mask(vec3 direction) {
         return 0.0;
     }
 
-    float time_seconds = sky.visual_globals.y;
     float coverage = clamp(sky.cloud_params.x, 0.0, 1.0);
     float density = clamp(sky.cloud_params.y, 0.0, 2.0);
     float softness = clamp(sky.cloud_params.z, 0.01, 1.0);
@@ -245,87 +202,119 @@ float cloud_mask(vec3 direction) {
     float macro_scale = max(sky.cloud_shape.x, 0.02);
     float macro_strength = clamp(sky.cloud_shape.y, 0.0, 2.0);
     float detail_strength = clamp(sky.cloud_shape.z, 0.0, 2.0);
-    float micro_strength = clamp(sky.cloud_shape.w, 0.0, 2.0);
+    float edge_strength = clamp(sky.cloud_shape.w, 0.0, 2.0);
     float erosion_strength = clamp(sky.cloud_sculpt.x, 0.0, 2.0);
     float warp_strength = clamp(sky.cloud_sculpt.y, 0.0, 1.0);
     float shape_contrast = clamp(sky.cloud_sculpt.z, 0.25, 4.0);
 
-    vec2 seed = sky.cloud_shear_seed.zw;
-    vec2 wind = sky.cloud_motion.xy * time_seconds;
-    vec2 shear = sky.cloud_shear_seed.xy * time_seconds;
+    // The project field historically named speed is now the generic global
+    // air-wind vector. GTA normalizes global AIR velocity before integrating
+    // the large-cloud phase, so magnitude is deliberately ignored here too.
+    vec2 wind_vector = sky.cloud_motion.xy;
+    float wind_length = length(wind_vector);
+    vec2 wind_direction = wind_length > 0.000001
+        ? wind_vector / wind_length
+        : vec2(1.0, 0.0);
 
-    // Independent layer advection is intentional.  Real cloud fields contain
-    // vertical wind shear; moving every octave with one UV velocity is what
-    // makes procedural skies look like a repeated texture sheet.
-    vec2 layer0_offset = wind + seed;
-    vec2 layer1_offset =
-        wind * vec2(-0.73, 1.19)
-        + shear
+    vec2 seed = sky.cloud_shear_seed.zw;
+    vec2 base_phase = sky.cloud_phase.xy;
+
+    // GTA keeps three additional independently wrapped phases for filler
+    // clouds, the overall detail overlay and edge detail.
+    float cycle_days = sky.cloud_phase.z;
+    float small_phase = phase_from_cycle(sky.cloud_layer_speeds.x, cycle_days);
+    float overall_phase = phase_from_cycle(sky.cloud_layer_speeds.y, cycle_days);
+    float edge_phase = phase_from_cycle(sky.cloud_layer_speeds.z, cycle_days);
+
+    vec2 small_offset =
+        base_phase * 0.37
+        + directional_phase_offset(wind_direction, small_phase, 0.17)
         + seed * vec2(1.37, -0.81)
         + vec2(0.213, -0.377);
-    vec2 layer2_offset =
-        -wind * vec2(0.91, 0.67)
-        + shear * vec2(-0.58, 1.31)
+    vec2 overall_offset =
+        base_phase * 0.61
+        + directional_phase_offset(wind_direction, overall_phase, -0.11)
         + seed * vec2(-0.63, 1.51)
         + vec2(-0.491, 0.281);
+    vec2 edge_offset =
+        base_phase * 0.83
+        + directional_phase_offset(wind_direction, edge_phase, 0.23)
+        + seed * vec2(0.73, 1.19)
+        + vec2(0.347, -0.159);
+
+    // Preserve the optional generic shear channel for non-RSC7 weather
+    // profiles, but keep it secondary to the explicit independent phases.
+    float time_seconds = sky.visual_globals.y;
+    vec2 shear = sky.cloud_shear_seed.xy * time_seconds;
+    overall_offset += shear * 0.11;
+    edge_offset += shear * 0.19;
 
     vec3 warped_direction = warp_cloud_direction(
         direction,
         scale * macro_scale,
-        wind * 0.19 + shear * 0.11 + seed * 0.071,
+        base_phase * 0.19 + seed * 0.071,
         warp_strength
     );
 
-    vec3 layer0 = base_noise_rgb_3d(
+    // Large/base clouds: the authored three-channel Perlin source is moved by
+    // the CPU-integrated wind phase, matching GTA's per-frame noisePhase path.
+    vec3 large_rgb = base_noise_rgb_3d(
         warped_direction,
         scale,
-        layer0_offset
+        base_phase + seed
     );
-    vec3 layer1 = base_noise_rgb_3d(
+    float large_max = max(large_rgb.r, max(large_rgb.g, large_rgb.b));
+    float large_mean = dot(large_rgb, vec3(0.50, 0.31, 0.19));
+    float large_body = mix(large_mean, large_max, 0.68);
+
+    // Small/filler clouds use a separate time-cycle phase instead of sharing
+    // the large-cloud UV transform.
+    vec3 small_rgb = base_noise_rgb_3d(
         warped_direction,
-        scale * 1.41,
-        layer1_offset
+        scale * 1.47,
+        small_offset
     );
+    float small_max = max(small_rgb.r, max(small_rgb.g, small_rgb.b));
+    float small_mean = dot(small_rgb, vec3(0.21, 0.47, 0.32));
+    float small_body = mix(small_mean, small_max, 0.54);
 
-    float layer0_max = max(layer0.r, max(layer0.g, layer0.b));
-    float layer1_max = max(layer1.r, max(layer1.g, layer1.b));
-    float layer0_mean = dot(layer0, vec3(0.50, 0.31, 0.19));
-    float layer1_mean = dot(layer1, vec3(0.21, 0.47, 0.32));
-
-    // "Combine" layers form the broad cloud body, while a slow macro field
-    // breaks the sky into large weather-scale islands rather than equal blobs.
-    float combined0 = mix(layer0_mean, layer0_max, 0.68);
-    float combined1 = mix(layer1_mean, layer1_max, 0.54);
-    float combined = combined0 * 0.74 + combined1 * 0.26;
-
+    // A slow macro field breaks repetition at weather scale. This is a
+    // NewViso generic extension layered under the GTA phase model.
     vec3 macro_rgb = base_noise_rgb_3d(
         direction,
         scale * macro_scale,
-        wind * 0.16 + seed * 0.29 + vec2(0.137, -0.223)
+        base_phase * 0.16 + seed * 0.29 + vec2(0.137, -0.223)
     );
     float macro =
         dot(macro_rgb, vec3(0.44, 0.35, 0.21)) * 0.62
         + max(macro_rgb.r, max(macro_rgb.g, macro_rgb.b)) * 0.38;
+
+    float combined = large_body * 0.78 + small_body * 0.22;
     combined += (macro - 0.5) * macro_strength;
 
-    float detail = detail_noise_3d(
+    // Overall detail and edge detail move on distinct phases, matching GTA's
+    // speedConstants channels instead of advecting every octave together.
+    float overall_detail = detail_noise_3d(
         warped_direction,
         scale * detail_scale,
-        layer1_offset * 1.31 + vec2(0.149, -0.087)
+        overall_offset
     );
-    float micro = detail_noise_3d(
-        warped_direction,
-        scale * detail_scale * 2.67,
-        layer2_offset * 1.77 + vec2(-0.263, 0.197)
-    );
+    float pre_edge_shape =
+        combined - (overall_detail - 0.5) * detail_strength * erosion_strength;
 
-    // GTA's useful principle here is not a literal formula but the separation
-    // of COMBINE and SCULPT layers.  Detail removes material from the broad
-    // mass instead of adding another identical cloud copy.
-    float sculpt =
-        (detail - 0.5) * detail_strength
-        + (micro - 0.5) * micro_strength;
-    float shape = combined - sculpt * erosion_strength;
+    float edge_detail = detail_noise_3d(
+        warped_direction,
+        scale * detail_scale * 2.0,
+        edge_offset
+    );
+    float edge_band = 1.0 - smoothstep(
+        0.12,
+        0.42,
+        abs(pre_edge_shape - mix(0.70, 0.38, coverage))
+    );
+    float shape =
+        pre_edge_shape
+        - (edge_detail - 0.5) * edge_strength * erosion_strength * edge_band;
     shape = (shape - 0.5) * shape_contrast + 0.5;
 
     float threshold = mix(0.84, 0.24, coverage);
@@ -336,11 +325,11 @@ float cloud_mask(vec3 direction) {
     );
     mask = clamp(mask * density, 0.0, 1.0);
 
-    // Preserve distant cloud presence without collapsing the field into a
-    // bright stretched ring at the horizon.
-    float horizon_fade = max(sky.visual_globals.z, 0.001);
-    float horizon_visibility = smoothstep(-0.07, horizon_fade, direction.y);
-    return mask * mix(0.24, 1.0, horizon_visibility);
+    // Never show procedural clouds on the lower hemisphere. The old
+    // triplanar fallback made them visibly wrap underneath the observer.
+    float horizon_fade = max(sky.visual_globals.z, 0.10);
+    float horizon_visibility = smoothstep(0.045, horizon_fade, direction.y);
+    return mask * horizon_visibility;
 }
 
 void main() {
@@ -442,10 +431,19 @@ void main() {
     // critical difference from the old stretched skydome path.
     float cloud = cloud_mask(direction);
     if (cloud > 0.0001) {
-        float time_seconds = sky.visual_globals.y;
+        float cycle_days = sky.cloud_phase.z;
+        vec2 wind_vector = sky.cloud_motion.xy;
+        float wind_length = length(wind_vector);
+        vec2 wind_direction = wind_length > 0.000001
+            ? wind_vector / wind_length
+            : vec2(1.0, 0.0);
+        float lighting_phase = phase_from_cycle(
+            sky.cloud_layer_speeds.y,
+            cycle_days
+        );
         vec2 lighting_offset =
-            sky.cloud_motion.xy * time_seconds * 1.17
-            + sky.cloud_shear_seed.xy * time_seconds * 0.61
+            sky.cloud_phase.xy * 0.73
+            + directional_phase_offset(wind_direction, lighting_phase, -0.11)
             + sky.cloud_shear_seed.zw * 0.37;
         float cloud_detail = detail_noise_3d(
             direction,

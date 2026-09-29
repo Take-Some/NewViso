@@ -2,7 +2,12 @@ mod streaming;
 pub use streaming::*;
 
 use newviso_assets_client::{normalize_logical_path, AssetClient};
-use std::{any::Any, collections::HashMap, marker::PhantomData, sync::Arc};
+use std::{
+    any::Any,
+    collections::{HashMap, VecDeque},
+    marker::PhantomData,
+    sync::Arc,
+};
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct AssetAddress {
@@ -19,7 +24,7 @@ impl AssetAddress {
         // '@' is an entry selector only after the filename extension:
         //   model.asset@entry  -> selector
         //   hi@district.ybn  -> literal filename
-        // RAGE uses '@' inside real basenames, so splitting on every final '@'
+        // RSC7 uses '@' inside real basenames, so splitting on every final '@'
         // corrupts valid YBN/YDR paths before they reach AssetManager.
         let last_at = value.rfind('@');
         let last_sep = value
@@ -61,6 +66,18 @@ impl AssetAddress {
         match &self.entry {
             Some(entry) => format!("{}@{}", self.path, entry),
             None => self.path.clone(),
+        }
+    }
+
+    pub fn matches_canonical(&self, value: &str) -> bool {
+        match self.entry.as_deref() {
+            Some(entry) => {
+                let Some((path, selector)) = value.rsplit_once('@') else {
+                    return false;
+                };
+                path == self.path && selector == entry
+            }
+            None => value == self.path,
         }
     }
 }
@@ -169,7 +186,7 @@ pub struct ResolvedAssetSource {
 
 pub struct ResolvedAsset {
     pub source: ResolvedAssetSource,
-    pub bytes: Vec<u8>,
+    pub bytes: Arc<[u8]>,
     /// Generic dependency addresses supplied by the asset service/source.
     /// ResourceRuntime never derives these from a concrete file format.
     pub dependencies: Vec<AssetAddress>,
@@ -177,27 +194,141 @@ pub struct ResolvedAsset {
 
 pub trait AssetSource: Send + Sync {
     fn resolve(&self, logical_path: &str) -> Result<ResolvedAsset, String>;
+
+    fn invalidate(&self) {}
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct AssetClientSource;
+const ASSET_CLIENT_RAW_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+
+#[derive(Clone)]
+struct CachedRawSource {
+    bytes: Arc<[u8]>,
+    source_revision: u64,
+}
+
+enum RawSourceCacheEntry {
+    Loading,
+    Ready(CachedRawSource),
+}
+
+#[derive(Default)]
+struct RawSourceCacheState {
+    entries: HashMap<String, RawSourceCacheEntry>,
+    order: VecDeque<String>,
+    resident_bytes: u64,
+}
+
+#[derive(Default)]
+struct RawSourceCache {
+    state: std::sync::Mutex<RawSourceCacheState>,
+    wake: std::sync::Condvar,
+}
+
+#[derive(Clone, Default)]
+pub struct AssetClientSource {
+    cache: Arc<RawSourceCache>,
+}
+
+impl std::fmt::Debug for AssetClientSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AssetClientSource")
+            .finish_non_exhaustive()
+    }
+}
 
 impl AssetSource for AssetClientSource {
     fn resolve(&self, logical_path: &str) -> Result<ResolvedAsset, String> {
         let logical_path = normalize_logical_path(logical_path)?;
-        let bytes = AssetClient::new().raw_bytes(&logical_path)?;
-        let hash = blake3::hash(&bytes);
-        Ok(ResolvedAsset {
-            source: ResolvedAssetSource {
-                mount_id: "engine.assets".to_owned(),
-                logical_path,
-                source_revision: u64::from_le_bytes(
-                    hash.as_bytes()[0..8].try_into().expect("BLAKE3 prefix"),
-                ),
-            },
-            bytes,
-            dependencies: Vec::new(),
-        })
+
+        loop {
+            let mut state = self.cache.state.lock().expect("raw source cache poisoned");
+            match state.entries.get(&logical_path) {
+                Some(RawSourceCacheEntry::Ready(cached)) => {
+                    return Ok(ResolvedAsset {
+                        source: ResolvedAssetSource {
+                            mount_id: "engine.assets".to_owned(),
+                            logical_path,
+                            source_revision: cached.source_revision,
+                        },
+                        bytes: Arc::clone(&cached.bytes),
+                        dependencies: Vec::new(),
+                    });
+                }
+                Some(RawSourceCacheEntry::Loading) => {
+                    state = self
+                        .cache
+                        .wake
+                        .wait(state)
+                        .expect("raw source cache poisoned");
+                    drop(state);
+                    continue;
+                }
+                None => {
+                    state
+                        .entries
+                        .insert(logical_path.clone(), RawSourceCacheEntry::Loading);
+                    break;
+                }
+            }
+        }
+
+        let loaded = AssetClient::new().raw_bytes(&logical_path);
+        let mut state = self.cache.state.lock().expect("raw source cache poisoned");
+        match loaded {
+            Ok(bytes) => {
+                let bytes: Arc<[u8]> = Arc::from(bytes);
+                let hash = blake3::hash(bytes.as_ref());
+                let source_revision =
+                    u64::from_le_bytes(hash.as_bytes()[0..8].try_into().expect("BLAKE3 prefix"));
+                let cached = CachedRawSource {
+                    bytes: Arc::clone(&bytes),
+                    source_revision,
+                };
+                state.resident_bytes = state.resident_bytes.saturating_add(bytes.len() as u64);
+                state.order.push_back(logical_path.clone());
+                state
+                    .entries
+                    .insert(logical_path.clone(), RawSourceCacheEntry::Ready(cached));
+
+                while state.resident_bytes > ASSET_CLIENT_RAW_CACHE_BYTES {
+                    let Some(oldest) = state.order.pop_front() else {
+                        break;
+                    };
+                    if oldest == logical_path {
+                        state.order.push_back(oldest);
+                        break;
+                    }
+                    if let Some(RawSourceCacheEntry::Ready(old)) = state.entries.remove(&oldest) {
+                        state.resident_bytes =
+                            state.resident_bytes.saturating_sub(old.bytes.len() as u64);
+                    }
+                }
+                self.cache.wake.notify_all();
+                Ok(ResolvedAsset {
+                    source: ResolvedAssetSource {
+                        mount_id: "engine.assets".to_owned(),
+                        logical_path,
+                        source_revision,
+                    },
+                    bytes,
+                    dependencies: Vec::new(),
+                })
+            }
+            Err(error) => {
+                state.entries.remove(&logical_path);
+                self.cache.wake.notify_all();
+                Err(error)
+            }
+        }
+    }
+
+    fn invalidate(&self) {
+        let mut state = self.cache.state.lock().expect("raw source cache poisoned");
+        state.entries.clear();
+        state.order.clear();
+        state.resident_bytes = 0;
+        self.cache.wake.notify_all();
     }
 }
 
@@ -226,6 +357,9 @@ pub struct ResourceLoad {
     pub source_size_bytes: u64,
 }
 
+pub type ResourcePrepareFn =
+    Arc<dyn Fn(&AssetAddress) -> Result<ResourceLoad, String> + Send + Sync + 'static>;
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct ResourceCacheKey {
     address: AssetAddress,
@@ -234,7 +368,7 @@ struct ResourceCacheKey {
 }
 
 pub struct ResourceManager<S: AssetSource> {
-    source: S,
+    source: Arc<S>,
     vfs_generation: u64,
     decoders: Vec<Arc<dyn ResourceDecoder>>,
     resources: HashMap<ResourceCacheKey, Arc<dyn AssetResource>>,
@@ -244,7 +378,7 @@ pub struct ResourceManager<S: AssetSource> {
 impl<S: AssetSource> ResourceManager<S> {
     pub fn new(source: S) -> Self {
         Self {
-            source,
+            source: Arc::new(source),
             vfs_generation: 1,
             decoders: Vec::new(),
             resources: HashMap::new(),
@@ -267,6 +401,7 @@ impl<S: AssetSource> ResourceManager<S> {
     }
 
     pub fn bump_vfs_generation(&mut self) {
+        self.source.invalidate();
         self.vfs_generation = self.vfs_generation.wrapping_add(1).max(1);
         self.resources.clear();
         self.states.clear();
@@ -309,13 +444,28 @@ impl<S: AssetSource> ResourceManager<S> {
         self.commit_prepared_load(address, prepared)
     }
 
+    /// Immutable decode function for persistent streaming workers.
+    ///
+    /// It intentionally does not mutate or consult the owner-thread resource
+    /// cache. AssetStreamer guarantees one in-flight job per address; the
+    /// completed ResourceLoad is committed into the cache deterministically on
+    /// the owner thread.
+    pub fn prepare_fn(&self) -> ResourcePrepareFn
+    where
+        S: 'static,
+    {
+        let source = Arc::clone(&self.source);
+        let decoders = self.decoders.clone();
+        Arc::new(move |address| prepare_uncached(source.as_ref(), &decoders, address))
+    }
+
     /// Resolve and decode a resource without mutating ResourceManager state.
     ///
     /// AssetStreamer uses this to run independent source I/O + semantic decode
     /// concurrently. The resulting load is committed on the owning thread so
     /// cache/state mutation remains deterministic.
     pub fn prepare_erased_with_info(&self, address: &AssetAddress) -> Result<ResourceLoad, String> {
-        let resolved = self.source.resolve(address.logical_path())?;
+        let resolved = self.source.as_ref().resolve(address.logical_path())?;
         let source_size_bytes = resolved.bytes.len() as u64;
         let cache_key = ResourceCacheKey {
             address: address.clone(),
@@ -333,7 +483,7 @@ impl<S: AssetSource> ResourceManager<S> {
 
         let mut decoded: Option<Arc<dyn AssetResource>> = None;
         for decoder in &self.decoders {
-            match decoder.decode(address, &resolved.bytes) {
+            match decoder.decode(address, resolved.bytes.as_ref()) {
                 Ok(Some(resource)) => {
                     decoded = Some(resource);
                     break;
@@ -353,7 +503,7 @@ impl<S: AssetSource> ResourceManager<S> {
             Arc::new(ResidentAsset {
                 id: AssetId::from_address(address),
                 address: address.clone(),
-                bytes: Arc::from(resolved.bytes),
+                bytes: Arc::clone(&resolved.bytes),
                 dependency_refs: resolved.dependencies,
             })
         });
@@ -443,6 +593,48 @@ impl<S: AssetSource> ResourceManager<S> {
         );
         Err(error)
     }
+}
+
+fn prepare_uncached<S: AssetSource>(
+    source: &S,
+    decoders: &[Arc<dyn ResourceDecoder>],
+    address: &AssetAddress,
+) -> Result<ResourceLoad, String> {
+    let resolved = source.resolve(address.logical_path())?;
+    let source_size_bytes = resolved.bytes.len() as u64;
+
+    let mut decoded: Option<Arc<dyn AssetResource>> = None;
+    for decoder in decoders {
+        match decoder.decode(address, resolved.bytes.as_ref()) {
+            Ok(Some(resource)) => {
+                decoded = Some(resource);
+                break;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return Err(format!(
+                    "resource decoder '{}' failed asset '{}': {error}",
+                    decoder.name(),
+                    address.canonical()
+                ));
+            }
+        }
+    }
+
+    let resource: Arc<dyn AssetResource> = decoded.unwrap_or_else(|| {
+        Arc::new(ResidentAsset {
+            id: AssetId::from_address(address),
+            address: address.clone(),
+            bytes: Arc::clone(&resolved.bytes),
+            dependency_refs: resolved.dependencies,
+        })
+    });
+
+    Ok(ResourceLoad {
+        resource,
+        source: resolved.source,
+        source_size_bytes,
+    })
 }
 
 #[cfg(test)]

@@ -2,6 +2,9 @@ pub(crate) const ID_COPY: usize = 1001;
 pub(crate) const ID_OPEN_FOLDER: usize = 1002;
 pub(crate) const ID_CLOSE: usize = 1003;
 pub(crate) const ID_COPY_ERROR: usize = 1004;
+pub(crate) const ID_RESTART: usize = 1005;
+pub(crate) const ID_RESTART_SAFE: usize = 1006;
+pub(crate) const ID_OPEN_LOGS: usize = 1007;
 
 pub(crate) const ID_TAB_OVERVIEW: usize = 1100;
 pub(crate) const ID_TAB_EXCEPTION: usize = 1101;

@@ -120,6 +120,7 @@ Provider binaries are loaded from the workspace-owned `../pluginsRuntime` direct
 NewViso routes subsystem communication through host services rather than linking old engine source crates into the workspace. Logging also goes through the configured logging provider; engine code does not write directly to stdout or stderr.
 
 For the crate boundaries and dependency rules, see [ARCHITECTURE.md](ARCHITECTURE.md).
+For autonomous-agent/NPC architecture and the remaining production navigation/locomotion work, see [docs/npc-runtime.md](docs/npc-runtime.md).
 
 ## Development checks
 

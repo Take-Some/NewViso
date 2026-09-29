@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 abi_stable.workspace = true
+serde.workspace = true

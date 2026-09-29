@@ -6,6 +6,7 @@ impl<S: AssetSource> AssetStreamer<S> {
     }
     pub fn set_policy(&mut self, policy: StreamingPolicy) -> Result<(), String> {
         policy.validate()?;
+        self.load_pool.ensure_workers(policy.parallel_loads)?;
         self.policy = policy;
         let parents = self.entries.keys().cloned().collect::<Vec<_>>();
         for parent in parents {

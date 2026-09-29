@@ -10,6 +10,31 @@ pub(crate) struct Camera {
     pub(crate) far: f32,
 }
 
+pub(crate) fn previous_hiz_camera_compatible(previous: &Camera, current: &Camera) -> bool {
+    const POSITION_EPSILON: f32 = 1.0e-4;
+    const BASIS_EPSILON: f32 = 1.0e-6;
+    const PROJECTION_EPSILON: f32 = 1.0e-6;
+
+    let previous_forward = previous.target.sub(previous.position).normalized();
+    let current_forward = current.target.sub(current.position).normalized();
+    let previous_up = previous.up.normalized();
+    let current_up = current.up.normalized();
+
+    max_abs_vec3_delta(previous.position, current.position) <= POSITION_EPSILON
+        && max_abs_vec3_delta(previous_forward, current_forward) <= BASIS_EPSILON
+        && max_abs_vec3_delta(previous_up, current_up) <= BASIS_EPSILON
+        && (previous.fov_y_degrees - current.fov_y_degrees).abs() <= PROJECTION_EPSILON
+        && (previous.near - current.near).abs() <= PROJECTION_EPSILON
+        && (previous.far - current.far).abs() <= PROJECTION_EPSILON
+}
+
+fn max_abs_vec3_delta(a: Vec3, b: Vec3) -> f32 {
+    (a.x - b.x)
+        .abs()
+        .max((a.y - b.y).abs())
+        .max((a.z - b.z).abs())
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct OrbitCamera {
     pub(crate) yaw: f32,
@@ -22,17 +47,7 @@ pub(crate) struct OrbitCamera {
     pub(crate) min_pitch_degrees: f32,
     pub(crate) max_pitch_degrees: f32,
     pub(crate) rotate_button: u64,
-}
-
-#[derive(serde::Deserialize)]
-struct OrbitDefaults {
-    rotate_sensitivity: f32,
-    zoom_sensitivity: f32,
-    min_distance: f32,
-    max_distance: f32,
-    min_pitch_degrees: f32,
-    max_pitch_degrees: f32,
-    rotate_button: u64,
+    pub(crate) configured: bool,
 }
 
 impl OrbitCamera {
@@ -41,20 +56,20 @@ impl OrbitCamera {
         let distance = offset.length().max(0.001);
         let yaw = offset.x.atan2(offset.z);
         let pitch = (offset.y / distance).clamp(-1.0, 1.0).asin();
-        let defaults: OrbitDefaults =
-            serde_json::from_str(include_str!("assets/orbit_defaults.json"))
-                .expect("packaged orbit defaults must be valid");
         Self {
             yaw,
             pitch,
             distance,
-            rotate_sensitivity: defaults.rotate_sensitivity,
-            zoom_sensitivity: defaults.zoom_sensitivity,
-            min_distance: defaults.min_distance,
-            max_distance: defaults.max_distance,
-            min_pitch_degrees: defaults.min_pitch_degrees,
-            max_pitch_degrees: defaults.max_pitch_degrees,
-            rotate_button: defaults.rotate_button,
+            // Navigation policy is intentionally absent here. NewViso runtime
+            // injects it from Shared Assets before the platform becomes live.
+            rotate_sensitivity: 0.0,
+            zoom_sensitivity: 0.0,
+            min_distance: 0.0,
+            max_distance: 0.0,
+            min_pitch_degrees: 0.0,
+            max_pitch_degrees: 0.0,
+            rotate_button: u64::MAX,
+            configured: false,
         }
     }
 
@@ -66,6 +81,9 @@ impl OrbitCamera {
     }
 
     pub(crate) fn apply_mouse(&mut self, dx: f32, dy: f32, wheel_y: f32, rotating: bool) {
+        if !self.configured {
+            return;
+        }
         if rotating {
             self.yaw -= dx * self.rotate_sensitivity;
             self.pitch = (self.pitch - dy * self.rotate_sensitivity).clamp(
@@ -94,6 +112,33 @@ impl OrbitCamera {
 mod tests {
     use super::*;
     #[test]
+    fn previous_hiz_requires_effectively_stationary_camera() {
+        let base = Camera {
+            position: Vec3::ZERO,
+            target: Vec3::new(0.0, 0.0, -1.0),
+            up: Vec3::Y,
+            fov_y_degrees: 60.0,
+            near: 0.1,
+            far: 1000.0,
+        };
+        assert!(previous_hiz_camera_compatible(&base, &base));
+
+        let mut jitter = base.clone();
+        jitter.position.x += 0.00001;
+        jitter.target.x += 0.00001;
+        assert!(previous_hiz_camera_compatible(&base, &jitter));
+
+        let mut rotated = base.clone();
+        rotated.target.x += 0.0001;
+        assert!(!previous_hiz_camera_compatible(&base, &rotated));
+
+        let mut translated = base.clone();
+        translated.position.x += 0.001;
+        translated.target.x += 0.001;
+        assert!(!previous_hiz_camera_compatible(&base, &translated));
+    }
+
+    #[test]
     fn pose_updates_preserve_configured_navigation_policy() {
         let mut camera = Camera {
             position: Vec3::new(0.0, 0.0, 5.0),
@@ -109,6 +154,7 @@ mod tests {
         orbit.rotate_button = 3;
         orbit.min_pitch_degrees = -30.0;
         orbit.max_pitch_degrees = 40.0;
+        orbit.configured = true;
         camera.position = Vec3::new(5.0, 0.0, 0.0);
         orbit.sync_pose(&camera);
         assert_eq!(orbit.rotate_sensitivity, 0.02);

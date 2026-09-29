@@ -1,4 +1,5 @@
 use super::*;
+use crate::math::transform_point;
 
 impl SceneWorld {
     pub(crate) fn remove_spatial_entity(&mut self, id: SceneEntityId) {
@@ -285,15 +286,22 @@ impl SceneWorld {
             })
             .collect()
     }
+    pub(crate) fn collision_bounds(&self, id: SceneEntityId) -> Option<SceneBounds> {
+        self.entity(id).map(entity_collision_bounds)
+    }
+
     pub(crate) fn solid_bounds(&self) -> impl Iterator<Item = SceneBounds> + '_ {
         self.entities.iter().filter_map(|entity| {
             (entity.solid
                 && entity.lifecycle == SceneLifecycle::Active
                 && entity.residency == SceneResidency::Resident)
-                .then_some(entity.bounds)
+                .then(|| entity_collision_bounds(entity))
         })
     }
-    pub(crate) fn static_solid_bounds_near(&self, interests: &[SceneBounds]) -> Vec<SceneBounds> {
+    pub(crate) fn static_solid_colliders_near(
+        &self,
+        interests: &[SceneBounds],
+    ) -> Vec<(SceneEntityId, SceneBounds)> {
         if interests.is_empty() {
             return Vec::new();
         }
@@ -315,18 +323,27 @@ impl SceneWorld {
             .into_iter()
             .filter_map(|id| {
                 let entity = self.entity(id)?;
+                let collision_bounds = entity_collision_bounds(entity);
                 if !entity.solid
                     || entity.mobility != SceneMobility::Static
                     || entity.lifecycle != SceneLifecycle::Active
                     || entity.residency != SceneResidency::Resident
                     || !interests
                         .iter()
-                        .any(|interest| bounds_intersect(entity.bounds, *interest))
+                        .any(|interest| bounds_intersect(collision_bounds, *interest))
                 {
                     return None;
                 }
-                Some(entity.bounds)
+                Some((id, collision_bounds))
             })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn static_solid_bounds_near(&self, interests: &[SceneBounds]) -> Vec<SceneBounds> {
+        self.static_solid_colliders_near(interests)
+            .into_iter()
+            .map(|(_, bounds)| bounds)
             .collect()
     }
 
@@ -356,6 +373,37 @@ impl SceneWorld {
     }
     pub(crate) fn focus(&self) -> SceneFocus {
         self.focus
+    }
+}
+
+fn entity_collision_bounds(entity: &SceneEntity) -> SceneBounds {
+    let Some(local) = entity.collision_local_bounds else {
+        return entity.bounds;
+    };
+
+    let mut world_min = Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
+    let mut world_max = Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+    for x in [local.min.x, local.max.x] {
+        for y in [local.min.y, local.max.y] {
+            for z in [local.min.z, local.max.z] {
+                let point = transform_point(
+                    Vec3::new(x, y, z),
+                    entity.transform.scale,
+                    entity.transform.rotation_degrees,
+                    entity.transform.position,
+                );
+                world_min.x = world_min.x.min(point.x);
+                world_min.y = world_min.y.min(point.y);
+                world_min.z = world_min.z.min(point.z);
+                world_max.x = world_max.x.max(point.x);
+                world_max.y = world_max.y.max(point.y);
+                world_max.z = world_max.z.max(point.z);
+            }
+        }
+    }
+    SceneBounds {
+        min: world_min,
+        max: world_max,
     }
 }
 

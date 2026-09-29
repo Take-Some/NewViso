@@ -1,6 +1,87 @@
 use super::*;
 
 impl Scene3dRuntime {
+    pub(super) fn build_particle_vertices(&self) -> (Vec<f32>, u32, u32) {
+        if self.particles.is_empty() {
+            return (Vec::new(), 0, 0);
+        }
+
+        let forward = self.camera.target.sub(self.camera.position).normalized();
+        let camera_right = forward.cross(self.camera.up).normalized();
+        let camera_up = camera_right.cross(forward).normalized();
+        let normal = forward.mul(-1.0);
+
+        let mut alpha = self
+            .particles
+            .iter()
+            .filter(|particle| particle.desc.blend == SceneParticleBlend::Alpha)
+            .collect::<Vec<_>>();
+        alpha.sort_by(|a, b| {
+            let da = Vec3::new(a.desc.position[0], a.desc.position[1], a.desc.position[2])
+                .sub(self.camera.position)
+                .dot(forward);
+            let db = Vec3::new(b.desc.position[0], b.desc.position[1], b.desc.position[2])
+                .sub(self.camera.position)
+                .dot(forward);
+            db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let additive = self
+            .particles
+            .iter()
+            .filter(|particle| particle.desc.blend == SceneParticleBlend::Additive)
+            .collect::<Vec<_>>();
+
+        let mut out = Vec::with_capacity(self.particles.len() * 6 * FLOATS_PER_VERTEX);
+        let append = |particle: &SceneRuntimeParticle, out: &mut Vec<f32>| {
+            let t = (particle.age_seconds / particle.desc.lifetime_seconds).clamp(0.0, 1.0);
+            let size = [
+                particle.desc.size[0] + (particle.desc.end_size[0] - particle.desc.size[0]) * t,
+                particle.desc.size[1] + (particle.desc.end_size[1] - particle.desc.size[1]) * t,
+            ];
+            let color = std::array::from_fn(|i| {
+                particle.desc.color[i] + (particle.desc.end_color[i] - particle.desc.color[i]) * t
+            });
+            let angle = particle.desc.rotation_degrees.to_radians();
+            let c = angle.cos();
+            let s = angle.sin();
+            let right = camera_right.mul(c).add(camera_up.mul(s));
+            let up = camera_up.mul(c).sub(camera_right.mul(s));
+            let center = Vec3::new(
+                particle.desc.position[0],
+                particle.desc.position[1],
+                particle.desc.position[2],
+            );
+            let hx = size[0] * 0.5;
+            let hy = size[1] * 0.5;
+            let corners = [
+                center.sub(right.mul(hx)).sub(up.mul(hy)),
+                center.add(right.mul(hx)).sub(up.mul(hy)),
+                center.add(right.mul(hx)).add(up.mul(hy)),
+                center.sub(right.mul(hx)).add(up.mul(hy)),
+            ];
+            for (corner, uv) in [
+                (0usize, [0.0, 1.0]),
+                (1, [1.0, 1.0]),
+                (2, [1.0, 0.0]),
+                (0, [0.0, 1.0]),
+                (2, [1.0, 0.0]),
+                (3, [0.0, 0.0]),
+            ] {
+                geometry::append_particle_vertex(out, corners[corner], normal, color, uv);
+            }
+        };
+
+        for particle in &alpha {
+            append(particle, &mut out);
+        }
+        let alpha_vertices = u32::try_from(alpha.len().saturating_mul(6)).unwrap_or(u32::MAX);
+        for particle in &additive {
+            append(particle, &mut out);
+        }
+        let additive_vertices = u32::try_from(additive.len().saturating_mul(6)).unwrap_or(u32::MAX);
+        (out, alpha_vertices, additive_vertices)
+    }
+
     pub(super) fn build_lens_flare_vertices(&self, aspect: f32) -> Vec<f32> {
         let mut out = Vec::new();
         if self.lens_flares.is_empty() {
