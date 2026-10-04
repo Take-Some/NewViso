@@ -160,11 +160,25 @@ pub struct JointAnimationTrack {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct ModelAnimationMoverTrack {
+    /// Entity-local mover translation authored separately from skeleton joints.
+    pub translations: Vec<AnimationVec3Key>,
+    /// Entity-local mover rotation authored separately from skeleton joints.
+    pub rotations: Vec<AnimationQuatKey>,
+    pub translation_interpolation: AnimationInterpolation,
+    pub rotation_interpolation: AnimationInterpolation,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct ModelAnimationClip {
     pub name: String,
     pub duration_seconds: f32,
     pub looping: bool,
     pub tracks: Vec<JointAnimationTrack>,
+    /// Optional GTA/RSC7 mover extraction (track 5 position + track 6 rotation).
+    /// This remains opt-in at playback time so ordinary controller-driven
+    /// locomotion never moves the entity root implicitly.
+    pub mover: Option<ModelAnimationMoverTrack>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -207,6 +221,11 @@ pub struct ModelFragmentPart {
     pub role: ModelFragmentPartRole,
     pub bone_tag: Option<u32>,
     pub group_index: Option<u16>,
+    /// Optional semantic parent inside the fragment presentation hierarchy.
+    /// This is deliberately separate from the authored skeleton: vehicle
+    /// fragments are baked into rigid semantic mesh groups so SceneModelPartPose
+    /// can drive them without enabling full skeletal skinning.
+    pub parent_part_index: Option<u32>,
     pub wheel_slot: Option<ModelWheelSlot>,
     pub mesh_names: Vec<String>,
     /// Rest transform in model-local NewViso Y-up space.
@@ -215,10 +234,34 @@ pub struct ModelFragmentPart {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct ModelFragmentLight {
+    pub index: u32,
+    pub part_index: Option<u32>,
+    pub bone_index: u16,
+    pub bone_name: Option<String>,
+    pub light_type: u8,
+    pub group_id: u8,
+    pub position: [f32; 3],
+    pub direction: [f32; 3],
+    pub tangent: [f32; 3],
+    pub color: [f32; 3],
+    pub intensity: f32,
+    pub falloff: f32,
+    pub falloff_exponent: f32,
+    pub flags: u32,
+    pub time_flags: u32,
+    pub cone_inner_degrees: f32,
+    pub cone_outer_degrees: f32,
+    pub corona_intensity: f32,
+    pub volume_intensity: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct ModelFragmentMetadata {
     pub bound_center: [f32; 3],
     pub bound_radius: f32,
     pub parts: Vec<ModelFragmentPart>,
+    pub lights: Vec<ModelFragmentLight>,
 }
 
 #[derive(Clone, Debug)]

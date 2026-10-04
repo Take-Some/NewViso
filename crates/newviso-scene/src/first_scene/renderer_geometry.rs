@@ -1,22 +1,37 @@
 use super::*;
 
 impl Scene3dRuntime {
-    pub(super) fn build_particle_vertices(&self) -> (Vec<f32>, u32, u32) {
-        if self.particles.is_empty() {
-            return (Vec::new(), 0, 0);
+    pub(super) fn build_particle_vertices(&mut self) -> (Vec<f32>, Vec<ParticleDrawBatch>) {
+        self.particle_interior_stats = ParticleInteriorStats::default();
+        if self.particles.is_empty() && self.physical_particles.is_empty() {
+            return (Vec::new(), Vec::new());
         }
 
         let forward = self.camera.target.sub(self.camera.position).normalized();
         let camera_right = forward.cross(self.camera.up).normalized();
         let camera_up = camera_right.cross(forward).normalized();
-        let normal = forward.mul(-1.0);
-
+        let interiors = self.particle_interior_volumes();
+        let mut interior_stats = ParticleInteriorStats::default();
+        let mut groups = BTreeMap::<u64, [f32; 3]>::new();
+        let mut previous = BTreeMap::<usize, [f32; 3]>::new();
+        for (i, particle) in self.particles.iter().enumerate() {
+            if particle.age_seconds < 0.0 {
+                continue;
+            }
+            if let Some(group) = particle.desc.style.as_ref().and_then(|s| s.trail_group) {
+                if let Some(p) = groups.insert(group, particle.desc.position) {
+                    previous.insert(i, p);
+                }
+            }
+        }
         let mut alpha = self
             .particles
             .iter()
-            .filter(|particle| particle.desc.blend == SceneParticleBlend::Alpha)
+            .chain(self.physical_particles.iter())
+            .enumerate()
+            .filter(|(_, p)| p.age_seconds >= 0.0 && p.desc.blend == SceneParticleBlend::Alpha)
             .collect::<Vec<_>>();
-        alpha.sort_by(|a, b| {
+        alpha.sort_by(|(_, a), (_, b)| {
             let da = Vec3::new(a.desc.position[0], a.desc.position[1], a.desc.position[2])
                 .sub(self.camera.position)
                 .dot(forward);
@@ -28,58 +43,56 @@ impl Scene3dRuntime {
         let additive = self
             .particles
             .iter()
-            .filter(|particle| particle.desc.blend == SceneParticleBlend::Additive)
-            .collect::<Vec<_>>();
+            .chain(self.physical_particles.iter())
+            .enumerate()
+            .filter(|(_, p)| p.age_seconds >= 0.0 && p.desc.blend == SceneParticleBlend::Additive);
+        let mut out = Vec::with_capacity(
+            (self.particles.len() + self.physical_particles.len()) * 6 * FLOATS_PER_VERTEX,
+        );
 
-        let mut out = Vec::with_capacity(self.particles.len() * 6 * FLOATS_PER_VERTEX);
-        let append = |particle: &SceneRuntimeParticle, out: &mut Vec<f32>| {
-            let t = (particle.age_seconds / particle.desc.lifetime_seconds).clamp(0.0, 1.0);
-            let size = [
-                particle.desc.size[0] + (particle.desc.end_size[0] - particle.desc.size[0]) * t,
-                particle.desc.size[1] + (particle.desc.end_size[1] - particle.desc.size[1]) * t,
-            ];
-            let color = std::array::from_fn(|i| {
-                particle.desc.color[i] + (particle.desc.end_color[i] - particle.desc.color[i]) * t
+        let mut batches = Vec::<ParticleDrawBatch>::new();
+        for (i, particle) in alpha.into_iter().chain(additive) {
+            let material = particle.desc.style.as_ref().and_then(|style| {
+                style
+                    .texture_ref
+                    .as_ref()
+                    .map(|reference| (reference.clone(), style.diffuse_mode))
             });
-            let angle = particle.desc.rotation_degrees.to_radians();
-            let c = angle.cos();
-            let s = angle.sin();
-            let right = camera_right.mul(c).add(camera_up.mul(s));
-            let up = camera_up.mul(c).sub(camera_right.mul(s));
-            let center = Vec3::new(
-                particle.desc.position[0],
-                particle.desc.position[1],
-                particle.desc.position[2],
+            let first_vertex = (out.len() / FLOATS_PER_VERTEX) as u32;
+            particle_geometry::append_particle_visual(
+                particle,
+                camera_right,
+                camera_up,
+                forward,
+                previous.get(&i).copied(),
+                &mut out,
             );
-            let hx = size[0] * 0.5;
-            let hy = size[1] * 0.5;
-            let corners = [
-                center.sub(right.mul(hx)).sub(up.mul(hy)),
-                center.add(right.mul(hx)).sub(up.mul(hy)),
-                center.add(right.mul(hx)).add(up.mul(hy)),
-                center.sub(right.mul(hx)).add(up.mul(hy)),
-            ];
-            for (corner, uv) in [
-                (0usize, [0.0, 1.0]),
-                (1, [1.0, 1.0]),
-                (2, [1.0, 0.0]),
-                (0, [0.0, 1.0]),
-                (2, [1.0, 0.0]),
-                (3, [0.0, 0.0]),
-            ] {
-                geometry::append_particle_vertex(out, corners[corner], normal, color, uv);
+            clip_particle_vertices(
+                &mut out,
+                first_vertex as usize * FLOATS_PER_VERTEX,
+                &interiors,
+                &mut interior_stats,
+            );
+            let vertex_count = (out.len() / FLOATS_PER_VERTEX) as u32 - first_vertex;
+            if vertex_count == 0 {
+                continue;
             }
-        };
-
-        for particle in &alpha {
-            append(particle, &mut out);
+            if let Some(last) = batches
+                .last_mut()
+                .filter(|last| last.blend == particle.desc.blend && last.material == material)
+            {
+                last.vertex_count += vertex_count;
+            } else {
+                batches.push(ParticleDrawBatch {
+                    first_vertex,
+                    vertex_count,
+                    blend: particle.desc.blend,
+                    material,
+                });
+            }
         }
-        let alpha_vertices = u32::try_from(alpha.len().saturating_mul(6)).unwrap_or(u32::MAX);
-        for particle in &additive {
-            append(particle, &mut out);
-        }
-        let additive_vertices = u32::try_from(additive.len().saturating_mul(6)).unwrap_or(u32::MAX);
-        (out, alpha_vertices, additive_vertices)
+        self.particle_interior_stats = interior_stats;
+        (out, batches)
     }
 
     pub(super) fn build_lens_flare_vertices(&self, aspect: f32) -> Vec<f32> {
@@ -178,7 +191,8 @@ impl Scene3dRuntime {
     pub(super) fn vertex_capacity(&self) -> u32 {
         (self.cubes.len() + self.render_policy.runtime_cube_capacity) as u32 * CUBE_VERTEX_COUNT
             + self.render_policy.transient_sphere_capacity as u32 * geometry::SPHERE_VERTEX_COUNT
-            + self.render_policy.overlay_quad_capacity as u32 * 6
+            + self.render_policy.overlay_quad_capacity as u32
+                * (6 + geometry::SURFACE_MARK_VERTEX_COUNT)
     }
     pub(super) fn shadow_vertex_capacity(&self) -> u32 {
         (self.cubes.len() + self.render_policy.runtime_cube_capacity) as u32 * CUBE_VERTEX_COUNT
@@ -187,6 +201,7 @@ impl Scene3dRuntime {
     pub(super) fn vertex_count(&self) -> u32 {
         self.frame_plan.visible_render_slots.len() as u32 * CUBE_VERTEX_COUNT
             + self.transient_spheres.len() as u32 * geometry::SPHERE_VERTEX_COUNT
+            + self.surface_marks.len() as u32 * geometry::SURFACE_MARK_VERTEX_COUNT
             + self.overlay_quads.len() as u32 * 6
     }
     pub(super) fn shadow_vertex_count(&self) -> u32 {
@@ -247,6 +262,16 @@ impl Scene3dRuntime {
                     sphere.marker_direction[2],
                 ),
                 sphere.marker_threshold,
+                &mut out,
+            );
+        }
+
+        for mark in &self.surface_marks {
+            geometry::append_surface_mark_vertices(
+                Vec3::new(mark.position[0], mark.position[1], mark.position[2]),
+                Vec3::new(mark.normal[0], mark.normal[1], mark.normal[2]),
+                mark.radius,
+                mark.color,
                 &mut out,
             );
         }

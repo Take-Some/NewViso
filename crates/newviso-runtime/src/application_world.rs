@@ -12,6 +12,8 @@ pub(super) struct PresentationState {
     entity_id: Option<u64>,
     materializations: u64,
     dematerializations: u64,
+    was_grounded: Option<bool>,
+    land_until_seconds: f64,
 }
 
 // JSON null represents the supported unlimited streaming distance.
@@ -51,6 +53,9 @@ impl WorldActorPresentationBinding {
                     locomotion.idle_clip.as_deref(),
                     locomotion.walk_clip.as_deref(),
                     locomotion.run_clip.as_deref(),
+                    locomotion.jump_clip.as_deref(),
+                    locomotion.fall_clip.as_deref(),
+                    locomotion.land_clip.as_deref(),
                 ]
                 .into_iter()
                 .flatten()
@@ -89,12 +94,48 @@ fn heading_degrees_from_velocity(velocity: [f32; 3]) -> Option<f32> {
 fn sample_locomotion(
     binding: &WorldActorPresentationBinding,
     velocity: [f32; 3],
+    grounded: Option<bool>,
+    landing_latched: bool,
 ) -> (f32, f32, &'static str, Option<String>) {
     let horizontal_speed = (velocity[0] * velocity[0] + velocity[2] * velocity[2]).sqrt();
     let heading = heading_degrees_from_velocity(velocity).unwrap_or(0.0);
     let Some(locomotion) = &binding.locomotion else {
         return (horizontal_speed, heading, "none", None);
     };
+
+    if landing_latched {
+        if let Some(clip) = locomotion.land_clip.clone() {
+            return (horizontal_speed, heading, "land", Some(clip));
+        }
+    }
+
+    if grounded == Some(false) {
+        if velocity[1] > 0.10 {
+            return (
+                horizontal_speed,
+                heading,
+                "jump",
+                locomotion
+                    .jump_clip
+                    .clone()
+                    .or_else(|| locomotion.fall_clip.clone())
+                    .or_else(|| locomotion.run_clip.clone())
+                    .or_else(|| locomotion.walk_clip.clone()),
+            );
+        }
+        return (
+            horizontal_speed,
+            heading,
+            "fall",
+            locomotion
+                .fall_clip
+                .clone()
+                .or_else(|| locomotion.jump_clip.clone())
+                .or_else(|| locomotion.run_clip.clone())
+                .or_else(|| locomotion.walk_clip.clone()),
+        );
+    }
+
     if horizontal_speed >= locomotion.run_speed_threshold {
         (
             horizontal_speed,
@@ -125,10 +166,13 @@ fn sample_locomotion(
 impl EngineApplication {
     pub(super) fn sync_world_actor_presentations(&mut self) -> Result<(), String> {
         const ANIMATION_OWNER: &str = "engine.animation.world_actor";
+        const LAND_PRESENTATION_SECONDS: f64 = 0.34;
+        let now_seconds = self.elapsed_seconds;
         let actor_views = self.living_world.actor_runtime_views();
         let mut animation_actions = Vec::<(u64, Option<SceneAnimationBinding>)>::new();
         for (actor_id, binding) in &self.world_actor_presentations {
             let view = actor_views.iter().find(|view| &view.id == actor_id);
+            let physical_state = self.physical_characters.state(actor_id);
             let active = view.is_some_and(|view| {
                 view.enabled
                     && binding
@@ -163,17 +207,36 @@ impl EngineApplication {
                 state.speed = 0.0;
                 state.locomotion_state = "abstract".to_owned();
                 state.animation_clip = None;
+                state.was_grounded = None;
+                state.land_until_seconds = 0.0;
                 continue;
             }
 
             let view = view.expect("active presentation has an actor");
             let position = std::array::from_fn(|i| view.position[i] + binding.position_offset[i]);
-            let (speed, velocity_heading, locomotion_state, animation_clip) =
-                sample_locomotion(binding, view.velocity);
+            let grounded = physical_state.map(|physical| physical.grounded);
+            if state.was_grounded == Some(false) && grounded == Some(true) {
+                if binding
+                    .locomotion
+                    .as_ref()
+                    .and_then(|locomotion| locomotion.land_clip.as_ref())
+                    .is_some()
+                {
+                    state.land_until_seconds = now_seconds + LAND_PRESENTATION_SECONDS;
+                }
+            } else if grounded == Some(false) {
+                state.land_until_seconds = 0.0;
+            }
+            let landing_latched = grounded == Some(true) && now_seconds < state.land_until_seconds;
+            let resolved_velocity = physical_state
+                .map(|physical| physical.velocity)
+                .unwrap_or(view.velocity);
+            let (speed, velocity_heading, mut locomotion_state, mut animation_clip) =
+                sample_locomotion(binding, resolved_velocity, grounded, landing_latched);
             let facing_velocity = self
                 .physical_characters
                 .presentation_facing_velocity(actor_id)
-                .unwrap_or(view.velocity);
+                .unwrap_or(resolved_velocity);
             let heading =
                 heading_degrees_from_velocity(facing_velocity).unwrap_or(velocity_heading);
             let mut rotation_degrees = binding.rotation_degrees;
@@ -187,6 +250,16 @@ impl EngineApplication {
                 } else if state.materialized {
                     rotation_degrees[1] = state.rotation_degrees[1];
                 }
+            }
+
+            let intent = self.agents.presentation(actor_id, view.position);
+            if let Some(heading) = intent.heading_degrees {
+                rotation_degrees[1] = binding.rotation_degrees[1] + heading;
+            }
+            if let Some(clip) = intent.clip_ref { animation_clip = Some(clip); locomotion_state = "action"; }
+            if let Some(ped) = self.peds.state(actor_id).filter(|p| p.dead) {
+                animation_clip = ped.profile.death_clip.clone().or(animation_clip);
+                locomotion_state = "dead";
             }
 
             let created =
@@ -257,16 +330,21 @@ impl EngineApplication {
                                 clip_ref: clip_ref.clone(),
                                 playback_rate: 1.0,
                                 restart_if_same: false,
+                                start_time_seconds: 0.0,
+                                blend_seconds: 0.18,
+                                bound_elapsed_seconds: 0.0,
+                                apply_mover: false,
                             }),
                     ));
                 }
             }
             state.position = position;
             state.rotation_degrees = rotation_degrees;
-            state.velocity = view.velocity;
+            state.velocity = resolved_velocity;
             state.speed = speed;
             state.locomotion_state = locomotion_state.to_owned();
             state.animation_clip = animation_clip;
+            state.was_grounded = grounded;
             state.materialized = true;
         }
 
@@ -305,6 +383,10 @@ impl EngineApplication {
                     .presentation_facing_velocity(actor),
                 "locomotion_state": state.map_or("none", |s| s.locomotion_state.as_str()),
                 "animation_clip": state.and_then(|s| s.animation_clip.as_deref()),
+                "grounded": self.physical_characters.state(actor).map(|s| s.grounded),
+                "air_phase": self.physical_characters.state(actor).map(|s| {
+                    if s.grounded { "grounded" } else if s.velocity[1] > 0.10 { "jump" } else { "fall" }
+                }),
                 "animation_rate_hz": binding.locomotion.as_ref().map(|v| v.animation_rate_hz),
                 "materializations": state.map_or(0, |s| s.materializations),
                 "dematerializations": state.map_or(0, |s| s.dematerializations)})
@@ -394,6 +476,9 @@ mod tests {
                 idle_clip: Some("idle".to_owned()),
                 walk_clip: Some("walk".to_owned()),
                 run_clip: Some("run".to_owned()),
+                jump_clip: Some("jump".to_owned()),
+                fall_clip: Some("fall".to_owned()),
+                land_clip: Some("land".to_owned()),
                 walk_speed_threshold: 0.15,
                 run_speed_threshold: 3.5,
                 animation_rate_hz: 30.0,
@@ -406,22 +491,37 @@ mod tests {
     fn locomotion_selects_idle_walk_run_and_heading() {
         let binding = locomotion_binding();
 
-        let (speed, heading, state, clip) = sample_locomotion(&binding, [0.0, 0.0, 0.0]);
+        let (speed, heading, state, clip) =
+            sample_locomotion(&binding, [0.0, 0.0, 0.0], Some(true), false);
         assert_eq!(speed, 0.0);
         assert_eq!(heading, 0.0);
         assert_eq!(state, "idle");
         assert_eq!(clip.as_deref(), Some("idle"));
 
-        let (speed, heading, state, clip) = sample_locomotion(&binding, [2.0, 0.0, 0.0]);
+        let (speed, heading, state, clip) =
+            sample_locomotion(&binding, [2.0, 0.0, 0.0], Some(true), false);
         assert!((speed - 2.0).abs() < 1.0e-6);
         assert!((heading - 90.0).abs() < 1.0e-5);
         assert_eq!(state, "walk");
         assert_eq!(clip.as_deref(), Some("walk"));
 
-        let (speed, _, state, clip) = sample_locomotion(&binding, [0.0, 0.0, -4.0]);
+        let (speed, _, state, clip) =
+            sample_locomotion(&binding, [0.0, 0.0, -4.0], Some(true), false);
         assert!((speed - 4.0).abs() < 1.0e-6);
         assert_eq!(state, "run");
         assert_eq!(clip.as_deref(), Some("run"));
+
+        let (_, _, state, clip) = sample_locomotion(&binding, [0.0, 4.5, 0.0], Some(false), false);
+        assert_eq!(state, "jump");
+        assert_eq!(clip.as_deref(), Some("jump"));
+
+        let (_, _, state, clip) = sample_locomotion(&binding, [0.0, -2.0, 0.0], Some(false), false);
+        assert_eq!(state, "fall");
+        assert_eq!(clip.as_deref(), Some("fall"));
+
+        let (_, _, state, clip) = sample_locomotion(&binding, [0.0, 0.0, 0.0], Some(true), true);
+        assert_eq!(state, "land");
+        assert_eq!(clip.as_deref(), Some("land"));
     }
 
     #[test]

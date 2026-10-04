@@ -161,9 +161,9 @@ pub(crate) struct ActorUpdateTicket {
     pub(crate) fixed_tick: u64,
 }
 
-pub(crate) fn actor_tier(
+pub(crate) fn actor_tier<'a>(
     position: [f32; 3],
-    observers: &[WorldObserverDesc],
+    observers: impl IntoIterator<Item = &'a WorldObserverDesc>,
     transient_observers: &[[f32; 3]],
     previous_tier: SimulationTier,
     policy: &WorldSimulationPolicyDesc,

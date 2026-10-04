@@ -90,6 +90,10 @@ impl WorldTravelRequestDesc {
 pub(crate) struct WorldTravelRecord {
     pub(crate) actor_id: String,
     pub(crate) route: Vec<String>,
+    #[serde(default)]
+    pub(crate) target_position: Option<[f32; 3]>,
+    #[serde(default = "default_arrival_radius")]
+    pub(crate) arrival_radius: f32,
     pub(crate) next_waypoint_index: usize,
     pub(crate) destination_node: String,
     pub(crate) speed: f32,
@@ -99,6 +103,8 @@ pub(crate) struct WorldTravelRecord {
     pub(crate) last_update_world_seconds: f64,
     pub(crate) distance_travelled: f64,
 }
+
+fn default_arrival_radius() -> f32 { 0.18 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct WorldTravelCompletion {

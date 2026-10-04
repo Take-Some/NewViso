@@ -6,9 +6,9 @@ use crate::{
     GpuVisibilityIndirectCompactArgsV2, GpuVisibilityIndirectCullArgs, IndexFormat, PipelineDesc,
     PipelineId, PipelineWarmupDesc, PipelineWarmupReport, RectI32, RenderBackendCapabilities,
     RenderDiagnosticsSnapshot, RenderDrawListKind, RenderGraphPassKind, RenderLight,
-    RenderTargetDesc, RenderTargetId, RenderWorkBudget, SamplerDesc, SamplerId, ShaderDesc,
-    ShaderId, ShaderRuntimeCacheStats, TextureDesc, TextureId, TextureResidencySnapshot, UiTexId,
-    UploadPumpDesc, UploadPumpReport, Viewport,
+    RenderLightingEnvironment, RenderTargetDesc, RenderTargetId, RenderWorkBudget, SamplerDesc,
+    SamplerId, ShaderDesc, ShaderId, ShaderRuntimeCacheStats, TextureDesc, TextureId,
+    TextureResidencySnapshot, UiTexId, UploadPumpDesc, UploadPumpReport, Viewport,
 };
 use serde::{Deserialize, Serialize};
 
@@ -70,6 +70,8 @@ pub enum RenderCommand {
     /// Authoritative scene-local lights for the current frame. The renderer
     /// owns GPU classification/tile/cluster list construction from this packet.
     SetFrameLights(Vec<RenderLight>),
+    /// Authoritative scene ambient + primary directional lighting for deferred resolve.
+    SetFrameLighting(RenderLightingEnvironment),
     DiscardRecordedCommands,
     EndFrame,
     Resize {

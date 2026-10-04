@@ -198,3 +198,22 @@ and detail Texture2D resources projected across XZ/XY/ZY plus a vertical height
 profile. This is still spatial density, not a 2D cloud carrier.
 
 See docs/sky-cloud-pipeline.md.
+
+## Navigation and renderer implementation ownership
+
+Navigation keeps the public runtime and descriptions separate from incremental
+tile ingestion, edge/off-mesh connectivity, path requests and geometry. A derived
+polygon broad phase owns local endpoint candidates; exact triangle distance and
+obstacle policy remain in search. Oversized faces and large query windows retain
+complete coverage. No new format, provider ABI, or project policy is introduced.
+
+Renderer resource creation, shader/pipeline construction, geometry uploads,
+material residency, draw-list construction, graph declaration, pass recording and
+teardown have separate modules under `first_scene/`. Frame orchestration owns an
+acquisition scope: after acquisition every fallible exit aborts the frame until
+successful finalization. Pipeline invariants and material/vertex binding state
+have one shared implementation.
+
+See [the 2026-10-04 refactor report](docs/architecture-refactor-2026-10-04.md)
+for module ownership, reproducible endpoint benchmarks, verification, and the
+remaining repository/deployed-provider findings.

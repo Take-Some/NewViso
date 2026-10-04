@@ -9,6 +9,7 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
 
     let mut state = EngineState::default();
     let mut bootstrap_providers = Vec::<RunningProvider>::new();
+    let mut application_libraries = Vec::<newviso_provider_runtime::ProviderLibraryGuard>::new();
 
     let result = (|| -> Result<RuntimeReport, String> {
         log_bootstrap(&bootstrap);
@@ -77,6 +78,23 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
         let providers = probe_directory(&bootstrap.provider_dir)
             .map_err(|error| format!("provider discovery failed: {error}"))?;
         log_provider_inventory(&providers);
+        // Native gamepad drivers may leave process-lived worker threads behind
+        // even after input provider shutdown. Retain code before lifecycle probes
+        // too, so those workers never resume into an unloaded DLL.
+        let input_provider = require_provider(&providers, &roles.input)?;
+        newviso_provider_runtime::ProviderLibraryGuard::load(&input_provider.path)?
+            .retain_for_process_lifetime();
+        // Renderer and platform modules are owned by the application/platform
+        // loop and can be dropped before the bootstrap registry is released.
+        // Keep their DLL code resident until the last host ABI object is gone.
+        for provider in providers
+            .iter()
+            .filter(|provider| provider.id == roles.renderer || provider.id == roles.platform)
+        {
+            application_libraries.push(newviso_provider_runtime::ProviderLibraryGuard::load(
+                &provider.path,
+            )?);
+        }
         bugtrap::set_context("safe_mode", bootstrap.safe_mode.to_string());
         bugtrap::set_context(
             "provider_inventory",
@@ -170,7 +188,14 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
 
         let resolved_capabilities = if let Some(project) = &project {
             mount_project_files(project, &bootstrap.assets_dir)?;
-            let resolved = resolve_project_capabilities(project, &providers, bootstrap.safe_mode)?;
+            let effective_runtime =
+                load_effective_runtime_settings(project, &bootstrap.assets_dir)?;
+            let resolved = resolve_project_capabilities(
+                project,
+                &providers,
+                bootstrap.safe_mode,
+                &effective_runtime,
+            )?;
             activate_project_capabilities(&resolved, &mut bootstrap_providers)?;
             resolved
         } else {
@@ -304,8 +329,12 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
             );
         }
 
-        if let Some(sky_config) = environment.sky.as_ref() {
-            scene.set_sky_dome(load_environment_sky(sky_config)?)?;
+        // Normal worlds install their sky through the mandatory Shared lifecycle.
+        // Safe mode intentionally suppresses scripts, so it retains a native fallback.
+        if bootstrap.safe_mode {
+            if let Some(sky_config) = environment.sky.as_ref() {
+                scene.set_sky_dome(load_environment_sky(sky_config)?)?;
+            }
         }
         if !environment.atmospheric_clouds.layers.is_empty() {
             scene.set_atmospheric_clouds(load_environment_atmospheric_clouds(
@@ -450,8 +479,15 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
     bugtrap::checkpoint("host.registry.release");
     host::reset();
 
+    // Release provider objects in reverse activation order. Their destructors
+    // may still refer to dependencies loaded earlier (such as logging).
     bugtrap::checkpoint("providers.unload");
-    bootstrap_providers.clear();
+    while let Some(provider) = bootstrap_providers.pop() {
+        drop(provider);
+    }
+    while let Some(library) = application_libraries.pop() {
+        drop(library);
+    }
 
     result
 }

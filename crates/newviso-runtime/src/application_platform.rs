@@ -82,6 +82,12 @@ impl PlatformApplication for EngineApplication {
         if !dt.is_finite() || dt < 0.0 {
             return Err("frame delta must be finite and non-negative".into());
         }
+
+        if !self.startup_map_ready {
+            self.pump_startup_map_loading(surface)?;
+            return Ok(false);
+        }
+
         self.world_save_allowed = false;
         self.elapsed_seconds += f64::from(dt);
         let perf_frame = self.asset_streamer.stats().frame;
@@ -160,7 +166,10 @@ impl PlatformApplication for EngineApplication {
             // and break policy; physics owns the dynamic body created at the
             // exact transition.
             for contact in damage_contacts {
-                let _ = self.apply_vehicle_contact_damage(contact)?;
+                if self.vehicles.contains(contact.target) {
+                    let _ = self.apply_vehicle_contact_damage(contact)?;
+                    continue;
+                }
                 if let Some(activation) = self.scene.apply_entity_damage(
                     contact.target,
                     contact.direct_damage,
@@ -191,6 +200,15 @@ impl PlatformApplication for EngineApplication {
                 self.scene
                     .apply_physics_pose(pose.entity, pose.position, pose.rotation)?;
             }
+            for (pickup, entity) in self.items.pickup_bodies() {
+                if let Some(pose) = self
+                    .physics
+                    .as_ref()
+                    .and_then(|physics| physics.pickup_body_pose(entity))
+                {
+                    self.items.sync_pickup_body(&pickup, pose)?;
+                }
+            }
         }
 
         perf_physics_ms = perf_mark.elapsed().as_secs_f64() * 1000.0;
@@ -203,6 +221,7 @@ impl PlatformApplication for EngineApplication {
         let perf_quickjs_ms;
         let perf_script_commands_ms;
         let perf_scene_tick_ms;
+        let mut final_camera_commands = Vec::new();
 
         bugtrap::set_phase("living_world.tick");
         let transient_observers = [self.scene.focus_position()];
@@ -264,6 +283,27 @@ impl PlatformApplication for EngineApplication {
 
             self.exit_requested |= control.exit_requested;
             self.ui_bindings.extend(control.ui_bindings);
+            // Joint cameras need the final animated/attached actor pose. Keep
+            // the last camera request and any later explicit audio listener in
+            // their original order, so ordinary camera/listener overrides work.
+            for command in &control.commands {
+                match command.get("op").and_then(Value::as_str) {
+                    Some("scene.camera.set_relative_to_entity")
+                        if command.get("late_update").and_then(Value::as_bool) == Some(true) =>
+                    {
+                        final_camera_commands.clear();
+                        final_camera_commands.push(command.clone());
+                    }
+                    Some("scene.camera.set" | "scene.camera.set_relative_to_entity") => {
+                        final_camera_commands.clear();
+                    }
+                    Some("audio.listener.set") if !final_camera_commands.is_empty() => {
+                        final_camera_commands.truncate(1);
+                        final_camera_commands.push(command.clone());
+                    }
+                    _ => {}
+                }
+            }
             self.apply_script_commands(&control.commands)?;
             perf_script_commands_ms = scripts_detail_mark.elapsed().as_secs_f64() * 1000.0;
             scripts_detail_mark = std::time::Instant::now();
@@ -286,6 +326,7 @@ impl PlatformApplication for EngineApplication {
 
         bugtrap::set_phase("vehicles.presentation");
         self.sync_vehicle_presentations()?;
+        self.sync_physical_particle_bodies()?;
 
         for mutation in self.scene.drain_entity_mutations() {
             host::publish_event_json(event_topic::SCENE_ENTITY_MUTATED, "newviso.scene", mutation)?;
@@ -301,6 +342,12 @@ impl PlatformApplication for EngineApplication {
         let streaming_pump_started = std::time::Instant::now();
         self.pump_asset_streaming()?;
         let streaming_pump_ms = streaming_pump_started.elapsed().as_secs_f64() * 1000.0;
+        // Animation sampling, vehicle occupant transforms and newly streamed
+        // skeletons are now final for the rendered frame. Resolve the eye here
+        // to prevent speed-dependent lag behind the driver's seat.
+        if !final_camera_commands.is_empty() {
+            self.apply_script_commands(&final_camera_commands)?;
+        }
         perf_streaming_ms = perf_mark.elapsed().as_secs_f64() * 1000.0;
         if perf_streaming_ms >= 4.0 {
             host::debug(
@@ -462,6 +509,10 @@ impl PlatformApplication for EngineApplication {
         bugtrap::set_phase("frame.idle");
 
         Ok(false)
+    }
+
+    fn loading_overlay(&self) -> PlatformLoadingOverlayV1 {
+        self.startup_map_loading_overlay()
     }
 
     fn on_window_focused(&mut self, focused: bool) -> Result<(), String> {

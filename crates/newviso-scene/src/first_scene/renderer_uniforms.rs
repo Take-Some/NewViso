@@ -37,6 +37,13 @@ fn light_can_affect_camera_volume(camera: &Camera, entry: &SceneLightEntry) -> b
     delta.dot(delta) <= max_distance * max_distance
 }
 
+#[inline]
+fn ambient_sky_visibility(outdoor_exposure: f32) -> f32 {
+    // Covered interiors still receive a small indirect bounce, but no longer
+    // inherit the full outdoor sky irradiance through roofs.
+    0.08 + 0.92 * outdoor_exposure.clamp(0.0, 1.0)
+}
+
 fn select_frame_lights(camera: &Camera, mut lights: Vec<SceneLightEntry>) -> Vec<SceneLightEntry> {
     lights.retain(|entry| light_can_affect_camera_volume(camera, entry));
     lights.sort_unstable_by(|a, b| {
@@ -50,6 +57,37 @@ fn select_frame_lights(camera: &Camera, mut lights: Vec<SceneLightEntry>) -> Vec
 }
 
 impl Scene3dRuntime {
+    pub(super) fn renderer_lighting_environment(&self) -> RenderLightingEnvironment {
+        let outdoor_exposure = self.weather_outdoor_exposure.clamp(0.0, 1.0);
+        let ambient_visibility = ambient_sky_visibility(outdoor_exposure);
+        let mut environment = RenderLightingEnvironment {
+            ambient_color: self.scene_environment.ambient_color,
+            ambient_intensity: self.scene_environment.ambient_intensity.max(0.0)
+                * ambient_visibility,
+            outdoor_exposure,
+            ..RenderLightingEnvironment::default()
+        };
+
+        if let Some((_, transform, light)) = self
+            .world
+            .active_lights()
+            .into_iter()
+            .filter(|entry| matches!(entry.2.light_type, LightType::Directional))
+            .max_by(|a, b| {
+                a.2.intensity
+                    .partial_cmp(&b.2.intensity)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+        {
+            let direction = light_direction(transform.rotation_degrees);
+            environment.directional_color = light.color;
+            environment.directional_intensity = light.intensity.max(0.0);
+            environment.directional_direction_ws = [direction.x, direction.y, direction.z];
+        }
+
+        environment
+    }
+
     pub(super) fn renderer_local_lights(&self) -> Vec<RenderLight> {
         let mut lights = self.world.active_lights();
         lights.retain(|entry| {
@@ -197,8 +235,10 @@ impl Scene3dRuntime {
         }
 
         out[16..32].copy_from_slice(&shadow_matrix);
+        let ambient_intensity = self.scene_environment.ambient_intensity.max(0.0)
+            * ambient_sky_visibility(self.weather_outdoor_exposure);
         out[32] = light_count as f32;
-        out[33] = self.scene_environment.ambient_intensity;
+        out[33] = ambient_intensity;
         out[34] = shadow_light_index.map(|index| index as f32).unwrap_or(-1.0);
         out[35] = if shadow_light_index.is_some() {
             1.0
@@ -218,7 +258,7 @@ impl Scene3dRuntime {
         out[ambient_base] = self.scene_environment.ambient_color[0];
         out[ambient_base + 1] = self.scene_environment.ambient_color[1];
         out[ambient_base + 2] = self.scene_environment.ambient_color[2];
-        out[ambient_base + 3] = self.scene_environment.ambient_intensity;
+        out[ambient_base + 3] = ambient_intensity;
 
         out[fog_color_base] = self.scene_environment.fog_color[0];
         out[fog_color_base + 1] = self.scene_environment.fog_color[1];

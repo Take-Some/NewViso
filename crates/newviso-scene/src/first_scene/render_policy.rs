@@ -89,6 +89,7 @@ impl Scene3dRuntime {
         }
         let next = self.render_policy.patched(patch, self.cubes.len())?;
         if self.transient_spheres.len() > next.transient_sphere_capacity
+            || self.surface_marks.len() > next.overlay_quad_capacity
             || self.overlay_quads.len() > next.overlay_quad_capacity
             || self.particles.len() > next.particle_capacity
             || self.lens_flares.len() > next.lens_flare_capacity

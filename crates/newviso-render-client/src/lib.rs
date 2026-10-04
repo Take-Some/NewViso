@@ -1,9 +1,10 @@
 use newviso_host as host;
 use newviso_render_api as render_api;
 pub use render_api::{
-    Extent2D, RenderDrawListKind, RenderGraphDesc, RenderGraphPassDesc, RenderGraphPassDomain,
-    RenderGraphPassId, RenderGraphPassKind, RenderGraphResourceDesc, RenderGraphResourceId,
-    RenderGraphResourceSemantic, RenderGraphResourceUsage, RenderLight, RenderLightKind,
+    Extent2D, FrameCameraContext, RenderDrawListKind, RenderGraphDesc, RenderGraphPassDesc,
+    RenderGraphPassDomain, RenderGraphPassId, RenderGraphPassKind, RenderGraphQueueKind,
+    RenderGraphResourceDesc, RenderGraphResourceId, RenderGraphResourceSemantic,
+    RenderGraphResourceUsage, RenderLight, RenderLightKind, RenderLightingEnvironment,
     TextureFormat,
 };
 use serde_json::{json, Value};
@@ -420,14 +421,40 @@ impl RenderClient {
         self.unit(json!({"SetFrameLights":lights}))
     }
 
+    pub fn set_frame_lighting(&self, lighting: RenderLightingEnvironment) -> Result<(), String> {
+        self.unit(json!({"SetFrameLighting":lighting}))
+    }
+
     pub fn pump_uploads(
         &self,
         max_bytes: u64,
         max_jobs: u32,
         max_blocking_ms: f32,
     ) -> Result<UploadPumpInfo, String> {
+        self.pump_uploads_with_reason("Explicit", max_bytes, max_jobs, max_blocking_ms)
+    }
+
+    /// Executes renderer uploads while the native loading surface still owns
+    /// presentation. This lets map textures and model buffers become GPU-ready
+    /// before the first playable frame is exposed.
+    pub fn pump_loading_uploads(
+        &self,
+        max_bytes: u64,
+        max_jobs: u32,
+        max_blocking_ms: f32,
+    ) -> Result<UploadPumpInfo, String> {
+        self.pump_uploads_with_reason("LoadingScreenWarmup", max_bytes, max_jobs, max_blocking_ms)
+    }
+
+    fn pump_uploads_with_reason(
+        &self,
+        reason: &str,
+        max_bytes: u64,
+        max_jobs: u32,
+        max_blocking_ms: f32,
+    ) -> Result<UploadPumpInfo, String> {
         let response = self.command(json!({"PumpUploads":{
-            "reason":"Explicit",
+            "reason":reason,
             "budget":{
                 "max_upload_bytes_per_frame":max_bytes,
                 "max_upload_jobs_per_frame":max_jobs,

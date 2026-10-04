@@ -1,9 +1,33 @@
+use crate::damage::*;
+use crate::events::*;
 use crate::math::*;
+use crate::specification::*;
+use crate::systems::*;
 use crate::types::*;
 use std::collections::BTreeMap;
 
+mod ignition;
+mod powertrain;
+mod simulation;
+mod systems;
+
+use self::systems::advance_vehicle_systems;
+use ignition::*;
+use powertrain::*;
+use simulation::*;
+
+fn deterministic_unit(mut value: u64) -> f32 {
+    value ^= value >> 33;
+    value = value.wrapping_mul(0xff51afd7ed558ccd);
+    value ^= value >> 33;
+    value = value.wrapping_mul(0xc4ceb9fe1a85ec53);
+    value ^= value >> 33;
+    ((value >> 40) as u32 as f32) / ((1u32 << 24) as f32)
+}
+
 #[derive(Clone, Copy, Debug)]
 struct WheelContact {
+    position: Vec3,
     distance: f32,
     normal: Vec3,
     surface_entity: Option<u64>,
@@ -14,6 +38,7 @@ struct WheelContact {
 
 #[derive(Clone, Debug, Default)]
 struct WheelState {
+    tire_condition: TireCondition,
     contact: Option<WheelContact>,
     compression: f32,
     old_compression: f32,
@@ -41,21 +66,184 @@ impl Default for TransmissionState {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct VehicleEventState {
+    brake_hold_seconds: f32,
+    handbrake_active: bool,
+    skid_active: bool,
+    wheel_spin_active: bool,
+    suspension_impact_active: bool,
+    grounded: bool,
+    grounded_initialized: bool,
+}
+
 #[derive(Clone, Debug)]
 struct VehicleInstance {
     definition: VehicleDefinition,
     input: VehicleInput,
     enabled: bool,
+    engine_condition: f32,
+    engine_running: bool,
+    engine_starting: bool,
+    engine_start_will_fail: bool,
+    engine_start_remaining: f32,
+    failed_engine_start_attempts: u8,
+    engine_start_attempt_sequence: u32,
+    manual_gear: Option<i8>,
+    player_driver: bool,
+    alarm: VehicleAlarmState,
+    thermal: VehicleThermalState,
+    damage_policy: VehicleDamagePolicy,
     transmission: TransmissionState,
     wheels: Vec<WheelState>,
+    damage: VehicleDamageState,
+    event_state: VehicleEventState,
     speed_mps: f32,
     speed_forward_mps: f32,
+}
+
+impl VehicleInstance {
+    // Engine operation depends on the powertrain and fuel system. Chassis
+    // driveability also includes wheels and body health and is not an ignition
+    // or stall condition.
+    fn engine_operational(&self) -> bool {
+        if self.damage.exploded || self.damage.engine_dead {
+            return false;
+        }
+        if self.definition.class == VehicleClass::Submarine {
+            return self.damage.engine_health >= 0.0;
+        }
+        let engine_limit = if self.player_driver {
+            ENGINE_DAMAGE_FINISHED
+        } else {
+            ENGINE_DAMAGE_ON_FIRE
+        };
+        let petrol_limit = if self.player_driver {
+            PETROL_TANK_FINISHED
+        } else {
+            PETROL_TANK_ON_FIRE
+        };
+        self.damage.engine_health > engine_limit && self.damage.petrol_tank_health >= petrol_limit
+    }
+
+    fn motor_output(&self) -> f32 {
+        if !self.engine_running
+            || !self.enabled
+            || self.damage.engine_dead
+            || !self.engine_operational()
+        {
+            return 0.0;
+        }
+        // Negative burning health is a fire progression clock, not zero motor
+        // torque. The already-running player engine shuts down at FIRE_FINISH.
+        let condition = if self.damage.engine_on_fire {
+            1.0
+        } else {
+            self.engine_condition
+        };
+        condition * self.damage.engine_output_multiplier()
+    }
+
+    fn powertrain_state(&self) -> VehiclePowertrainState {
+        if self.damage.exploded {
+            VehiclePowertrainState::Wrecked
+        } else if !self
+            .definition
+            .specification
+            .has_engine(self.definition.class)
+        {
+            VehiclePowertrainState::Unpowered
+        } else if !self.enabled || self.damage.engine_dead || !self.engine_operational() {
+            VehiclePowertrainState::Disabled
+        } else if !self.damage.has_fuel() {
+            VehiclePowertrainState::FuelStarved
+        } else if self.engine_starting {
+            VehiclePowertrainState::Starting
+        } else if self.engine_running {
+            VehiclePowertrainState::Running
+        } else {
+            VehiclePowertrainState::Off
+        }
+    }
+}
+
+fn wheel_telemetry_from_state(
+    wheel: &WheelState,
+    damage: Option<&WheelDamageState>,
+) -> WheelTelemetry {
+    let mut telemetry = wheel.telemetry;
+    let rubber = damage
+        .map(|damage| damage.tyre_rubber_remaining)
+        .unwrap_or_else(|| {
+            if wheel.tire_condition == TireCondition::Intact {
+                1.0
+            } else {
+                0.0
+            }
+        });
+    telemetry.tire_condition = wheel.tire_condition;
+    telemetry.tire_rubber_remaining = rubber;
+    telemetry.tire_grip_multiplier = wheel.tire_condition.grip_multiplier_with_rubber(rubber);
+    telemetry
+}
+
+fn build_vehicle_telemetry(entity: VehicleEntity, vehicle: &VehicleInstance) -> VehicleTelemetry {
+    VehicleTelemetry {
+        entity,
+        specification: vehicle.definition.specification.clone(),
+        powertrain_state: vehicle.powertrain_state(),
+        driveable_player: vehicle.damage.driveable_player,
+        driveable_ai: vehicle.damage.driveable_ai,
+        engine_output_multiplier: vehicle.motor_output(),
+        class: vehicle.definition.class,
+        speed_mps: vehicle.speed_mps,
+        speed_forward_mps: vehicle.speed_forward_mps,
+        gear: vehicle.transmission.gear,
+        engine_speed: vehicle.transmission.engine_speed,
+        engine_running: vehicle.engine_running,
+        engine_starting: vehicle.engine_starting,
+        engine_start_remaining: vehicle.engine_start_remaining,
+        failed_engine_start_attempts: vehicle.failed_engine_start_attempts,
+        engine_condition: vehicle.engine_condition,
+        engine_smoke_level: vehicle.damage.engine_damage_evolution(),
+        engine_fire_level: vehicle.damage.engine_fire_evolution(),
+        engine_misfiring: vehicle.damage.engine_misfiring(),
+        petrol_leak_level: vehicle.damage.petrol_leak_evolution(),
+        petrol_fire_level: vehicle.damage.petrol_fire_evolution(),
+        petrol_tank_level: vehicle.damage.petrol_tank_level,
+        petrol_tank_capacity: vehicle.damage.petrol_tank_capacity,
+        fuel_fraction: if vehicle.damage.petrol_tank_capacity > 0.0 {
+            (vehicle.damage.petrol_tank_level / vehicle.damage.petrol_tank_capacity).clamp(0.0, 1.0)
+        } else {
+            1.0
+        },
+        oil_level: vehicle.damage.oil_level,
+        oil_capacity: vehicle.damage.oil_capacity,
+        exploded: vehicle.damage.exploded,
+        manual_gear: vehicle.manual_gear,
+        enabled: vehicle.enabled,
+        player_driver: vehicle.player_driver,
+        alarm: vehicle.alarm,
+        thermal: vehicle.thermal,
+        damage_policy: vehicle.damage_policy,
+        clutch: vehicle.transmission.clutch,
+        input: vehicle.input,
+        wheels: vehicle
+            .wheels
+            .iter()
+            .enumerate()
+            .map(|(index, wheel)| {
+                wheel_telemetry_from_state(wheel, vehicle.damage.wheels.get(index))
+            })
+            .collect(),
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
 struct ProbeRoute {
     vehicle: VehicleEntity,
     wheel_index: usize,
+    direction: Vec3,
 }
 
 #[derive(Clone, Debug)]
@@ -67,6 +255,10 @@ pub struct VehicleRuntime {
     default_surface_profile: VehicleSurfaceProfile,
     surface_wetness: f32,
     surface_snow: f32,
+    consume_petrol: bool,
+    ambient_temperature: f32,
+    events: Vec<VehicleEvent>,
+    next_event_seq: u64,
 }
 
 impl Default for VehicleRuntime {
@@ -85,6 +277,10 @@ impl VehicleRuntime {
             default_surface_profile: VehicleSurfaceProfile::default(),
             surface_wetness: 0.0,
             surface_snow: 0.0,
+            consume_petrol: false,
+            ambient_temperature: 20.0,
+            events: Vec::new(),
+            next_event_seq: 0x5645_5645_0000_0001,
         }
     }
 
@@ -94,14 +290,67 @@ impl VehicleRuntime {
         definition: VehicleDefinition,
     ) -> Result<(), String> {
         definition.validate()?;
+        let previous_specification = self
+            .vehicles
+            .get(&entity)
+            .map(|v| v.definition.specification.clone());
+        let previous_status = self.vehicles.get(&entity).map(|v| v.damage.status());
         let wheel_count = definition.wheels.len();
+        let petrol_tank_volume = if definition.specification.has_petrol_tank(definition.class) {
+            definition.handling.petrol_tank_volume
+        } else {
+            0.0
+        };
+        let oil_volume = if definition.specification.uses_combustion(definition.class) {
+            definition.handling.oil_volume
+        } else {
+            0.0
+        };
+        let has_cooling_fan = matches!(definition.class, VehicleClass::Automobile);
+        let created = !self.vehicles.contains_key(&entity);
         match self.vehicles.get_mut(&entity) {
             Some(vehicle) => {
-                let wheel_layout_changed = vehicle.wheels.len() != wheel_count;
+                // Preserve damage by wheel identity, including when a layout is reordered.
+                let old: BTreeMap<_, _> = vehicle
+                    .definition
+                    .wheels
+                    .iter()
+                    .zip(&vehicle.wheels)
+                    .map(|(config, state)| (config.name.clone(), state.clone()))
+                    .collect();
+                let old_damage: BTreeMap<_, _> = vehicle
+                    .definition
+                    .wheels
+                    .iter()
+                    .zip(&vehicle.damage.wheels)
+                    .map(|(config, state)| (config.name.clone(), *state))
+                    .collect();
+                vehicle.wheels = definition
+                    .wheels
+                    .iter()
+                    .map(|config| old.get(&config.name).cloned().unwrap_or_default())
+                    .collect();
+                vehicle.damage.wheels = definition
+                    .wheels
+                    .iter()
+                    .map(|config| old_damage.get(&config.name).copied().unwrap_or_default())
+                    .collect();
+                let fuel_fraction = if vehicle.damage.petrol_tank_capacity > 0.0 {
+                    vehicle.damage.petrol_tank_level / vehicle.damage.petrol_tank_capacity
+                } else {
+                    0.0
+                };
+                let oil_fraction = if vehicle.damage.oil_capacity > 0.0 {
+                    vehicle.damage.oil_level / vehicle.damage.oil_capacity
+                } else {
+                    0.0
+                };
+                vehicle.damage.petrol_tank_capacity = petrol_tank_volume;
+                vehicle.damage.petrol_tank_level =
+                    petrol_tank_volume * fuel_fraction.clamp(0.0, 1.0);
+                vehicle.damage.oil_capacity = oil_volume;
+                vehicle.damage.oil_level = oil_volume * oil_fraction.clamp(0.0, 1.0);
                 vehicle.definition = definition;
-                if wheel_layout_changed {
-                    vehicle.wheels = vec![WheelState::default(); wheel_count];
-                }
             }
             None => {
                 self.vehicles.insert(
@@ -110,13 +359,87 @@ impl VehicleRuntime {
                         definition,
                         input: VehicleInput::default(),
                         enabled: true,
+                        engine_condition: 1.0,
+                        engine_running: false,
+                        engine_starting: false,
+                        engine_start_will_fail: false,
+                        engine_start_remaining: 0.0,
+                        failed_engine_start_attempts: 0,
+                        engine_start_attempt_sequence: 0,
+                        manual_gear: None,
+                        player_driver: false,
+                        alarm: VehicleAlarmState::default(),
+                        thermal: VehicleThermalState {
+                            has_cooling_fan: has_cooling_fan,
+                            ..VehicleThermalState::default()
+                        },
+                        damage_policy: VehicleDamagePolicy::default(),
                         transmission: TransmissionState::default(),
                         wheels: vec![WheelState::default(); wheel_count],
+                        damage: VehicleDamageState::new_with_volumes(
+                            wheel_count,
+                            petrol_tank_volume,
+                            oil_volume,
+                        ),
+                        event_state: VehicleEventState::default(),
                         speed_mps: 0.0,
                         speed_forward_mps: 0.0,
                     },
                 );
             }
+        }
+        let vehicle = self.vehicles.get_mut(&entity).expect("upserted vehicle");
+        vehicle.input = vehicle
+            .definition
+            .specification
+            .controls
+            .constrain(vehicle.input);
+        if !vehicle.definition.specification.controls.reverse && vehicle.manual_gear == Some(-1) {
+            vehicle.manual_gear = None;
+        }
+        reconcile_damage_features(
+            &mut vehicle.damage,
+            vehicle.definition.class,
+            &vehicle.definition.specification,
+            vehicle.player_driver,
+        );
+        let stopped = vehicle.engine_running
+            && (!vehicle
+                .definition
+                .specification
+                .has_engine(vehicle.definition.class)
+                || !vehicle.engine_operational());
+        if stopped {
+            vehicle.engine_running = false;
+            vehicle.engine_starting = false;
+            vehicle.engine_start_remaining = 0.0;
+            vehicle.transmission.engine_speed = 0.0;
+        }
+        let status = vehicle.damage.status();
+        let specification = vehicle.definition.specification.clone();
+        if let Some(before) = previous_status {
+            for signal in damage_transition_signals(before, status) {
+                let mut event = self.next_event(entity, signal.kind);
+                event.details = serde_json::json!({"before": before, "after": status});
+                self.events.push(event);
+            }
+        }
+        if previous_specification
+            .as_ref()
+            .is_some_and(|old| old != &specification)
+        {
+            let mut event = self.next_event(entity, VehicleEventKind::SpecificationChanged);
+            event.details =
+                serde_json::json!({"before": previous_specification, "after": specification});
+            self.events.push(event);
+        }
+        if stopped {
+            let event = self.next_event(entity, VehicleEventKind::EngineStopped);
+            self.events.push(event);
+        }
+        if created {
+            let event = self.next_event(entity, VehicleEventKind::VehicleCreated);
+            self.events.push(event);
         }
         Ok(())
     }
@@ -124,11 +447,241 @@ impl VehicleRuntime {
     pub fn remove(&mut self, entity: VehicleEntity) -> bool {
         self.pending_probe_routes
             .retain(|_, route| route.vehicle != entity);
-        self.vehicles.remove(&entity).is_some()
+        let removed = self.vehicles.remove(&entity).is_some();
+        if removed {
+            let event = self.next_event(entity, VehicleEventKind::VehicleRemoved);
+            self.events.push(event);
+        }
+        removed
     }
 
     pub fn contains(&self, entity: VehicleEntity) -> bool {
         self.vehicles.contains_key(&entity)
+    }
+
+    fn next_event(&mut self, entity: VehicleEntity, kind: VehicleEventKind) -> VehicleEvent {
+        let sequence = self.next_event_seq;
+        self.next_event_seq = self.next_event_seq.wrapping_add(1).max(1);
+        VehicleEvent::new(sequence, entity, kind)
+    }
+
+    pub fn emit_event(&mut self, mut event: VehicleEvent) {
+        if event.sequence == 0 {
+            event.sequence = self.next_event_seq;
+            self.next_event_seq = self.next_event_seq.wrapping_add(1).max(1);
+        }
+        self.events.push(event);
+    }
+
+    pub fn drain_events(&mut self) -> Vec<VehicleEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    pub fn damage_state(&self, entity: VehicleEntity) -> Option<&VehicleDamageState> {
+        self.vehicles.get(&entity).map(|vehicle| &vehicle.damage)
+    }
+
+    pub fn set_glass_damage(
+        &mut self,
+        entity: VehicleEntity,
+        part_index: u32,
+        damage: f32,
+    ) -> Result<(), String> {
+        let vehicle = self
+            .vehicles
+            .get_mut(&entity)
+            .ok_or_else(|| format!("unknown vehicle entity {entity}"))?;
+        let glass = vehicle.damage.glass.entry(part_index).or_default();
+        glass.damage = damage.clamp(0.0, 1.0);
+        glass.broken = glass.damage >= 1.0;
+        if glass.damage == 0.0 {
+            glass.crack_points.clear();
+        }
+        Ok(())
+    }
+
+    /// Damage nearby panes without applying the same collision twice to body health.
+    pub fn damage_glass(
+        &mut self,
+        entity: VehicleEntity,
+        part_index: u32,
+        damage: f32,
+        kind: VehicleDamageType,
+        laminated: bool,
+        point: Vec3,
+        normal: Vec3,
+    ) -> Result<Option<VehicleEventKind>, String> {
+        let vehicle = self
+            .vehicles
+            .get_mut(&entity)
+            .ok_or_else(|| format!("unknown vehicle entity {entity}"))?;
+        if vehicle.damage_policy.protects(kind) {
+            return Ok(None);
+        }
+        let damage_type = kind;
+        let glass = vehicle.damage.glass.entry(part_index).or_default();
+        let transition = glass.apply_hit(damage, kind, laminated, point);
+        if let Some(kind) = transition {
+            let mut event = self.next_event(entity, kind);
+            event.part_index = Some(part_index);
+            event.position = Some(point);
+            event.normal = Some(normal);
+            event.local_space = true;
+            event.damage_type = Some(damage_type);
+            event.magnitude = damage;
+            self.emit_event(event);
+        }
+        Ok(transition)
+    }
+
+    pub fn apply_damage(
+        &mut self,
+        entity: VehicleEntity,
+        request: VehicleDamageRequest,
+    ) -> Result<VehicleDamageOutcome, String> {
+        if request
+            .local_position
+            .iter()
+            .chain(&request.local_normal)
+            .chain(&request.local_direction)
+            .any(|v| !v.is_finite())
+            || !request.speed_mps.is_finite()
+            || !request.contact_impulse.is_finite()
+        {
+            return Err("vehicle damage vectors and impulse must be finite".into());
+        }
+        let sample = deterministic_unit(self.next_event_seq ^ entity.rotate_left(17));
+        let (outcome, committed) = {
+            let vehicle = self
+                .vehicles
+                .get_mut(&entity)
+                .ok_or_else(|| format!("unknown vehicle entity {entity}"))?;
+            if vehicle.damage_policy.protects(request.damage_type) || vehicle.damage.exploded {
+                return Ok(VehicleDamageOutcome::default());
+            }
+            let was_running = vehicle.engine_running;
+            let before = vehicle.damage.status();
+            let mut outcome = apply_damage_with_specification(
+                &mut vehicle.damage,
+                &vehicle.definition.handling,
+                vehicle.definition.class,
+                &vehicle.definition.specification,
+                vehicle.player_driver,
+                request,
+                sample,
+            );
+            vehicle.engine_condition = vehicle.damage.engine_condition();
+            if !vehicle.engine_operational() || vehicle.damage.engine_dead {
+                vehicle.engine_running = false;
+                vehicle.engine_starting = false;
+                vehicle.engine_start_will_fail = false;
+                vehicle.engine_start_remaining = 0.0;
+                vehicle.transmission.engine_speed = 0.0;
+            }
+            if was_running && !vehicle.engine_running {
+                outcome.signals.push(VehicleDamageSignal::new(
+                    VehicleEventKind::EngineStopped,
+                    1.0,
+                ));
+            }
+            for (index, wheel_damage) in vehicle.damage.wheels.iter().enumerate() {
+                if let Some(wheel) = vehicle.wheels.get_mut(index) {
+                    wheel.tire_condition = wheel_damage.tyre_condition;
+                    wheel.telemetry.tire_condition = wheel_damage.tyre_condition;
+                    wheel.telemetry.tire_rubber_remaining = wheel_damage.tyre_rubber_remaining;
+                    if let Some(config) = vehicle.definition.wheels.get(index) {
+                        wheel.telemetry.effective_radius = config.radius
+                            * wheel_damage
+                                .tyre_condition
+                                .radius_multiplier_with_rubber(wheel_damage.tyre_rubber_remaining);
+                        wheel.telemetry.tire_grip_multiplier = wheel_damage
+                            .tyre_condition
+                            .grip_multiplier_with_rubber(wheel_damage.tyre_rubber_remaining);
+                    }
+                    if wheel_damage.tyre_condition == TireCondition::Missing {
+                        wheel.contact = None;
+                        wheel.compression = 0.0;
+                        wheel.angular_velocity = 0.0;
+                    }
+                }
+            }
+            let committed = if outcome.effective_damage > 0.0 {
+                let mut event = VehicleEvent::new(0, entity, VehicleEventKind::DamageApplied);
+                event.other_entity = request.source_entity;
+                event.damage_type = Some(request.damage_type);
+                event.part_index = request.part_index;
+                event.position = Some(request.local_position);
+                event.normal = Some(request.local_normal);
+                event.local_space = true;
+                event.magnitude = outcome.effective_damage;
+                event.details = serde_json::json!({"before": before, "after": vehicle.damage.status(), "raw_damage": request.raw_damage});
+                Some(event)
+            } else {
+                None
+            };
+            (outcome, committed)
+        };
+
+        for signal in &outcome.signals {
+            let mut event = self.next_event(entity, signal.kind);
+            event.wheel_index = signal.wheel_index;
+            event.other_entity = request.source_entity;
+            event.part_index = request.part_index;
+            event.position = Some(request.local_position);
+            event.normal = Some(request.local_normal);
+            event.local_space = true;
+            event.damage_type = Some(request.damage_type);
+            event.magnitude = signal.magnitude;
+            event.speed_mps = request.speed_mps;
+            if let Some(ref committed) = committed {
+                event.details = committed.details.clone();
+            }
+            self.events.push(event);
+        }
+        if let Some(event) = committed {
+            self.emit_event(event);
+        }
+        if outcome.effective_damage > 0.0 {
+            self.trigger_alarm(entity)?;
+        }
+        Ok(outcome)
+    }
+
+    pub fn repair_damage(&mut self, entity: VehicleEntity) -> Result<(), String> {
+        let transitions = {
+            let vehicle = self
+                .vehicles
+                .get_mut(&entity)
+                .ok_or_else(|| format!("unknown vehicle entity {entity}"))?;
+            let before = vehicle.damage.status();
+            vehicle.damage.repair();
+            reconcile_damage_features(
+                &mut vehicle.damage,
+                vehicle.definition.class,
+                &vehicle.definition.specification,
+                vehicle.player_driver,
+            );
+            vehicle.engine_starting = false;
+            vehicle.engine_start_will_fail = false;
+            vehicle.engine_start_remaining = 0.0;
+            vehicle.failed_engine_start_attempts = 0;
+            vehicle.engine_condition = 1.0;
+            for (index, wheel) in vehicle.wheels.iter_mut().enumerate() {
+                wheel.tire_condition = TireCondition::Intact;
+                wheel.telemetry.tire_condition = TireCondition::Intact;
+                wheel.telemetry.tire_rubber_remaining = 1.0;
+                wheel.telemetry.tire_grip_multiplier = 1.0;
+                wheel.telemetry.effective_radius = vehicle.definition.wheels[index].radius;
+            }
+            damage_transition_signals(before, vehicle.damage.status())
+        };
+        for signal in transitions {
+            let event = self.next_event(entity, signal.kind);
+            self.events.push(event);
+        }
+        let event = self.next_event(entity, VehicleEventKind::VehicleRepaired);
+        self.events.push(event);
+        Ok(())
     }
 
     pub fn set_enabled(&mut self, entity: VehicleEntity, enabled: bool) -> Result<(), String> {
@@ -137,6 +690,241 @@ impl VehicleRuntime {
             .get_mut(&entity)
             .ok_or_else(|| format!("unknown vehicle entity {entity}"))?;
         vehicle.enabled = enabled;
+        if !enabled {
+            vehicle.speed_mps = 0.0;
+            vehicle.speed_forward_mps = 0.0;
+            vehicle.engine_running = false;
+            vehicle.engine_starting = false;
+            vehicle.engine_start_will_fail = false;
+            vehicle.engine_start_remaining = 0.0;
+            vehicle.transmission.engine_speed = 0.0;
+            for wheel in &mut vehicle.wheels {
+                wheel.angular_velocity = 0.0;
+                wheel.telemetry.angular_velocity = 0.0;
+            }
+        }
+        Ok(())
+    }
+
+    /// Ignition never disables suspension, tyre contacts or passive motion.
+    pub fn set_engine_running(
+        &mut self,
+        entity: VehicleEntity,
+        running: bool,
+    ) -> Result<(), String> {
+        let (changed, now_running) = {
+            let vehicle = self
+                .vehicles
+                .get_mut(&entity)
+                .ok_or_else(|| format!("unknown vehicle {entity}"))?;
+            let old_running = vehicle.engine_running;
+            let now_running = running
+                && vehicle
+                    .definition
+                    .specification
+                    .has_engine(vehicle.definition.class)
+                && vehicle.engine_operational()
+                && !vehicle.damage.engine_dead
+                && vehicle.damage.engine_health > ENGINE_DAMAGE_ON_FIRE
+                && vehicle.damage.has_fuel();
+            vehicle.engine_running = now_running;
+            vehicle.engine_starting = false;
+            vehicle.engine_start_will_fail = false;
+            vehicle.engine_start_remaining = 0.0;
+            vehicle.failed_engine_start_attempts = 0;
+            if !now_running {
+                vehicle.transmission.engine_speed = 0.0;
+            }
+            (old_running != now_running, now_running)
+        };
+        if changed {
+            let event = self.next_event(
+                entity,
+                if now_running {
+                    VehicleEventKind::EngineStarted
+                } else {
+                    VehicleEventKind::EngineStopped
+                },
+            );
+            self.events.push(event);
+        }
+        Ok(())
+    }
+
+    pub fn set_manual_gear(
+        &mut self,
+        entity: VehicleEntity,
+        gear: Option<i8>,
+    ) -> Result<(), String> {
+        let vehicle = self
+            .vehicles
+            .get_mut(&entity)
+            .ok_or_else(|| format!("unknown vehicle {entity}"))?;
+        if !vehicle.definition.class.uses_wheel_probes() {
+            return Err("this vehicle has no wheel gearbox".into());
+        }
+        if gear.is_some_and(|g| g < -1 || g > vehicle.definition.handling.initial_drive_gears as i8)
+        {
+            return Err("gear exceeds the authored gearbox range".into());
+        }
+        if gear == Some(-1) && !vehicle.definition.specification.controls.reverse {
+            return Err("vehicle specification disables reverse gear".into());
+        }
+        vehicle.manual_gear = gear;
+        Ok(())
+    }
+
+    pub fn set_engine_condition(
+        &mut self,
+        entity: VehicleEntity,
+        condition: f32,
+    ) -> Result<(), String> {
+        if !condition.is_finite() {
+            return Err("engine condition must be finite".to_owned());
+        }
+        let vehicle = self
+            .vehicles
+            .get_mut(&entity)
+            .ok_or_else(|| format!("unknown vehicle entity {entity}"))?;
+        vehicle.engine_condition = condition.clamp(0.0, 1.0);
+        Ok(())
+    }
+
+    pub fn apply_suspension_damage(
+        &mut self,
+        entity: VehicleEntity,
+        index: usize,
+        damage: f32,
+    ) -> Result<bool, String> {
+        if !damage.is_finite() || damage <= 0.0 {
+            return Ok(false);
+        }
+        let detached = {
+            let vehicle = self
+                .vehicles
+                .get_mut(&entity)
+                .ok_or_else(|| format!("unknown vehicle entity {entity}"))?;
+            if vehicle.definition.class == VehicleClass::Bike
+                || vehicle.definition.specification.damage.indestructible
+            {
+                return Ok(false);
+            }
+            let wheel_damage = vehicle
+                .damage
+                .wheels
+                .get_mut(index)
+                .ok_or_else(|| format!("unknown wheel index {index}"))?;
+            if wheel_damage.tyre_condition == TireCondition::Missing {
+                return Ok(false);
+            }
+            wheel_damage.suspension_health = (wheel_damage.suspension_health - damage).max(0.0);
+            if wheel_damage.suspension_health <= 0.0
+                && vehicle.definition.specification.damage.wheels_can_break
+            {
+                wheel_damage.tyre_condition = TireCondition::Missing;
+                wheel_damage.tyre_health = 0.0;
+                wheel_damage.tyre_rubber_remaining = 0.0;
+                if let Some(wheel) = vehicle.wheels.get_mut(index) {
+                    wheel.tire_condition = TireCondition::Missing;
+                    wheel.contact = None;
+                    wheel.compression = 0.0;
+                    wheel.angular_velocity = 0.0;
+                    wheel.telemetry = WheelTelemetry {
+                        tire_condition: TireCondition::Missing,
+                        ..WheelTelemetry::default()
+                    };
+                }
+                true
+            } else {
+                false
+            }
+        };
+        if detached {
+            let mut event = self.next_event(entity, VehicleEventKind::WheelDetached);
+            event.wheel_index = Some(index);
+            event.magnitude = damage;
+            self.events.push(event);
+        }
+        Ok(detached)
+    }
+
+    pub fn set_tire_condition(
+        &mut self,
+        entity: VehicleEntity,
+        index: usize,
+        condition: TireCondition,
+    ) -> Result<(), String> {
+        let previous = {
+            let vehicle = self
+                .vehicles
+                .get_mut(&entity)
+                .ok_or_else(|| format!("unknown vehicle entity {entity}"))?;
+            let config = vehicle
+                .definition
+                .wheels
+                .get(index)
+                .ok_or_else(|| format!("unknown wheel index {index}"))?;
+            let wheel = &mut vehicle.wheels[index];
+            let previous = wheel.tire_condition;
+            wheel.tire_condition = condition;
+            let rubber_remaining = match condition {
+                TireCondition::Intact | TireCondition::Punctured => 1.0,
+                TireCondition::Rim | TireCondition::Missing => 0.0,
+            };
+            wheel.telemetry.tire_condition = condition;
+            wheel.telemetry.tire_rubber_remaining = rubber_remaining;
+            wheel.telemetry.effective_radius =
+                config.radius * condition.radius_multiplier_with_rubber(rubber_remaining);
+            wheel.telemetry.tire_grip_multiplier =
+                condition.grip_multiplier_with_rubber(rubber_remaining);
+            if let Some(damage) = vehicle.damage.wheels.get_mut(index) {
+                damage.tyre_condition = condition;
+                damage.tyre_rubber_remaining = rubber_remaining;
+                damage.tyre_health = match condition {
+                    TireCondition::Intact => TYRE_HEALTH_MAX,
+                    TireCondition::Punctured => TYRE_HEALTH_FLAT + TYRE_HEALTH_FLAT_ADD,
+                    TireCondition::Rim | TireCondition::Missing => 0.0,
+                };
+            }
+            if condition == TireCondition::Missing {
+                wheel.contact = None;
+                wheel.compression = 0.0;
+                wheel.angular_velocity = 0.0;
+                wheel.telemetry = WheelTelemetry {
+                    tire_condition: condition,
+                    ..WheelTelemetry::default()
+                };
+                self.pending_probe_routes
+                    .retain(|_, route| route.vehicle != entity || route.wheel_index != index);
+            }
+            previous
+        };
+
+        if previous != condition {
+            let kind = match condition {
+                TireCondition::Punctured => Some(VehicleEventKind::TyrePunctured),
+                TireCondition::Rim => Some(VehicleEventKind::TyreBurst),
+                TireCondition::Missing => Some(VehicleEventKind::WheelDetached),
+                TireCondition::Intact => Some(VehicleEventKind::VehicleRepaired),
+            };
+            if let Some(kind) = kind {
+                let mut event = self.next_event(entity, kind);
+                event.wheel_index = Some(index);
+                self.events.push(event);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn repair_tires(&mut self, entity: VehicleEntity) -> Result<(), String> {
+        let count = self
+            .definition(entity)
+            .ok_or_else(|| format!("unknown vehicle entity {entity}"))?
+            .wheels
+            .len();
+        for index in 0..count {
+            self.set_tire_condition(entity, index, TireCondition::Intact)?;
+        }
         Ok(())
     }
 
@@ -145,8 +933,84 @@ impl VehicleRuntime {
             .vehicles
             .get_mut(&entity)
             .ok_or_else(|| format!("unknown vehicle entity {entity}"))?;
-        vehicle.input = input.sanitized();
+        vehicle.input = vehicle.definition.specification.controls.constrain(input);
+
+        // GTA reads VehicleAccelerate directly here because a stopped engine can
+        // leave the transmission throttle at zero. Do the same at the runtime seam.
+        if vehicle.input.throttle > ENGINE_START_THROTTLE_THRESHOLD {
+            let _ = begin_engine_start_attempt(entity, vehicle);
+        }
         Ok(())
+    }
+
+    pub fn set_consume_petrol(&mut self, enabled: bool) {
+        self.consume_petrol = enabled;
+    }
+
+    pub fn consume_petrol(&self) -> bool {
+        self.consume_petrol
+    }
+
+    pub fn set_petrol_consumption_rate(
+        &mut self,
+        entity: VehicleEntity,
+        rate: f32,
+    ) -> Result<(), String> {
+        if !rate.is_finite() || rate < 0.0 {
+            return Err(
+                "vehicle petrol consumption rate must be finite and non-negative".to_owned(),
+            );
+        }
+        let vehicle = self
+            .vehicles
+            .get_mut(&entity)
+            .ok_or_else(|| format!("unknown vehicle entity {entity}"))?;
+        vehicle.definition.handling.petrol_consumption_rate = rate;
+        Ok(())
+    }
+
+    pub fn set_petrol_tank_level(
+        &mut self,
+        entity: VehicleEntity,
+        level: f32,
+    ) -> Result<(), String> {
+        if !level.is_finite() || level < 0.0 {
+            return Err("vehicle petrol tank level must be finite and non-negative".to_owned());
+        }
+        let vehicle = self
+            .vehicles
+            .get_mut(&entity)
+            .ok_or_else(|| format!("unknown vehicle entity {entity}"))?;
+        if vehicle.damage.petrol_tank_capacity <= 0.0 {
+            vehicle.damage.petrol_tank_level = 0.0;
+        } else {
+            vehicle.damage.petrol_tank_level =
+                level.clamp(0.0, vehicle.damage.petrol_tank_capacity);
+        }
+        Ok(())
+    }
+
+    pub fn set_petrol_tank_health(
+        &mut self,
+        entity: VehicleEntity,
+        health: f32,
+    ) -> Result<(), String> {
+        self.set_health(
+            entity,
+            VehicleHealthUpdate {
+                petrol_tank_health: Some(health),
+                ..Default::default()
+            },
+        )
+    }
+
+    pub fn petrol_stats(&self, entity: VehicleEntity) -> Option<(f32, f32, f32)> {
+        let vehicle = self.vehicles.get(&entity)?;
+        Some((
+            vehicle.damage.petrol_tank_capacity,
+            vehicle.damage.petrol_tank_level,
+            vehicle.definition.handling.petrol_consumption_rate,
+        ))
     }
 
     pub fn set_surface_profile(
@@ -206,10 +1070,26 @@ impl VehicleRuntime {
         gravity: f32,
         bodies: &BTreeMap<VehicleEntity, VehicleBodyState>,
     ) -> VehicleFramePlan {
-        let dt = dt.clamp(1.0 / 1000.0, 0.1);
+        if !dt.is_finite() || dt <= 0.0 || !gravity.is_finite() {
+            return VehicleFramePlan::default();
+        }
+        let dt = dt.min(0.1);
         let gravity = gravity.abs().max(0.01);
-        let mut plan = VehicleFramePlan::default();
-        let mut fresh_routes = BTreeMap::new();
+        let consume_petrol = self.consume_petrol;
+        let vehicle_count = self.vehicles.len();
+        let wheel_count = self
+            .vehicles
+            .values()
+            .map(|vehicle| vehicle.wheels.len())
+            .sum::<usize>();
+        let mut plan = VehicleFramePlan {
+            probes: Vec::with_capacity(wheel_count),
+            impulses: Vec::with_capacity(wheel_count.saturating_mul(2) + vehicle_count),
+            angular_velocity_deltas: Vec::with_capacity(vehicle_count),
+        };
+        let mut fresh_routes = std::mem::take(&mut self.pending_probe_routes);
+        fresh_routes.clear();
+        let mut frame_events = Vec::<VehicleEvent>::with_capacity(vehicle_count.saturating_mul(2));
 
         for (&entity, vehicle) in &mut self.vehicles {
             if !vehicle.enabled {
@@ -231,22 +1111,218 @@ impl VehicleRuntime {
 
             vehicle.speed_mps = length(body.linear_velocity);
             vehicle.speed_forward_mps = dot(body.linear_velocity, forward);
+
+            // Holding forward after a stall is also sufficient to request another
+            // ignition cycle; no key release/re-press is required.
+            if vehicle.input.throttle > ENGINE_START_THROTTLE_THRESHOLD
+                && !vehicle.engine_running
+                && !vehicle.engine_starting
+            {
+                let _ = begin_engine_start_attempt(entity, vehicle);
+            }
+            advance_engine_start_attempt(entity, vehicle, dt, &mut frame_events);
+
+            let old_gear = vehicle.transmission.gear;
+            let drive_wheels_loaded =
+                vehicle
+                    .definition
+                    .wheels
+                    .iter()
+                    .zip(&vehicle.wheels)
+                    .any(|(config, wheel)| {
+                        config.driven
+                            && wheel.tire_condition != TireCondition::Missing
+                            && wheel.contact.is_some()
+                    });
             update_transmission(
                 &vehicle.definition.handling,
                 vehicle.input,
+                vehicle.manual_gear,
                 vehicle.speed_forward_mps,
+                drive_wheels_loaded,
                 dt,
                 &mut vehicle.transmission,
             );
+            if old_gear != vehicle.transmission.gear {
+                let mut event = VehicleEvent::new(0, entity, VehicleEventKind::GearShifted);
+                event.old_gear = Some(old_gear);
+                event.new_gear = Some(vehicle.transmission.gear);
+                event.speed_mps = vehicle.speed_mps;
+                frame_events.push(event);
+            }
+
+            if !vehicle.engine_running || vehicle.motor_output() <= 0.0 {
+                vehicle.transmission.engine_speed = 0.0;
+            }
+
+            // Reference brake event semantics: remember how long a brake was held,
+            // then emit the release event only after the authored 0.25 s threshold.
+            let brake_active = vehicle.input.brake > 0.1;
+            if brake_active {
+                vehicle.event_state.brake_hold_seconds += dt;
+            } else if vehicle.event_state.brake_hold_seconds > 0.0 {
+                if vehicle.event_state.brake_hold_seconds > 0.25 && vehicle.engine_running {
+                    let mut event = VehicleEvent::new(0, entity, VehicleEventKind::BrakeReleased);
+                    event.hold_seconds = vehicle.event_state.brake_hold_seconds;
+                    event.speed_mps = vehicle.speed_mps;
+                    frame_events.push(event);
+                }
+                vehicle.event_state.brake_hold_seconds = 0.0;
+            }
+
+            let handbrake_active = vehicle.input.handbrake > 0.1;
+            if handbrake_active != vehicle.event_state.handbrake_active {
+                let mut event = VehicleEvent::new(
+                    0,
+                    entity,
+                    if handbrake_active {
+                        VehicleEventKind::HandbrakeApplied
+                    } else {
+                        VehicleEventKind::HandbrakeReleased
+                    },
+                );
+                event.speed_mps = vehicle.speed_mps;
+                frame_events.push(event);
+                vehicle.event_state.handbrake_active = handbrake_active;
+            }
 
             match vehicle.definition.class {
                 VehicleClass::Automobile
                 | VehicleClass::Bike
                 | VehicleClass::Train
                 | VehicleClass::Trailer => {
+                    let grounded_before =
+                        vehicle.wheels.iter().any(|wheel| wheel.contact.is_some());
+                    if !vehicle.event_state.grounded_initialized {
+                        vehicle.event_state.grounded = grounded_before;
+                        vehicle.event_state.grounded_initialized = true;
+                    } else if grounded_before && !vehicle.event_state.grounded {
+                        let landing_speed = (-dot(body.linear_velocity, up)).max(0.0);
+                        if landing_speed > 0.55 {
+                            let mut event =
+                                VehicleEvent::new(0, entity, VehicleEventKind::JumpLanded);
+                            event.magnitude = landing_speed;
+                            event.speed_mps = vehicle.speed_mps;
+                            event.position = vehicle
+                                .wheels
+                                .iter()
+                                .filter_map(|wheel| wheel.telemetry.contact_position)
+                                .next();
+                            frame_events.push(event);
+                        }
+                        vehicle.event_state.grounded = true;
+                    } else if !grounded_before {
+                        vehicle.event_state.grounded = false;
+                    }
+
                     simulate_ground_vehicle(
                         entity, vehicle, body, forward, up, dt, gravity, &mut plan,
                     );
+
+                    let mut max_slip = 0.0f32;
+                    let mut driven_slip = 0.0f32;
+                    let mut max_suspension_velocity = 0.0f32;
+                    for (index, wheel) in vehicle.wheels.iter().enumerate() {
+                        let telemetry = wheel.telemetry;
+                        if !telemetry.contact {
+                            continue;
+                        }
+                        let slip = telemetry.slip_intensity;
+                        max_slip = max_slip.max(slip);
+                        if vehicle
+                            .definition
+                            .wheels
+                            .get(index)
+                            .is_some_and(|config| config.driven)
+                        {
+                            driven_slip = driven_slip.max(telemetry.longitudinal_slip.abs() / 0.12);
+                        }
+                        max_suspension_velocity =
+                            max_suspension_velocity.max(telemetry.suspension_velocity.abs());
+                    }
+
+                    let skid_threshold = if vehicle.event_state.skid_active {
+                        0.72
+                    } else {
+                        1.02
+                    };
+                    let skid_active = vehicle.speed_mps > 2.0 && max_slip > skid_threshold;
+                    if skid_active != vehicle.event_state.skid_active {
+                        let mut event = VehicleEvent::new(
+                            0,
+                            entity,
+                            if skid_active {
+                                VehicleEventKind::SkidStarted
+                            } else {
+                                VehicleEventKind::SkidStopped
+                            },
+                        );
+                        event.magnitude = max_slip;
+                        event.speed_mps = vehicle.speed_mps;
+                        frame_events.push(event);
+                        vehicle.event_state.skid_active = skid_active;
+                    }
+
+                    let spin_threshold = if vehicle.event_state.wheel_spin_active {
+                        1.0
+                    } else {
+                        1.55
+                    };
+                    let wheel_spin_active = vehicle.input.throttle.abs() > 0.1
+                        && driven_slip > spin_threshold
+                        && vehicle.wheels.iter().any(|wheel| wheel.telemetry.contact);
+                    if wheel_spin_active != vehicle.event_state.wheel_spin_active {
+                        let mut event = VehicleEvent::new(
+                            0,
+                            entity,
+                            if wheel_spin_active {
+                                VehicleEventKind::WheelSpinStarted
+                            } else {
+                                VehicleEventKind::WheelSpinStopped
+                            },
+                        );
+                        event.magnitude = driven_slip;
+                        event.speed_mps = vehicle.speed_mps;
+                        frame_events.push(event);
+                        vehicle.event_state.wheel_spin_active = wheel_spin_active;
+                    }
+
+                    let suspension_impact = max_suspension_velocity > 1.8;
+                    if suspension_impact && !vehicle.event_state.suspension_impact_active {
+                        let mut event =
+                            VehicleEvent::new(0, entity, VehicleEventKind::SuspensionImpact);
+                        event.magnitude = max_suspension_velocity;
+                        event.speed_mps = vehicle.speed_mps;
+                        frame_events.push(event);
+                    }
+                    vehicle.event_state.suspension_impact_active = suspension_impact;
+
+                    // Preserve the reference wheel-damage state independently from
+                    // the render presentation. Slip accumulates friction damage;
+                    // deflation/burst cadence is then handled by damage.rs at 30 Hz.
+                    for (index, wheel) in vehicle.wheels.iter().enumerate() {
+                        let telemetry = wheel.telemetry;
+                        let Some(damage) = vehicle.damage.wheels.get_mut(index) else {
+                            continue;
+                        };
+                        if telemetry.contact {
+                            let slip = telemetry.slip_intensity;
+                            if slip > 1.0 && vehicle.speed_mps > 2.0 {
+                                damage.friction_damage = (damage.friction_damage
+                                    + (slip - 1.0)
+                                        * (vehicle.speed_mps / 30.0).clamp(0.0, 2.0)
+                                        * dt
+                                        * 0.12)
+                                    .clamp(0.0, 2.0);
+                            }
+                            if telemetry.suspension_velocity.abs() > 4.0 {
+                                damage.suspension_health = (damage.suspension_health
+                                    - (telemetry.suspension_velocity.abs() - 4.0) * dt * 18.0)
+                                    .max(0.0);
+                            }
+                        }
+                    }
+
                     append_wheel_probes(
                         &mut self.next_probe_seq,
                         entity,
@@ -279,10 +1355,29 @@ impl VehicleRuntime {
                 }
             }
 
+            advance_vehicle_powertrain(
+                entity,
+                vehicle,
+                dt,
+                dot(up, WORLD_UP) < 0.0,
+                consume_petrol,
+                &mut frame_events,
+            );
+            advance_vehicle_systems(
+                entity,
+                vehicle,
+                dt,
+                self.ambient_temperature,
+                &mut frame_events,
+            );
+
             apply_drag_and_downforce(entity, vehicle, body, up, dt, gravity, &mut plan);
         }
 
         self.pending_probe_routes = fresh_routes;
+        for event in frame_events {
+            self.emit_event(event);
+        }
         plan
     }
 
@@ -298,6 +1393,8 @@ impl VehicleRuntime {
             {
                 wheel.contact = None;
                 wheel.telemetry.contact = false;
+                wheel.telemetry.contact_position = None;
+                wheel.telemetry.contact_normal = None;
                 wheel.telemetry.surface_entity = None;
                 wheel.telemetry.surface_id = None;
                 wheel.telemetry.surface_class = VehicleSurfaceClass::Default;
@@ -336,15 +1433,22 @@ impl VehicleRuntime {
             else {
                 continue;
             };
+            let mut normal = normalize_or(hit.normal, mul(route.direction, -1.0));
+            if dot(normal, route.direction) > 0.0 {
+                normal = mul(normal, -1.0);
+            }
             wheel.contact = Some(WheelContact {
+                position: hit.position,
                 distance: hit.distance,
-                normal: normalize_or(hit.normal, WORLD_UP),
+                normal,
                 surface_entity: hit.surface_entity,
                 surface_id: hit.surface_id,
                 surface_class: profile.class,
                 grip_multiplier,
             });
             wheel.telemetry.contact = true;
+            wheel.telemetry.contact_position = Some(hit.position);
+            wheel.telemetry.contact_normal = Some(normal);
             wheel.telemetry.surface_entity = hit.surface_entity;
             wheel.telemetry.surface_id = hit.surface_id;
             wheel.telemetry.surface_class = profile.class;
@@ -353,17 +1457,20 @@ impl VehicleRuntime {
     }
 
     pub fn telemetry(&self, entity: VehicleEntity) -> Option<VehicleTelemetry> {
-        let vehicle = self.vehicles.get(&entity)?;
-        Some(VehicleTelemetry {
-            entity,
-            class: vehicle.definition.class,
-            speed_mps: vehicle.speed_mps,
-            speed_forward_mps: vehicle.speed_forward_mps,
-            gear: vehicle.transmission.gear,
-            engine_speed: vehicle.transmission.engine_speed,
-            clutch: vehicle.transmission.clutch,
-            input: vehicle.input,
-            wheels: vehicle.wheels.iter().map(|wheel| wheel.telemetry).collect(),
+        self.vehicles
+            .get(&entity)
+            .map(|vehicle| build_vehicle_telemetry(entity, vehicle))
+    }
+
+    pub fn wheel_telemetry(
+        &self,
+        entity: VehicleEntity,
+        wheel_index: usize,
+    ) -> Option<WheelTelemetry> {
+        self.vehicles.get(&entity).and_then(|vehicle| {
+            vehicle.wheels.get(wheel_index).map(|wheel| {
+                wheel_telemetry_from_state(wheel, vehicle.damage.wheels.get(wheel_index))
+            })
         })
     }
 
@@ -372,18 +1479,16 @@ impl VehicleRuntime {
             .vehicles
             .iter()
             .map(|(&entity, vehicle)| {
-                serde_json::to_value(VehicleTelemetry {
-                    entity,
-                    class: vehicle.definition.class,
-                    speed_mps: vehicle.speed_mps,
-                    speed_forward_mps: vehicle.speed_forward_mps,
-                    gear: vehicle.transmission.gear,
-                    engine_speed: vehicle.transmission.engine_speed,
-                    clutch: vehicle.transmission.clutch,
-                    input: vehicle.input,
-                    wheels: vehicle.wheels.iter().map(|wheel| wheel.telemetry).collect(),
-                })
-                .expect("vehicle telemetry must serialize")
+                let mut value = serde_json::to_value(build_vehicle_telemetry(entity, vehicle))
+                    .expect("vehicle telemetry must serialize");
+                if let Some(object) = value.as_object_mut() {
+                    object.insert(
+                        "damage".to_owned(),
+                        serde_json::to_value(&vehicle.damage)
+                            .expect("vehicle damage state must serialize"),
+                    );
+                }
+                value
             })
             .collect::<Vec<_>>();
 
@@ -391,6 +1496,8 @@ impl VehicleRuntime {
             "schema": "newviso.vehicle.runtime.v1",
             "count": vehicles.len(),
             "pending_probes": self.pending_probe_routes.len(),
+            "pending_events": self.events.len(),
+            "consume_petrol": self.consume_petrol,
             "surface_policy": {
                 "mapped_surfaces": self.surface_profiles.len(),
                 "wetness": self.surface_wetness,
@@ -402,822 +1509,11 @@ impl VehicleRuntime {
     }
 }
 
-fn update_transmission(
-    handling: &HandlingData,
-    input: VehicleInput,
-    speed_forward: f32,
-    dt: f32,
-    state: &mut TransmissionState,
-) {
-    let gears = handling.initial_drive_gears.max(1) as i8;
-    let speed = speed_forward.abs();
-    let top = handling.max_gearing_velocity_mps.max(1.0);
-    let reverse = input.throttle < -0.05 && speed_forward < 1.5;
-
-    let target = if reverse {
-        -1
-    } else {
-        let normalized = (speed / top).clamp(0.0, 0.999);
-        (1 + (normalized * gears as f32).floor() as i8).clamp(1, gears)
-    };
-
-    if target != state.gear && state.shift_timer <= 0.0 {
-        let rate = if target > state.gear {
-            handling.clutch_change_rate_up_shift
-        } else {
-            handling.clutch_change_rate_down_shift
-        }
-        .max(0.1);
-        state.shift_timer = 1.0 / rate;
-        state.gear = target;
-    }
-
-    if state.shift_timer > 0.0 {
-        state.shift_timer = (state.shift_timer - dt).max(0.0);
-        let rate = if state.gear >= 1 {
-            handling.clutch_change_rate_up_shift
-        } else {
-            handling.clutch_change_rate_down_shift
-        }
-        .max(0.1);
-        let duration = 1.0 / rate;
-        let phase = (state.shift_timer / duration).clamp(0.0, 1.0);
-        state.clutch = (phase * 2.0 - 1.0).abs();
-    } else {
-        state.clutch = 1.0;
-    }
-
-    let gear = state.gear.unsigned_abs().max(1) as f32;
-    let count = gears as f32;
-    let low = ((gear - 1.0) / count) * top;
-    let high = (gear / count) * top;
-    let speed_ratio = ((speed - low) / (high - low).max(1.0)).clamp(0.0, 1.25);
-    let target_engine = speed_ratio.max(input.throttle.abs() * 0.25);
-    let response = (handling.drive_inertia * 8.0 * dt).clamp(0.0, 1.0);
-    state.engine_speed += (target_engine - state.engine_speed) * response;
-    state.engine_speed = state.engine_speed.clamp(0.0, 1.25);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn simulate_ground_vehicle(
-    entity: VehicleEntity,
-    vehicle: &mut VehicleInstance,
-    body: VehicleBodyState,
-    forward: Vec3,
-    up: Vec3,
-    dt: f32,
-    gravity: f32,
-    plan: &mut VehicleFramePlan,
-) {
-    let handling = &vehicle.definition.handling;
-    let wheel_count = vehicle.wheels.len().max(1);
-    let mass_per_wheel = handling.mass / wheel_count as f32;
-    let static_load = mass_per_wheel * gravity;
-
-    let mut compression = vec![0.0; wheel_count];
-    let mut suspension_velocity = vec![0.0; wheel_count];
-    let mut normal_force = vec![0.0; wheel_count];
-
-    for index in 0..wheel_count {
-        let config = &vehicle.definition.wheels[index];
-        let state = &mut vehicle.wheels[index];
-        state.old_compression = state.compression;
-
-        let Some(contact) = state.contact else {
-            state.compression = 0.0;
-            state.telemetry.contact = false;
-            state.telemetry.normal_force = 0.0;
-            continue;
-        };
-
-        let current_length = (contact.distance - config.radius - config.travel_up).max(0.0);
-        let raw = config.rest_length - current_length + handling.suspension_raise;
-        let current = raw.clamp(-config.travel_down, config.travel_up);
-        state.compression = current;
-        compression[index] = current;
-        suspension_velocity[index] = (current - state.old_compression) / dt;
-
-        let axle_bias = if config.front {
-            handling.suspension_bias_front * 2.0
-        } else {
-            (1.0 - handling.suspension_bias_front) * 2.0
-        }
-        .max(0.05);
-
-        let spring_rate =
-            static_load * handling.suspension_force * axle_bias / config.rest_length.max(0.05);
-        let damping_ratio = if suspension_velocity[index] >= 0.0 {
-            handling.suspension_comp_damp
-        } else {
-            handling.suspension_rebound_damp
-        };
-        let critical_damping = 2.0 * (spring_rate * mass_per_wheel).sqrt();
-        let damping_force = critical_damping * damping_ratio * suspension_velocity[index];
-
-        let mut force = spring_rate * current.max(0.0) + damping_force;
-        if config.travel_up > EPSILON {
-            let bump_start = config.travel_up * 0.8;
-            if current > bump_start {
-                let ratio = ((current - bump_start) / (config.travel_up - bump_start).max(0.01))
-                    .clamp(0.0, 2.0);
-                force += static_load * ratio * ratio * 2.5;
-            }
-        }
-        normal_force[index] = force.max(0.0);
-    }
-
-    // Paired-wheel anti-roll load transfer.
-    for index in 0..wheel_count {
-        let Some(other) = vehicle.definition.wheels[index].opposite_index else {
-            continue;
-        };
-        if other <= index
-            || other >= wheel_count
-            || vehicle.wheels[index].contact.is_none()
-            || vehicle.wheels[other].contact.is_none()
-        {
-            continue;
-        }
-        let front = vehicle.definition.wheels[index].front;
-        let bias = if front {
-            handling.anti_roll_bar_bias_front * 2.0
-        } else {
-            (1.0 - handling.anti_roll_bar_bias_front) * 2.0
-        };
-        let transfer = (compression[index] - compression[other])
-            * handling.anti_roll_bar_force
-            * bias
-            * handling.mass
-            * gravity
-            * 0.5;
-        normal_force[index] = (normal_force[index] - transfer).max(0.0);
-        normal_force[other] = (normal_force[other] + transfer).max(0.0);
-    }
-
-    let driven_front = vehicle
-        .definition
-        .wheels
-        .iter()
-        .filter(|wheel| wheel.driven && wheel.front)
-        .count()
-        .max(1) as f32;
-    let driven_rear = vehicle
-        .definition
-        .wheels
-        .iter()
-        .filter(|wheel| wheel.driven && !wheel.front)
-        .count()
-        .max(1) as f32;
-
-    let gear = vehicle.transmission.gear.unsigned_abs().max(1) as f32;
-    let gears = handling.initial_drive_gears.max(1) as f32;
-    let gear_torque = 1.0 + 1.35 * (1.0 - ((gear - 1.0) / gears));
-    let throttle_direction = if vehicle.transmission.gear < 0 {
-        -vehicle.input.throttle.abs()
-    } else {
-        vehicle.input.throttle.max(0.0)
-    };
-    let total_drive_force = throttle_direction
-        * handling.initial_drive_force
-        * handling.mass
-        * gravity
-        * gear_torque
-        * vehicle.transmission.clutch;
-
-    let handbrake_wheels = vehicle
-        .definition
-        .wheels
-        .iter()
-        .filter(|wheel| wheel.handbrake)
-        .count()
-        .max(1) as f32;
-
-    for index in 0..wheel_count {
-        let config = &vehicle.definition.wheels[index];
-        let state = &mut vehicle.wheels[index];
-
-        let Some(contact) = state.contact else {
-            if config.driven {
-                state.angular_velocity +=
-                    total_drive_force.signum() * total_drive_force.abs() * 0.0007 * dt
-                        / config.radius.max(0.05);
-            }
-            state.angular_velocity *= (1.0 - dt * 0.15).max(0.0);
-            state.rotation_angle = wrap_angle(state.rotation_angle + state.angular_velocity * dt);
-            state.telemetry.angular_velocity = state.angular_velocity;
-            state.telemetry.rotation_angle = state.rotation_angle;
-            continue;
-        };
-
-        let steer_angle = if config.steered {
-            vehicle.input.steer * handling.steering_lock_rad
-        } else {
-            0.0
-        };
-        let normal = normalize_or(contact.normal, up);
-        let mut tyre_forward = normalize_or(project_on_plane(forward, normal), forward);
-        if steer_angle.abs() > EPSILON {
-            tyre_forward = normalize_or(
-                rotate_around_axis(tyre_forward, normal, steer_angle),
-                tyre_forward,
-            );
-        }
-        let tyre_side = normalize_or(cross(tyre_forward, normal), [1.0, 0.0, 0.0]);
-
-        let mount = add(body.position, rotate_vec(body.rotation, config.mount_local));
-        let suspension_down = normalize_or(
-            rotate_vec(body.rotation, [0.0, -1.0, 0.0]),
-            [0.0, -1.0, 0.0],
-        );
-        let probe_origin = add(mount, mul(up, config.travel_up));
-        let point = add(probe_origin, mul(suspension_down, contact.distance));
-        let offset = sub(point, body.position);
-        let point_velocity = add(body.linear_velocity, cross(body.angular_velocity, offset));
-        let fwd_speed = dot(point_velocity, tyre_forward);
-        let side_speed = dot(point_velocity, tyre_side);
-
-        if state.angular_velocity.abs() < 0.01 {
-            state.angular_velocity = fwd_speed / config.radius;
-        }
-        let wheel_linear = state.angular_velocity * config.radius;
-        let long_slip = (wheel_linear - fwd_speed) / fwd_speed.abs().max(1.0);
-        let lat_slip = (-side_speed).atan2(fwd_speed.abs().max(1.0));
-
-        let traction_bias = if config.front {
-            handling.traction_bias_front * 2.0
-        } else {
-            (1.0 - handling.traction_bias_front) * 2.0
-        }
-        .max(0.05);
-
-        let low_speed_loss = if handling.low_speed_traction_loss_mult > 0.0 {
-            let ratio = (vehicle.speed_mps / 8.0).clamp(0.0, 1.0);
-            (1.0 - (1.0 - ratio)
-                * handling.low_speed_traction_loss_mult.clamp(0.0, 1.0)
-                * vehicle.input.throttle.abs())
-            .max(0.2)
-        } else {
-            1.0
-        };
-        let traction_loss = (handling.traction_loss_mult * low_speed_loss).max(0.05);
-
-        let peak_lat = (handling.traction_curve_lateral_rad * 0.45).max(0.03);
-        let end_lat = handling.traction_curve_lateral_rad.max(peak_lat + 0.01);
-        let lateral_mu = traction_coefficient(
-            lat_slip,
-            peak_lat,
-            end_lat,
-            handling.traction_curve_max,
-            handling.traction_curve_min,
-        ) * traction_bias
-            * traction_loss
-            * config.grip_multiplier
-            * contact.grip_multiplier;
-        let longitudinal_mu = traction_coefficient(
-            long_slip,
-            0.12,
-            0.42,
-            handling.traction_curve_max,
-            handling.traction_curve_min,
-        ) * traction_bias
-            * traction_loss
-            * config.grip_multiplier
-            * contact.grip_multiplier;
-
-        let load = normal_force[index];
-        let front_drive = handling.front_drive_weight();
-        let drive_bias = if config.front {
-            front_drive
-        } else {
-            1.0 - front_drive
-        };
-        let drive_divisor = if config.front {
-            driven_front
-        } else {
-            driven_rear
-        };
-        let drive_request = if config.driven {
-            // Keep explicitly-authored driven wheels useful even when the handling
-            // bias is exactly 0/1, while still preserving front/rear distribution.
-            let authored_floor = if drive_bias <= 0.001 { 0.0 } else { 0.05 };
-            total_drive_force * drive_bias.max(authored_floor) / drive_divisor
-        } else {
-            0.0
-        };
-
-        let brake_bias = if config.front {
-            handling.brake_bias_front
-        } else {
-            1.0 - handling.brake_bias_front
-        };
-        let brake_request =
-            handling.brake_force * handling.mass * gravity * vehicle.input.brake * brake_bias
-                / (wheel_count as f32 * 0.5).max(1.0);
-        let handbrake_request = if config.handbrake {
-            handling.handbrake_force * handling.mass * gravity * vehicle.input.handbrake
-                / handbrake_wheels
-        } else {
-            0.0
-        };
-
-        let brake_direction = if fwd_speed.abs() > 0.2 {
-            -fwd_speed.signum()
-        } else {
-            -drive_request.signum()
-        };
-        let requested_long = drive_request + brake_direction * (brake_request + handbrake_request);
-        let slip_force = long_slip.signum() * longitudinal_mu * load * long_slip.abs().min(1.0);
-
-        let mut long_force = requested_long + slip_force;
-        let mut side_force = lat_slip.signum() * lateral_mu * load * lat_slip.abs().min(1.0);
-        if side_force * side_speed > 0.0 {
-            side_force = -side_force;
-        }
-
-        let capacity = load
-            * handling.traction_curve_max
-            * traction_bias
-            * traction_loss
-            * config.grip_multiplier
-            * contact.grip_multiplier;
-        let combined = (long_force * long_force + side_force * side_force).sqrt();
-        if combined > capacity && combined > EPSILON {
-            let scale = capacity / combined;
-            long_force *= scale;
-            side_force *= scale;
-        }
-
-        let force = add(
-            mul(normal, load),
-            add(mul(tyre_forward, long_force), mul(tyre_side, side_force)),
-        );
-        plan.impulses.push(VehicleImpulse {
-            vehicle: entity,
-            impulse: mul(force, dt),
-            point,
-        });
-
-        let wheel_inertia = (0.5 * mass_per_wheel * 0.08 * config.radius * config.radius).max(0.05);
-        let reaction_torque = -long_force * config.radius;
-        let drive_torque = drive_request * config.radius;
-        let brake_torque = (brake_request + handbrake_request) * config.radius;
-        let brake_sign = if state.angular_velocity.abs() > 0.1 {
-            state.angular_velocity.signum()
-        } else {
-            fwd_speed.signum()
-        };
-        state.angular_velocity +=
-            (drive_torque + reaction_torque - brake_sign * brake_torque) / wheel_inertia * dt;
-        let max_spin = handling.max_gearing_velocity_mps * 2.0 / config.radius.max(0.05);
-        state.angular_velocity = state.angular_velocity.clamp(-max_spin, max_spin);
-        state.rotation_angle = wrap_angle(state.rotation_angle + state.angular_velocity * dt);
-
-        state.telemetry = WheelTelemetry {
-            contact: true,
-            compression: compression[index],
-            suspension_velocity: suspension_velocity[index],
-            normal_force: load,
-            longitudinal_slip: long_slip,
-            lateral_slip_angle: lat_slip,
-            angular_velocity: state.angular_velocity,
-            rotation_angle: state.rotation_angle,
-            steer_angle,
-            surface_entity: contact.surface_entity,
-            surface_id: contact.surface_id,
-            surface_class: contact.surface_class,
-            surface_grip_multiplier: contact.grip_multiplier,
-        };
-    }
-
-    if vehicle.definition.class == VehicleClass::Bike {
-        let speed_gain = (vehicle.speed_mps / 8.0).clamp(0.0, 1.0);
-        let lean_error = dot(cross(up, WORLD_UP), forward);
-        let roll_rate = dot(body.angular_velocity, forward);
-        let desired_lean = -vehicle.input.steer * (vehicle.speed_mps / 20.0).clamp(0.0, 0.7);
-        let correction =
-            (desired_lean - lean_error) * 3.5 * speed_gain - roll_rate * 1.8 * speed_gain;
-        plan.angular_velocity_deltas
-            .push(VehicleAngularVelocityDelta {
-                vehicle: entity,
-                delta: mul(forward, correction * dt),
-            });
-    }
-}
-
-fn append_wheel_probes(
-    next_probe_seq: &mut u64,
-    entity: VehicleEntity,
-    vehicle: &VehicleInstance,
-    body: VehicleBodyState,
-    up: Vec3,
-    plan: &mut VehicleFramePlan,
-    routes: &mut BTreeMap<u64, ProbeRoute>,
-) {
-    let down = mul(up, -1.0);
-    for (wheel_index, wheel) in vehicle.definition.wheels.iter().enumerate() {
-        let mount = add(body.position, rotate_vec(body.rotation, wheel.mount_local));
-        let origin = add(mount, mul(up, wheel.travel_up));
-        let max_distance = wheel.travel_up + wheel.rest_length + wheel.travel_down + wheel.radius;
-        let seq = *next_probe_seq;
-        *next_probe_seq = next_probe_seq.wrapping_add(1).max(0x5645_4800_0000_0001);
-        plan.probes.push(VehicleProbe {
-            seq,
-            vehicle: entity,
-            wheel_index,
-            origin,
-            direction: down,
-            max_distance,
-        });
-        routes.insert(
-            seq,
-            ProbeRoute {
-                vehicle: entity,
-                wheel_index,
-            },
-        );
-    }
-}
-
-fn apply_drag_and_downforce(
-    entity: VehicleEntity,
-    vehicle: &VehicleInstance,
-    body: VehicleBodyState,
-    up: Vec3,
-    dt: f32,
-    gravity: f32,
-    plan: &mut VehicleFramePlan,
-) {
-    let handling = &vehicle.definition.handling;
-    let speed = length(body.linear_velocity);
-    if speed > 0.01 {
-        let drag_force = handling.drag_coefficient * handling.mass * speed * speed * 0.65;
-        plan.impulses.push(VehicleImpulse {
-            vehicle: entity,
-            impulse: mul(normalize(body.linear_velocity), -drag_force * dt),
-            point: body.position,
-        });
-    }
-
-    if matches!(
-        vehicle.definition.class,
-        VehicleClass::Automobile | VehicleClass::Bike
-    ) && handling.downforce_modifier > 0.0
-    {
-        let speed_ratio = (speed / handling.max_flat_velocity_mps.max(1.0)).clamp(0.0, 1.5);
-        let force = handling.mass
-            * gravity
-            * handling.downforce_modifier
-            * speed_ratio
-            * speed_ratio
-            * 0.35;
-        plan.impulses.push(VehicleImpulse {
-            vehicle: entity,
-            impulse: mul(up, -force * dt),
-            point: body.position,
-        });
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn simulate_plane(
-    entity: VehicleEntity,
-    vehicle: &VehicleInstance,
-    body: VehicleBodyState,
-    forward: Vec3,
-    up: Vec3,
-    right: Vec3,
-    dt: f32,
-    gravity: f32,
-    plan: &mut VehicleFramePlan,
-) {
-    let mass = vehicle.definition.handling.mass;
-    let aero = &vehicle.definition.aero;
-    let forward_speed = dot(body.linear_velocity, forward).max(0.0);
-    let lateral_speed = dot(body.linear_velocity, right);
-    let top = vehicle.definition.handling.max_flat_velocity_mps.max(20.0);
-    let ratio = (forward_speed / top).clamp(0.0, 2.0);
-
-    let thrust = vehicle.input.throttle.max(0.0) * mass * gravity * 2.4 * aero.thrust_multiplier;
-    let lift =
-        mass * gravity * aero.lift_multiplier * ratio * ratio * (1.0 + vehicle.input.pitch * 0.15);
-    let side_force = -lateral_speed * mass * aero.side_slip_multiplier * 0.8;
-    plan.impulses.push(VehicleImpulse {
-        vehicle: entity,
-        impulse: mul(
-            add(
-                mul(forward, thrust),
-                add(mul(up, lift), mul(right, side_force)),
-            ),
-            dt,
-        ),
-        point: body.position,
-    });
-
-    let roll_rate = dot(body.angular_velocity, forward);
-    let pitch_rate = dot(body.angular_velocity, right);
-    let yaw_rate = dot(body.angular_velocity, up);
-    let gain = (0.25 + ratio).clamp(0.25, 1.5);
-    plan.angular_velocity_deltas
-        .push(VehicleAngularVelocityDelta {
-            vehicle: entity,
-            delta: add(
-                mul(
-                    forward,
-                    (vehicle.input.roll * aero.roll_multiplier * gain
-                        - roll_rate * aero.roll_stabilize)
-                        * dt,
-                ),
-                add(
-                    mul(
-                        right,
-                        (vehicle.input.pitch * aero.pitch_multiplier * gain
-                            - pitch_rate * aero.pitch_stabilize)
-                            * dt,
-                    ),
-                    mul(
-                        up,
-                        (vehicle.input.yaw * aero.yaw_multiplier * gain
-                            - yaw_rate * aero.yaw_stabilize)
-                            * dt,
-                    ),
-                ),
-            ),
-        });
-}
-
-#[allow(clippy::too_many_arguments)]
-fn simulate_helicopter(
-    entity: VehicleEntity,
-    vehicle: &VehicleInstance,
-    body: VehicleBodyState,
-    forward: Vec3,
-    up: Vec3,
-    right: Vec3,
-    dt: f32,
-    gravity: f32,
-    plan: &mut VehicleFramePlan,
-) {
-    let mass = vehicle.definition.handling.mass;
-    let aero = &vehicle.definition.aero;
-    let collective = if vehicle.input.collective > 0.0 {
-        vehicle.input.collective
-    } else {
-        ((vehicle.input.throttle + 1.0) * 0.5).clamp(0.0, 1.0)
-    };
-    let rotor = mass * gravity * collective * 2.0 * aero.lift_multiplier;
-    let cyclic = mass * gravity * 0.35;
-    plan.impulses.push(VehicleImpulse {
-        vehicle: entity,
-        impulse: mul(
-            add(
-                mul(up, rotor),
-                add(
-                    mul(forward, -vehicle.input.pitch * cyclic),
-                    mul(right, vehicle.input.roll * cyclic),
-                ),
-            ),
-            dt,
-        ),
-        point: body.position,
-    });
-
-    let roll_rate = dot(body.angular_velocity, forward);
-    let pitch_rate = dot(body.angular_velocity, right);
-    let yaw_rate = dot(body.angular_velocity, up);
-    plan.angular_velocity_deltas
-        .push(VehicleAngularVelocityDelta {
-            vehicle: entity,
-            delta: add(
-                mul(
-                    forward,
-                    (vehicle.input.roll * 2.2 - roll_rate * aero.roll_stabilize) * dt,
-                ),
-                add(
-                    mul(
-                        right,
-                        (-vehicle.input.pitch * 2.2 - pitch_rate * aero.pitch_stabilize) * dt,
-                    ),
-                    mul(
-                        up,
-                        (vehicle.input.yaw * 1.8 - yaw_rate * aero.yaw_stabilize) * dt,
-                    ),
-                ),
-            ),
-        });
-}
-
-#[allow(clippy::too_many_arguments)]
-fn simulate_boat(
-    entity: VehicleEntity,
-    vehicle: &VehicleInstance,
-    body: VehicleBodyState,
-    forward: Vec3,
-    up: Vec3,
-    right: Vec3,
-    dt: f32,
-    gravity: f32,
-    plan: &mut VehicleFramePlan,
-) {
-    let mass = vehicle.definition.handling.mass;
-    let water = &vehicle.definition.water;
-    let thrust = vehicle.input.throttle * mass * gravity * 0.55 * water.thrust_multiplier;
-    let buoyancy = mass * gravity * water.buoyancy_ratio;
-    plan.impulses.push(VehicleImpulse {
-        vehicle: entity,
-        impulse: mul(add(mul(forward, thrust), mul(up, buoyancy)), dt),
-        point: body.position,
-    });
-
-    let speed_gain = (length(body.linear_velocity) / 8.0).clamp(0.0, 2.0);
-    let yaw_rate = dot(body.angular_velocity, up);
-    plan.angular_velocity_deltas
-        .push(VehicleAngularVelocityDelta {
-            vehicle: entity,
-            delta: mul(
-                up,
-                (vehicle.input.steer * water.rudder_force * speed_gain - yaw_rate * 0.35) * dt,
-            ),
-        });
-
-    let local = [
-        dot(body.linear_velocity, right),
-        dot(body.linear_velocity, up),
-        dot(body.linear_velocity, forward),
-    ];
-    let resistance = add(
-        mul(right, -local[0] * water.move_resistance[0] * mass * 0.1),
-        add(
-            mul(up, -local[1] * water.move_resistance[1] * mass * 0.1),
-            mul(forward, -local[2] * water.move_resistance[2] * mass * 0.1),
-        ),
-    );
-    plan.impulses.push(VehicleImpulse {
-        vehicle: entity,
-        impulse: mul(resistance, dt),
-        point: body.position,
-    });
-}
-
-#[allow(clippy::too_many_arguments)]
-fn simulate_submarine(
-    entity: VehicleEntity,
-    vehicle: &VehicleInstance,
-    body: VehicleBodyState,
-    forward: Vec3,
-    up: Vec3,
-    right: Vec3,
-    dt: f32,
-    gravity: f32,
-    plan: &mut VehicleFramePlan,
-) {
-    simulate_boat(entity, vehicle, body, forward, up, right, dt, gravity, plan);
-    let mass = vehicle.definition.handling.mass;
-    plan.impulses.push(VehicleImpulse {
-        vehicle: entity,
-        impulse: mul(up, -vehicle.input.pitch * mass * gravity * 0.25 * dt),
-        point: body.position,
-    });
-    plan.angular_velocity_deltas
-        .push(VehicleAngularVelocityDelta {
-            vehicle: entity,
-            delta: add(
-                mul(right, vehicle.input.pitch * 0.8 * dt),
-                mul(forward, vehicle.input.roll * 0.5 * dt),
-            ),
-        });
-}
+#[cfg(test)]
+mod tests;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod reference_tests;
 
-    fn body() -> VehicleBodyState {
-        VehicleBodyState {
-            position: [0.0, 1.0, 0.0],
-            rotation: [0.0, 0.0, 0.0, 1.0],
-            linear_velocity: [0.0, 0.0, -10.0],
-            angular_velocity: [0.0; 3],
-        }
-    }
-
-    #[test]
-    fn reference_handling_converts_authoring_units() {
-        let handling = HandlingData::from_reference_units(ReferenceHandlingData {
-            initial_drive_max_flat_vel: 180.0,
-            steering_lock: 30.0,
-            initial_drag_coeff: 10.0,
-            suspension_comp_damp: 2.0,
-            ..ReferenceHandlingData::default()
-        });
-        assert!((handling.max_flat_velocity_mps - 50.0).abs() < 1.0e-5);
-        assert!((handling.max_gearing_velocity_mps - 60.0).abs() < 1.0e-5);
-        assert!((handling.steering_lock_rad - 30.0_f32.to_radians()).abs() < 1.0e-6);
-        assert!((handling.drag_coefficient - 0.001).abs() < 1.0e-7);
-        assert!((handling.suspension_comp_damp - 0.2).abs() < 1.0e-6);
-    }
-
-    #[test]
-    fn automobile_emits_four_suspension_queries() {
-        let mut runtime = VehicleRuntime::new();
-        runtime.upsert(42, VehicleDefinition::automobile()).unwrap();
-        let bodies = BTreeMap::from([(42, body())]);
-        let frame = runtime.prepare_frame(1.0 / 60.0, 9.81, &bodies);
-        assert_eq!(frame.probes.len(), 4);
-    }
-
-    #[test]
-    fn probe_hits_feed_suspension_forces() {
-        let mut runtime = VehicleRuntime::new();
-        runtime.upsert(7, VehicleDefinition::automobile()).unwrap();
-        let bodies = BTreeMap::from([(7, body())]);
-        let first = runtime.prepare_frame(1.0 / 60.0, 9.81, &bodies);
-        let hits = first
-            .probes
-            .iter()
-            .map(|probe| VehicleProbeHit {
-                seq: probe.seq,
-                position: add(probe.origin, mul(probe.direction, 0.48)),
-                normal: WORLD_UP,
-                distance: 0.48,
-                surface_entity: Some(99),
-                surface_id: None,
-            })
-            .collect::<Vec<_>>();
-        runtime.accept_probe_hits(&hits);
-        let second = runtime.prepare_frame(1.0 / 60.0, 9.81, &bodies);
-        assert!(second
-            .impulses
-            .iter()
-            .any(|impulse| impulse.impulse[1] > 0.0));
-    }
-
-    #[test]
-    fn surface_policy_and_weather_reduce_wheel_grip() {
-        let mut runtime = VehicleRuntime::new();
-        runtime.upsert(7, VehicleDefinition::automobile()).unwrap();
-        runtime
-            .set_surface_profile(
-                55,
-                VehicleSurfaceProfile::for_class(VehicleSurfaceClass::Ice),
-            )
-            .unwrap();
-        runtime.set_surface_weather(1.0, 0.0).unwrap();
-
-        let bodies = BTreeMap::from([(7, body())]);
-        let first = runtime.prepare_frame(1.0 / 60.0, 9.81, &bodies);
-        runtime.accept_probe_hits(
-            &first
-                .probes
-                .iter()
-                .map(|probe| VehicleProbeHit {
-                    seq: probe.seq,
-                    position: add(probe.origin, mul(probe.direction, 0.45)),
-                    normal: WORLD_UP,
-                    distance: 0.45,
-                    surface_entity: Some(99),
-                    surface_id: Some(55),
-                })
-                .collect::<Vec<_>>(),
-        );
-
-        let telemetry = runtime.telemetry(7).expect("vehicle telemetry");
-        assert!(telemetry.wheels.iter().all(|wheel| {
-            wheel.contact
-                && wheel.surface_id == Some(55)
-                && wheel.surface_class == VehicleSurfaceClass::Ice
-                && wheel.surface_grip_multiplier < 0.3
-        }));
-    }
-
-    #[test]
-    fn missing_next_hit_clears_contact() {
-        let mut runtime = VehicleRuntime::new();
-        runtime.upsert(7, VehicleDefinition::automobile()).unwrap();
-        let bodies = BTreeMap::from([(7, body())]);
-        let first = runtime.prepare_frame(1.0 / 60.0, 9.81, &bodies);
-        runtime.accept_probe_hits(
-            &first
-                .probes
-                .iter()
-                .map(|probe| VehicleProbeHit {
-                    seq: probe.seq,
-                    position: probe.origin,
-                    normal: WORLD_UP,
-                    distance: 0.45,
-                    surface_entity: Some(9),
-                    surface_id: None,
-                })
-                .collect::<Vec<_>>(),
-        );
-        let _second = runtime.prepare_frame(1.0 / 60.0, 9.81, &bodies);
-        runtime.accept_probe_hits(&[]);
-        let state = runtime.runtime_state();
-        let contacts = state["vehicles"][0]["wheels"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|wheel| wheel["contact"].as_bool() == Some(true))
-            .count();
-        assert_eq!(contacts, 0);
-    }
-}
+#[cfg(test)]
+mod specification_tests;

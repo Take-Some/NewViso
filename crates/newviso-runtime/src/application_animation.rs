@@ -4,8 +4,11 @@ impl EngineApplication {
     pub(super) fn bind_scene_entity_animation(
         &mut self,
         stable_id: u64,
-        binding: SceneAnimationBinding,
+        mut binding: SceneAnimationBinding,
     ) -> Result<bool, String> {
+        // Preserve the request time even when model/skeleton streaming applies
+        // the binding several frames later.
+        binding.bound_elapsed_seconds = self.elapsed_seconds;
         self.scene_animation_bindings.insert(stable_id, binding);
         self.apply_scene_animation_binding(stable_id)
     }
@@ -50,11 +53,18 @@ impl EngineApplication {
             self.animation_clip_cache.insert(cache_key, clip.clone());
             clip
         };
+        let deferred_seconds =
+            (self.elapsed_seconds - binding.bound_elapsed_seconds).max(0.0) as f32;
+        let effective_start_time_seconds =
+            binding.start_time_seconds + deferred_seconds * binding.playback_rate;
         let changed = self.scene.play_entity_animation(
             stable_id,
             clip,
             binding.playback_rate,
             binding.restart_if_same,
+            effective_start_time_seconds,
+            binding.blend_seconds,
+            binding.apply_mover,
         )?;
         let _ = self.scene.set_animation_process_active(
             stable_id,

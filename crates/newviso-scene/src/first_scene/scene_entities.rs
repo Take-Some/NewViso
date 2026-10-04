@@ -296,6 +296,7 @@ impl Scene3dRuntime {
             collision_local_bounds: None,
             destructible: None,
             asset_ref: desc.asset_ref,
+            resident_geometry: false,
             render_slot,
             residency,
             priority_score: 0.0,
@@ -386,6 +387,12 @@ impl Scene3dRuntime {
         self.sky_visuals.remove(key);
         self.lens_flares.retain(|_, flare| flare.source != key);
         self.asset_binding_contexts.remove(&id.0);
+        self.vehicle_dashboards.remove(&id.0);
+        self.particle_interiors.remove(&id.0);
+        self.joint_attachments.remove(&id.0);
+        self.arm_ik_constraints.remove(&id.0);
+        self.joint_attachments
+            .retain(|_, attachment| attachment.parent_stable_id != id.0);
         self.runtime_entity_ids.remove(key);
         self.main_view_mesh_visibility.remove(id.0);
         Ok(())
@@ -417,6 +424,12 @@ impl Scene3dRuntime {
             .set_visibility(SceneEntityId(stable_id), channel, visible)
     }
     pub fn request_remove_entity(&mut self, stable_id: u64) -> Result<(), String> {
+        self.vehicle_dashboards.remove(&stable_id);
+        self.particle_interiors.remove(&stable_id);
+        self.joint_attachments.remove(&stable_id);
+        self.arm_ik_constraints.remove(&stable_id);
+        self.joint_attachments
+            .retain(|_, attachment| attachment.parent_stable_id != stable_id);
         self.world.request_remove(SceneEntityId(stable_id))?;
         self.main_view_mesh_visibility.remove(stable_id);
         Ok(())
@@ -681,11 +694,27 @@ impl Scene3dRuntime {
                 min: Vec3::new(bounds.min[0], bounds.min[1], bounds.min[2]),
                 max: Vec3::new(bounds.max[0], bounds.max[1], bounds.max[2]),
             }
+        } else if let Some(mesh) = self.asset_meshes.get(&stable_id) {
+            // Keep the authored pivot-to-bounds offset (e.g. feet-origin characters).
+            // Re-centering the AABB at the feet culled their raised arms and head.
+            asset_models::transformed_local_bounds(mesh.local_bounds, transform)?
         } else {
+            let entity = self.world.entity(id).unwrap();
             let old_center = previous_bounds.center();
-            let old_half = previous_bounds.max.sub(old_center);
-            SceneBounds::from_center_half_extent(transform.position, old_half)
+            SceneBounds::from_center_half_extent(
+                transform
+                    .position
+                    .add(old_center.sub(entity.transform.position)),
+                previous_bounds.max.sub(old_center),
+            )
         };
+        let bounds = animation_skinning::arm_ik_bounds(
+            bounds,
+            self.arm_ik_constraints
+                .get(&stable_id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
+        );
 
         self.world
             .update_spatial_from(id, transform, bounds, source)?;

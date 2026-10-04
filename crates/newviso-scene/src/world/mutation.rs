@@ -690,6 +690,20 @@ impl SceneWorld {
         Ok(())
     }
 
+    pub(crate) fn refresh_focus_for_streaming(&mut self, camera_position: Vec3) {
+        let resolved = match self.focus.source {
+            SceneFocusSource::Camera => camera_position,
+            SceneFocusSource::Entity(id) => self
+                .entity(id)
+                .map(|entity| entity.transform.position)
+                .unwrap_or(camera_position),
+            SceneFocusSource::Override => self.focus.position,
+        };
+        self.focus.position = resolved;
+        self.focus.velocity = Vec3::ZERO;
+        self.last_focus_position = resolved;
+    }
+
     pub(crate) fn set_focus_camera(&mut self) {
         self.focus.source = SceneFocusSource::Camera;
     }

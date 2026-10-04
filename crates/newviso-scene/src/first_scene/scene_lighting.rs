@@ -27,6 +27,7 @@ fn runtime_visual_entity(
         collision_local_bounds: None,
         destructible: None,
         asset_ref: None,
+        resident_geometry: false,
         render_slot: None,
         residency: SceneResidency::Resident,
         priority_score: 0.0,

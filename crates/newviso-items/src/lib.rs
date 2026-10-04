@@ -103,6 +103,33 @@ pub struct CollectionOutcome {
     pub distance: Option<f32>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct PickupBodyPose {
+    pub position: [f32; 3],
+    pub rotation: [f32; 4],
+    pub linear_velocity: [f32; 3],
+    pub angular_velocity: [f32; 3],
+}
+impl PickupBodyPose {
+    fn validate(&self) -> Result<(), String> {
+        if self
+            .position
+            .iter()
+            .chain(&self.rotation)
+            .chain(&self.linear_velocity)
+            .chain(&self.angular_velocity)
+            .any(|v| !v.is_finite())
+        {
+            return Err("pickup body pose must be finite".into());
+        }
+        let norm: f32 = self.rotation.iter().map(|v| v * v).sum();
+        if (norm - 1.0).abs() > 0.01 {
+            return Err("pickup body rotation must be normalized".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct ItemsCheckpoint {
     schema: String,
@@ -110,6 +137,12 @@ struct ItemsCheckpoint {
     definitions: Vec<ItemDefinition>,
     inventories: BTreeMap<String, BTreeMap<String, u32>>,
     pickups: Vec<WorldPickup>,
+    #[serde(default)]
+    capacities: BTreeMap<String, u32>,
+    #[serde(default)]
+    body_poses: BTreeMap<String, PickupBodyPose>,
+    #[serde(default)]
+    equipment: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -117,6 +150,10 @@ pub struct ItemsRuntime {
     definitions: BTreeMap<String, ItemDefinition>,
     inventories: BTreeMap<String, BTreeMap<String, u32>>,
     pickups: BTreeMap<String, WorldPickup>,
+    capacities: BTreeMap<String, u32>,
+    body_poses: BTreeMap<String, PickupBodyPose>,
+    body_bindings: BTreeMap<String, u64>,
+    equipment: BTreeMap<String, BTreeMap<String, String>>,
     revision: u64,
     last_collection: Option<CollectionOutcome>,
 }
@@ -124,6 +161,14 @@ pub struct ItemsRuntime {
 impl ItemsRuntime {
     pub fn upsert_definition(&mut self, definition: ItemDefinition) -> Result<(), String> {
         definition.validate()?;
+        if self.inventories.values().any(|inventory| {
+            inventory.get(&definition.id).copied().unwrap_or(0) > definition.max_stack
+        }) {
+            return Err(format!(
+                "item '{}' max_stack would invalidate an existing inventory",
+                definition.id
+            ));
+        }
         self.definitions.insert(definition.id.clone(), definition);
         self.bump_revision();
         Ok(())
@@ -137,6 +182,78 @@ impl ItemsRuntime {
             self.bump_revision();
         }
         Ok(())
+    }
+
+    /// Capacity counts occupied item slots; max_stack remains the per-item limit.
+    pub fn configure_inventory(&mut self, owner_id: &str, capacity: u32) -> Result<(), String> {
+        validate_id("inventory owner", owner_id)?;
+        if capacity == 0 || self.used_slots(owner_id) > capacity {
+            return Err("inventory capacity must be positive and contain its current items".into());
+        }
+        self.ensure_inventory(owner_id)?;
+        if self.capacities.get(owner_id) != Some(&capacity) {
+            self.capacities.insert(owner_id.into(), capacity);
+            self.bump_revision();
+        }
+        Ok(())
+    }
+
+    pub fn used_slots(&self, owner_id: &str) -> u32 {
+        self.inventories
+            .get(owner_id)
+            .map(|entries| entries.values().filter(|quantity| **quantity > 0).count() as u32)
+            .unwrap_or(0)
+    }
+
+    fn available_quantity(&self, owner_id: &str, item_id: &str, max_stack: u32) -> u32 {
+        let current = self.inventory_quantity(owner_id, item_id);
+        if current == 0
+            && self
+                .capacities
+                .get(owner_id)
+                .is_some_and(|limit| self.used_slots(owner_id) >= *limit)
+        {
+            return 0;
+        }
+        max_stack.saturating_sub(current)
+    }
+
+    pub fn equipped_item(&self, owner_id: &str, slot: &str) -> Option<&str> {
+        self.equipment
+            .get(owner_id)
+            .and_then(|slots| slots.get(slot))
+            .map(String::as_str)
+    }
+
+    pub fn equip(&mut self, owner_id: &str, slot: &str, item_id: &str) -> Result<(), String> {
+        validate_id("inventory owner", owner_id)?;
+        validate_id("equipment slot", slot)?;
+        validate_id("item", item_id)?;
+        if self.inventory_quantity(owner_id, item_id) == 0 {
+            return Err(format!("cannot equip unowned item '{item_id}'"));
+        }
+        if self.equipped_item(owner_id, slot) != Some(item_id) {
+            self.equipment
+                .entry(owner_id.into())
+                .or_default()
+                .insert(slot.into(), item_id.into());
+            self.bump_revision();
+        }
+        Ok(())
+    }
+
+    pub fn unequip(&mut self, owner_id: &str, slot: &str) -> Result<bool, String> {
+        validate_id("inventory owner", owner_id)?;
+        validate_id("equipment slot", slot)?;
+        let removed = self
+            .equipment
+            .get_mut(owner_id)
+            .and_then(|slots| slots.remove(slot))
+            .is_some();
+        if removed {
+            self.bump_revision();
+        }
+        Ok(removed)
     }
 
     pub fn inventory_quantity(&self, owner_id: &str, item_id: &str) -> u32 {
@@ -162,7 +279,8 @@ impl ItemsRuntime {
             return Ok(0);
         }
         let current = self.inventory_quantity(owner_id, item_id);
-        let accepted = quantity.min(definition.max_stack.saturating_sub(current));
+        let accepted =
+            quantity.min(self.available_quantity(owner_id, item_id, definition.max_stack));
         if accepted == 0 {
             return Ok(0);
         }
@@ -194,6 +312,9 @@ impl ItemsRuntime {
         let remaining = current - removed;
         if remaining == 0 {
             inventory.remove(item_id);
+            if let Some(slots) = self.equipment.get_mut(owner_id) {
+                slots.retain(|_, equipped| equipped != item_id);
+            }
         } else {
             inventory.insert(item_id.to_owned(), remaining);
         }
@@ -227,7 +348,79 @@ impl ItemsRuntime {
         Ok(())
     }
 
+    pub fn bind_pickup_body(&mut self, id: &str, entity: u64) -> Result<(), String> {
+        if !self.pickups.contains_key(id) || entity == 0 {
+            return Err("pickup body binding requires an existing pickup and entity".into());
+        }
+        self.body_bindings.insert(id.into(), entity);
+        Ok(())
+    }
+
+    pub fn pickup_body(&self, id: &str) -> Option<u64> {
+        self.body_bindings.get(id).copied()
+    }
+    pub fn pickup_bodies(&self) -> Vec<(String, u64)> {
+        self.body_bindings
+            .iter()
+            .map(|(id, entity)| (id.clone(), *entity))
+            .collect()
+    }
+    pub fn unbind_pickup_body(&mut self, id: &str) {
+        self.body_bindings.remove(id);
+    }
+
+    pub fn sync_pickup_body(&mut self, id: &str, pose: PickupBodyPose) -> Result<(), String> {
+        pose.validate()?;
+        let Some(pickup) = self.pickups.get_mut(id) else {
+            return Ok(());
+        };
+        if pickup.collected {
+            return Ok(());
+        }
+        if self.body_poses.get(id) != Some(&pose) {
+            pickup.position = pose.position;
+            self.body_poses.insert(id.into(), pose);
+            self.bump_revision();
+        }
+        Ok(())
+    }
+
+    /// Inverse of collection: inventory removal and world creation form one transaction.
+    pub fn drop_inventory(
+        &mut self,
+        owner: &str,
+        item: &str,
+        quantity: u32,
+        id: &str,
+        position: [f32; 3],
+        radius: f32,
+    ) -> Result<(), String> {
+        validate_id("inventory owner", owner)?;
+        let pickup = WorldPickup {
+            id: id.into(),
+            item_id: item.into(),
+            quantity,
+            position,
+            collection_radius: radius,
+            requires_interact: true,
+            collected: false,
+        };
+        pickup.validate()?;
+        if self.pickups.contains_key(id) {
+            return Err("drop pickup id already exists".into());
+        }
+        if !self.definitions.contains_key(item) || self.inventory_quantity(owner, item) < quantity {
+            return Err("cannot drop an unowned item or excessive quantity".into());
+        }
+        self.remove_inventory(owner, item, quantity)?;
+        self.pickups.insert(id.into(), pickup);
+        self.bump_revision();
+        Ok(())
+    }
+
     pub fn remove_pickup(&mut self, pickup_id: &str) -> bool {
+        self.body_bindings.remove(pickup_id);
+        self.body_poses.remove(pickup_id);
         let removed = self.pickups.remove(pickup_id).is_some();
         if removed {
             self.bump_revision();
@@ -300,7 +493,7 @@ impl ItemsRuntime {
         };
 
         let current = self.inventory_quantity(owner_id, &snapshot.item_id);
-        let capacity = definition.max_stack.saturating_sub(current);
+        let capacity = self.available_quantity(owner_id, &snapshot.item_id, definition.max_stack);
         let accepted = snapshot.quantity.min(capacity);
         if accepted == 0 {
             return Ok(self.record_collection(CollectionOutcome {
@@ -354,6 +547,9 @@ impl ItemsRuntime {
             .map(|(owner_id, entries)| {
                 json!({
                     "owner_id": owner_id,
+                    "capacity": self.capacities.get(owner_id),
+                    "used_slots": self.used_slots(owner_id),
+                    "equipped": self.equipment.get(owner_id).cloned().unwrap_or_default(),
                     "entries": entries
                         .iter()
                         .map(|(item_id, quantity)| json!({
@@ -369,7 +565,12 @@ impl ItemsRuntime {
             "revision": self.revision,
             "definitions": self.definitions.values().collect::<Vec<_>>(),
             "inventories": inventories,
-            "pickups": self.pickups.values().collect::<Vec<_>>(),
+            "pickups": self.pickups.values().map(|pickup| {
+                let mut value = serde_json::to_value(pickup).expect("valid pickup");
+                value["physical_pose"] = serde_json::to_value(self.body_poses.get(&pickup.id)).expect("valid body pose");
+                value["body_entity"] = self.body_bindings.get(&pickup.id).map(|entity|Value::String(entity.to_string())).unwrap_or(Value::Null);
+                value
+            }).collect::<Vec<_>>(),
             "last_collection": self.last_collection
         })
     }
@@ -381,6 +582,9 @@ impl ItemsRuntime {
             definitions: self.definitions.values().cloned().collect(),
             inventories: self.inventories.clone(),
             pickups: self.pickups.values().cloned().collect(),
+            capacities: self.capacities.clone(),
+            body_poses: self.body_poses.clone(),
+            equipment: self.equipment.clone(),
         })
         .map_err(|error| error.to_string())
     }
@@ -440,6 +644,20 @@ impl ItemsRuntime {
                 return Err("items checkpoint contains duplicate pickups".to_owned());
             }
         }
+        for (id, pose) in checkpoint.body_poses {
+            if !runtime.pickups.contains_key(&id) {
+                return Err("pickup body pose has no pickup".into());
+            }
+            runtime.sync_pickup_body(&id, pose)?;
+        }
+        for (owner, capacity) in checkpoint.capacities {
+            runtime.configure_inventory(&owner, capacity)?;
+        }
+        for (owner, slots) in checkpoint.equipment {
+            for (slot, item) in slots {
+                runtime.equip(&owner, &slot, &item)?;
+            }
+        }
         runtime.revision = checkpoint.revision;
         Ok(runtime)
     }
@@ -458,6 +676,9 @@ fn validate_id(label: &str, id: &str) -> Result<(), String> {
     let trimmed = id.trim();
     if trimmed.is_empty() {
         return Err(format!("{label} id must not be empty"));
+    }
+    if trimmed != id {
+        return Err(format!("{label} id must not have surrounding whitespace"));
     }
     if trimmed.len() > 160 {
         return Err(format!("{label} id exceeds 160 bytes"));
@@ -555,5 +776,104 @@ mod tests {
         assert_eq!(result.status, CollectionStatus::TooFar);
         assert_eq!(runtime.inventory_quantity("player", "office.phone"), 0);
         assert_eq!(runtime.runtime_state()["pickups"][0]["collected"], false);
+    }
+
+    #[test]
+    fn capacity_rejection_keeps_pickup_and_equipment_persists() {
+        let mut runtime = ItemsRuntime::default();
+        runtime.upsert_definition(definition(3)).unwrap();
+        let mut second = definition(1);
+        second.id = "weapon.test".into();
+        runtime.upsert_definition(second).unwrap();
+        runtime.configure_inventory("player", 1).unwrap();
+        runtime.add_inventory("player", "weapon.test", 1).unwrap();
+        assert!(runtime.equip("player", "hands", "office.phone").is_err());
+        runtime.equip("player", "hands", "weapon.test").unwrap();
+        runtime.upsert_pickup(pickup(2)).unwrap();
+        assert_eq!(
+            runtime
+                .collect("pickup.phone.01", "player", [1., 0., 0.])
+                .unwrap()
+                .status,
+            CollectionStatus::NoCapacity
+        );
+        assert_eq!(runtime.runtime_state()["pickups"][0]["quantity"], 2);
+        let mut restored = ItemsRuntime::from_checkpoint(runtime.checkpoint().unwrap()).unwrap();
+        assert_eq!(
+            restored.equipped_item("player", "hands"),
+            Some("weapon.test")
+        );
+        restored
+            .remove_inventory("player", "weapon.test", 1)
+            .unwrap();
+        assert_eq!(restored.equipped_item("player", "hands"), None);
+        assert_eq!(
+            restored
+                .collect("pickup.phone.01", "player", [1., 0., 0.])
+                .unwrap()
+                .accepted_quantity,
+            2
+        );
+    }
+
+    #[test]
+    fn legacy_checkpoint_and_invalid_equipment_are_checked() {
+        let mut runtime = ItemsRuntime::default();
+        runtime.upsert_definition(definition(3)).unwrap();
+        runtime.add_inventory("player", "office.phone", 2).unwrap();
+        assert!(runtime.configure_inventory("player", 0).is_err());
+        assert!(runtime.upsert_definition(definition(1)).is_err());
+        let mut checkpoint = runtime.checkpoint().unwrap();
+        checkpoint.as_object_mut().unwrap().remove("capacities");
+        checkpoint.as_object_mut().unwrap().remove("equipment");
+        assert_eq!(
+            ItemsRuntime::from_checkpoint(checkpoint.clone())
+                .unwrap()
+                .inventory_quantity("player", "office.phone"),
+            2
+        );
+        checkpoint["equipment"] = json!({"player":{"hands":"missing.item"}});
+        assert!(ItemsRuntime::from_checkpoint(checkpoint).is_err());
+    }
+
+    #[test]
+    fn moving_pickup_uses_physics_position_and_drop_is_atomic() {
+        let mut runtime = ItemsRuntime::default();
+        runtime.upsert_definition(definition(3)).unwrap();
+        runtime.add_inventory("player", "office.phone", 1).unwrap();
+        runtime.equip("player", "hands", "office.phone").unwrap();
+        assert!(runtime
+            .drop_inventory("player", "office.phone", 2, "drop.1", [0.; 3], 2.)
+            .is_err());
+        assert_eq!(runtime.inventory_quantity("player", "office.phone"), 1);
+        runtime
+            .drop_inventory("player", "office.phone", 1, "drop.1", [0.; 3], 2.)
+            .unwrap();
+        assert_eq!(runtime.equipped_item("player", "hands"), None);
+        runtime.bind_pickup_body("drop.1", 900001).unwrap();
+        runtime
+            .sync_pickup_body(
+                "drop.1",
+                PickupBodyPose {
+                    position: [10., 0., 0.],
+                    rotation: [0., 0., 0., 1.],
+                    linear_velocity: [0.; 3],
+                    angular_velocity: [0.; 3],
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            runtime.collect("drop.1", "player", [0.; 3]).unwrap().status,
+            CollectionStatus::TooFar
+        );
+        let mut restored = ItemsRuntime::from_checkpoint(runtime.checkpoint().unwrap()).unwrap();
+        assert_eq!(restored.pickup_body("drop.1"), None);
+        assert_eq!(
+            restored
+                .collect("drop.1", "player", [10., 0., 0.])
+                .unwrap()
+                .status,
+            CollectionStatus::Collected
+        );
     }
 }

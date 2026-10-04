@@ -5,6 +5,11 @@ use newviso_host as host;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PhysicsClient;
 
+#[derive(serde::Serialize)]
+enum BorrowedPhysicsFrameRequest<'a> {
+    StepFrame(&'a PhysicsFrameInput),
+}
+
 impl PhysicsClient {
     pub const fn new() -> Self {
         Self
@@ -36,8 +41,14 @@ impl PhysicsClient {
     }
 
     pub fn step_frame(&self, input: PhysicsFrameInput) -> Result<PhysicsFrameOutput, String> {
-        validate_frame(&input)?;
-        match self.invoke(PhysicsServiceRequest::StepFrame(input))? {
+        self.step_frame_ref(&input)
+    }
+
+    /// Submit without taking ownership, so a caller can retry the same buffers
+    /// after a service error without copying static collision geometry.
+    pub fn step_frame_ref(&self, input: &PhysicsFrameInput) -> Result<PhysicsFrameOutput, String> {
+        validate_frame(input)?;
+        match self.invoke(BorrowedPhysicsFrameRequest::StepFrame(input))? {
             PhysicsServiceResponse::FrameOutput(output) => Ok(output),
             PhysicsServiceResponse::Problem(problem) => Err(problem_message(problem)),
             other => Err(format!(
@@ -57,7 +68,7 @@ impl PhysicsClient {
         }
     }
 
-    fn invoke(&self, request: PhysicsServiceRequest) -> Result<PhysicsServiceResponse, String> {
+    fn invoke(&self, request: impl serde::Serialize) -> Result<PhysicsServiceResponse, String> {
         let request = serde_json::to_value(request)
             .map_err(|error| format!("physics request encode failed: {error}"))?;
         let response = host::call_json(
@@ -117,6 +128,8 @@ mod tests {
                 angular_velocity: [0.0, 0.0, 0.0],
                 linear_damping: Some(0.0),
                 angular_damping: Some(8.0),
+                mass_properties: None,
+                convex_hulls: Vec::new(),
                 bounds_min: [-0.3, 0.0, -0.3],
                 bounds_max: [0.3, 1.8, 0.3],
             }],
@@ -124,7 +137,15 @@ mod tests {
             commands: Vec::new(),
             queries: Vec::new(),
         });
+        let PhysicsServiceRequest::StepFrame(input) = &request else {
+            unreachable!()
+        };
+        let borrowed = serde_json::to_value(BorrowedPhysicsFrameRequest::StepFrame(input)).unwrap();
         let value = serde_json::to_value(request).unwrap();
+        assert_eq!(
+            borrowed, value,
+            "borrowed submission must preserve the entire provider wire contract"
+        );
         assert_eq!(
             value
                 .pointer("/StepFrame/bodies/0/kind")

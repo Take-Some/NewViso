@@ -523,6 +523,8 @@ pub(crate) struct SceneEntity {
     pub(crate) collision_local_bounds: Option<SceneBounds>,
     pub(crate) destructible: Option<SceneDestructible>,
     pub(crate) asset_ref: Option<String>,
+    /// Geometry generated at runtime can render without a streamable asset path.
+    pub(crate) resident_geometry: bool,
     pub(crate) render_slot: Option<usize>,
     pub(crate) residency: SceneResidency,
     pub(crate) priority_score: f32,
@@ -536,7 +538,8 @@ pub(crate) struct SceneEntity {
 
 impl SceneEntity {
     pub(crate) fn is_renderable(&self) -> bool {
-        let has_visual = self.render_slot.is_some()
+        let has_visual = self.resident_geometry
+            || self.render_slot.is_some()
             || (self.asset_ref.is_some()
                 && matches!(
                     self.kind,
@@ -712,6 +715,7 @@ mod tests {
             collision_local_bounds: None,
             destructible: None,
             asset_ref: None,
+            resident_geometry: false,
             render_slot: Some(render_slot),
             residency: SceneResidency::Resident,
             priority_score: 0.0,
@@ -769,6 +773,23 @@ mod tests {
             .unwrap();
         world.pre_update(Vec3::ZERO, 1.0 / 60.0);
         let plan = world.scan_visibility(view());
+        assert!(plan.visible_render_slots.is_empty());
+    }
+
+    #[test]
+    fn generated_mesh_is_visible_without_asset_or_primitive_slot() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        let mut generated = entity(1, -3.0, 0);
+        generated.render_slot = None;
+        generated.resident_geometry = true;
+        generated.kind = SceneEntityKind::DynamicMesh;
+        generated.mobility = SceneMobility::Dynamic;
+        world.add_entity(generated).unwrap();
+        world.activate_all();
+        world.pre_update(Vec3::ZERO, 1.0 / 60.0);
+        let plan = world.scan_visibility(view());
+        assert_eq!(plan.visible_entities, vec![SceneEntityId(1)]);
+        assert!(plan.requested_entities.is_empty());
         assert!(plan.visible_render_slots.is_empty());
     }
 
@@ -1405,6 +1426,58 @@ mod tests {
         assert_eq!(mutations[0].source, SceneMutationSource::Animation);
         assert!(mutations[0].dirty.contains(SceneDirtyFlags::TRANSFORM));
         assert!(!mutations[0].dirty.contains(SceneDirtyFlags::BOUNDS));
+    }
+
+    #[test]
+    fn infinite_stream_distance_keeps_collision_asset_in_streaming_interest() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        let mut collision = entity(776, -8.0, 0);
+        collision.transform.position = Vec3::new(20_000.0, 0.0, 20_000.0);
+        collision.bounds = SceneBounds::from_center_half_extent(
+            collision.transform.position,
+            Vec3::new(25.0, 5.0, 25.0),
+        );
+        collision.lod = SceneLodPolicy {
+            visible_distance: 100.0,
+            stream_distance: f32::INFINITY,
+            fade_range: 0.0,
+        };
+        collision.residency = SceneResidency::Unloaded;
+        collision.asset_ref = Some("collisions/always-resident.ybn".to_owned());
+        world.add_entity(collision).unwrap();
+        world.activate_all();
+        world.pre_update(Vec3::ZERO, 1.0 / 60.0);
+
+        let plan = world.scan_visibility(view());
+        assert!(plan.requested_entities.contains(&SceneEntityId(776)));
+        assert!(plan.streaming_entities.contains(&SceneEntityId(776)));
+    }
+
+    #[test]
+    fn large_collision_bounds_stream_by_nearest_surface_not_origin() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        let mut sector = entity(777, -8.0, 0);
+        sector.transform.position = Vec3::new(50.0, 0.0, 0.0);
+        sector.bounds = SceneBounds {
+            min: Vec3::new(5.0, -2.0, -2.0),
+            max: Vec3::new(95.0, 2.0, 2.0),
+        };
+        sector.lod = SceneLodPolicy {
+            visible_distance: 100.0,
+            stream_distance: 10.0,
+            fade_range: 0.0,
+        };
+        sector.residency = SceneResidency::Unloaded;
+        sector.asset_ref = Some("collisions/large-sector.ybn".to_owned());
+        world.add_entity(sector).unwrap();
+        world.activate_all();
+        world.pre_update(Vec3::ZERO, 1.0 / 60.0);
+
+        let plan = world.scan_visibility(view());
+        assert!(
+            plan.requested_entities.contains(&SceneEntityId(777)),
+            "a sector whose authored bounds reach within stream distance must load even when its origin is far away"
+        );
     }
 
     #[test]

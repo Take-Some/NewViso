@@ -1,7 +1,7 @@
 use newviso_assets_client::AssetClient;
 use newviso_model::{
     AnimationInterpolation, AnimationQuatKey, AnimationVec3Key, JointAnimationTrack,
-    ModelAnimationClip, ModelSkeleton,
+    ModelAnimationClip, ModelAnimationMoverTrack, ModelSkeleton,
 };
 use newviso_resource_runtime::AssetAddress;
 use serde_json::Value;
@@ -11,11 +11,18 @@ const LIST_FILE_BODY_OUTPUT: &str = "asset.list_file_body";
 const YCD_BODY_SCHEMA_V1: u32 = 1;
 const YCD_BODY_SCHEMA_V2: u32 = 2;
 const YCD_BODY_SCHEMA_V3: u32 = 3;
+const YCD_BODY_SCHEMA_V4: u32 = 4;
+const YCD_BODY_SCHEMA_V5: u32 = 5;
+const CHANNEL_TRANSLATION: u8 = 0x01;
+const CHANNEL_ROTATION: u8 = 0x02;
+const CHANNEL_SCALE: u8 = 0x04;
 const YCD_BODY_HEADER_LEN: usize = 48;
 const YCD_CLIP_RECORD_LEN: usize = 64;
 const LOCAL_POSE_STRIDE_V1: usize = 28;
 const LOCAL_POSE_STRIDE_V2: usize = 40;
 const YCD_CLIP_FLAG_LOOP: u32 = 0x1;
+const YCD_CLIP_FLAG_MOVER: u32 = 0x2;
+const MOVER_POSE_STRIDE: usize = 28;
 
 #[derive(Clone, Copy, Debug)]
 struct RawPose {
@@ -52,7 +59,9 @@ fn decode_selected_clip(
     let schema = read_u32(body, 0)?;
     let pose_stride = match schema {
         YCD_BODY_SCHEMA_V1 => LOCAL_POSE_STRIDE_V1,
-        YCD_BODY_SCHEMA_V2 | YCD_BODY_SCHEMA_V3 => LOCAL_POSE_STRIDE_V2,
+        YCD_BODY_SCHEMA_V2 | YCD_BODY_SCHEMA_V3 | YCD_BODY_SCHEMA_V4 | YCD_BODY_SCHEMA_V5 => {
+            LOCAL_POSE_STRIDE_V2
+        }
         _ => return Err(format!("unsupported YCD body schema={schema}")),
     };
     let clip_count = read_u32(body, 4)? as usize;
@@ -85,7 +94,7 @@ fn decode_selected_clip(
     let duration_seconds = read_f32(body, record + 24)?;
     let sample_rate_hz = read_f32(body, record + 28)?;
     let flags = read_u32(body, record + 32)?;
-    if flags & !YCD_CLIP_FLAG_LOOP != 0 {
+    if flags & !(YCD_CLIP_FLAG_LOOP | YCD_CLIP_FLAG_MOVER) != 0 {
         return Err(format!(
             "YCD clip '{name}' has unsupported flags=0x{flags:08x}"
         ));
@@ -112,17 +121,38 @@ fn decode_selected_clip(
     }
     let payload = checked_slice(body, payload_offset, payload_len, "clip payload")?;
     let tag_bytes = joint_count.checked_mul(4).ok_or("YCD tag bytes overflow")?;
+    let channel_mask_bytes = if matches!(schema, YCD_BODY_SCHEMA_V4 | YCD_BODY_SCHEMA_V5) {
+        joint_count
+    } else {
+        0
+    };
     let pose_count = joint_count
         .checked_mul(frame_count)
         .ok_or("YCD pose count overflow")?;
     let pose_bytes = pose_count
         .checked_mul(pose_stride)
         .ok_or("YCD pose bytes overflow")?;
-    if tag_bytes.checked_add(pose_bytes) != Some(payload.len()) {
+    let mover_bytes = if flags & YCD_CLIP_FLAG_MOVER != 0 {
+        if schema != YCD_BODY_SCHEMA_V5 {
+            return Err(format!(
+                "YCD clip '{name}' mover flag requires body schema v5, got {schema}"
+            ));
+        }
+        frame_count
+            .checked_mul(MOVER_POSE_STRIDE)
+            .ok_or("YCD mover bytes overflow")?
+    } else {
+        0
+    };
+    let expected_payload_len = tag_bytes
+        .checked_add(channel_mask_bytes)
+        .and_then(|value| value.checked_add(pose_bytes))
+        .and_then(|value| value.checked_add(mover_bytes))
+        .ok_or("YCD payload size overflow")?;
+    if expected_payload_len != payload.len() {
         return Err(format!(
-            "YCD clip '{name}' payload size mismatch actual={} expected={}",
-            payload.len(),
-            tag_bytes + pose_bytes
+            "YCD clip '{name}' payload size mismatch actual={} expected={expected_payload_len}",
+            payload.len()
         ));
     }
 
@@ -130,9 +160,27 @@ fn decode_selected_clip(
     for joint in 0..joint_count {
         tags.push(read_u32(payload, joint * 4)?);
     }
+    let channel_masks = if matches!(schema, YCD_BODY_SCHEMA_V4 | YCD_BODY_SCHEMA_V5) {
+        let masks = checked_slice(payload, tag_bytes, joint_count, "channel masks")?.to_vec();
+        for (joint, mask) in masks.iter().copied().enumerate() {
+            if mask == 0 || mask & !(CHANNEL_TRANSLATION | CHANNEL_ROTATION | CHANNEL_SCALE) != 0 {
+                return Err(format!(
+                    "YCD clip '{name}' joint={joint} has invalid channel mask=0x{mask:02x}"
+                ));
+            }
+        }
+        masks
+    } else {
+        let legacy_mask = if schema == YCD_BODY_SCHEMA_V1 {
+            CHANNEL_TRANSLATION | CHANNEL_ROTATION
+        } else {
+            CHANNEL_TRANSLATION | CHANNEL_ROTATION | CHANNEL_SCALE
+        };
+        vec![legacy_mask; joint_count]
+    };
 
     let mut poses = Vec::with_capacity(pose_count);
-    let mut cursor = tag_bytes;
+    let mut cursor = tag_bytes + channel_mask_bytes;
     for _ in 0..pose_count {
         let translation = [
             read_f32(payload, cursor)?,
@@ -162,6 +210,42 @@ fn decode_selected_clip(
         cursor += pose_stride;
     }
 
+    let mover = if flags & YCD_CLIP_FLAG_MOVER != 0 {
+        let mut translations = Vec::with_capacity(frame_count);
+        let mut rotations = Vec::with_capacity(frame_count);
+        for frame in 0..frame_count {
+            let time_seconds = ((frame as f32) / sample_rate_hz).min(duration_seconds);
+            let translation = [
+                read_f32(payload, cursor)?,
+                read_f32(payload, cursor + 4)?,
+                read_f32(payload, cursor + 8)?,
+            ];
+            let rotation = normalize_quat([
+                read_f32(payload, cursor + 12)?,
+                read_f32(payload, cursor + 16)?,
+                read_f32(payload, cursor + 20)?,
+                read_f32(payload, cursor + 24)?,
+            ])?;
+            translations.push(AnimationVec3Key {
+                time_seconds,
+                value: translation,
+            });
+            rotations.push(AnimationQuatKey {
+                time_seconds,
+                value: rotation,
+            });
+            cursor += MOVER_POSE_STRIDE;
+        }
+        Some(ModelAnimationMoverTrack {
+            translations,
+            rotations,
+            translation_interpolation: AnimationInterpolation::Linear,
+            rotation_interpolation: AnimationInterpolation::Linear,
+        })
+    } else {
+        None
+    };
+
     let tag_to_joint = skeleton
         .joints
         .iter()
@@ -170,6 +254,7 @@ fn decode_selected_clip(
         .collect::<BTreeMap<_, _>>();
     let mut tracks = Vec::with_capacity(joint_count);
     for (clip_joint, tag) in tags.into_iter().enumerate() {
+        let channel_mask = channel_masks[clip_joint];
         let joint_index = *tag_to_joint.get(&tag).ok_or_else(|| {
             format!(
                 "YCD clip '{name}' references skeleton tag={tag} not present in '{}'",
@@ -184,19 +269,25 @@ fn decode_selected_clip(
         for frame in 0..frame_count {
             let pose = poses[frame * joint_count + clip_joint];
             let time_seconds = ((frame as f32) / sample_rate_hz).min(duration_seconds);
-            translations.push(AnimationVec3Key {
-                time_seconds,
-                value: pose.translation,
-            });
-            rotations.push(AnimationQuatKey {
-                time_seconds,
-                value: pose.rotation,
-            });
-            if let Some(scale) = pose.scale {
-                scales.push(AnimationVec3Key {
+            if channel_mask & CHANNEL_TRANSLATION != 0 {
+                translations.push(AnimationVec3Key {
                     time_seconds,
-                    value: scale,
+                    value: pose.translation,
                 });
+            }
+            if channel_mask & CHANNEL_ROTATION != 0 {
+                rotations.push(AnimationQuatKey {
+                    time_seconds,
+                    value: pose.rotation,
+                });
+            }
+            if channel_mask & CHANNEL_SCALE != 0 {
+                if let Some(scale) = pose.scale {
+                    scales.push(AnimationVec3Key {
+                        time_seconds,
+                        value: scale,
+                    });
+                }
             }
         }
         tracks.push(JointAnimationTrack {
@@ -215,6 +306,7 @@ fn decode_selected_clip(
         duration_seconds,
         looping: flags & YCD_CLIP_FLAG_LOOP != 0,
         tracks,
+        mover,
     })
 }
 

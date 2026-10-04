@@ -15,6 +15,12 @@ pub struct SceneResolvedMaterial {
     pub specular: Option<Arc<TextureResource>>,
     pub emissive: Option<Arc<TextureResource>>,
     pub environment: Option<Arc<TextureResource>>,
+    /// Authored samplers outside the generic PBR five-channel contract.
+    ///
+    /// Terrain/snow materials use semantic roles such as base_color_layer1,
+    /// normal_layer2, height_layer3 and terrain_lookup. Keep these resolved
+    /// resources alive through scene materialization instead of discarding them.
+    pub auxiliary_textures: BTreeMap<String, Arc<TextureResource>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -170,9 +176,88 @@ pub(super) struct AssetTriangleVertex {
 #[derive(Clone, Debug)]
 pub(super) struct AssetDrawRange {
     pub(super) mesh_name: Arc<str>,
+    pub(super) joint_lineage: Arc<[String]>,
     pub(super) first_vertex: u32,
     pub(super) vertex_count: u32,
     pub(super) material_slot: Option<u32>,
+    /// Center of the triangles actually referenced by this draw range.
+    pub(super) local_center: Vec3,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneModelDent {
+    pub point: [f32; 3],
+    pub displacement: [f32; 3],
+    pub radius: f32,
+}
+
+fn apply_fragment_dents(
+    mut p: Vec3,
+    mut n: Vec3,
+    mut t: Vec3,
+    dents: &[SceneModelDent],
+) -> (Vec3, Vec3, Vec3) {
+    for dent in dents {
+        let centre = Vec3::new(dent.point[0], dent.point[1], dent.point[2]);
+        let delta = Vec3::new(
+            dent.displacement[0],
+            dent.displacement[1],
+            dent.displacement[2],
+        );
+        let v = p.sub(centre);
+        let radius_sq = dent.radius * dent.radius;
+        let q = (v.x * v.x + v.y * v.y + v.z * v.z) / radius_sq.max(0.0001);
+        if q >= 1.0 {
+            continue;
+        }
+        let w = (1.0 - q).powi(2);
+        let g = Vec3::new(v.x, v.y, v.z).mul(-4.0 * (1.0 - q) / radius_sq);
+        let dot = |a: Vec3, b: Vec3| a.x * b.x + a.y * b.y + a.z * b.z;
+        let denominator = (1.0 + dot(g, delta)).max(0.2);
+        n = n.sub(g.mul(dot(delta, n) / denominator)).normalized();
+        t = t.add(delta.mul(dot(g, t))).normalized();
+        p = p.add(delta.mul(w));
+    }
+    (p, n, t)
+}
+
+/// Closest point including edges, with barycentrics for the original glass UVs.
+fn closest_fragment_triangle(p: [f32; 3], t: [[f32; 3]; 3]) -> Option<([f32; 3], [f32; 3])> {
+    let sub = |a: [f32; 3], b: [f32; 3]| std::array::from_fn(|i| a[i] - b[i]);
+    let dot = |a: [f32; 3], b: [f32; 3]| (0..3).map(|i| a[i] * b[i]).sum::<f32>();
+    let ab = sub(t[1], t[0]);
+    let ac = sub(t[2], t[0]);
+    let ap = sub(p, t[0]);
+    let d00 = dot(ab, ab);
+    let d01 = dot(ab, ac);
+    let d11 = dot(ac, ac);
+    let determinant = d00 * d11 - d01 * d01;
+    if determinant <= 1.0e-12 {
+        return None;
+    }
+    let u = (d11 * dot(ap, ab) - d01 * dot(ap, ac)) / determinant;
+    let v = (d00 * dot(ap, ac) - d01 * dot(ap, ab)) / determinant;
+    if u >= 0.0 && v >= 0.0 && u + v <= 1.0 {
+        let weights = [1.0 - u - v, u, v];
+        return Some((
+            std::array::from_fn(|a| (0..3).map(|i| weights[i] * t[i][a]).sum()),
+            weights,
+        ));
+    }
+    let mut best = None;
+    for (i, j) in [(0, 1), (1, 2), (2, 0)] {
+        let edge = sub(t[j], t[i]);
+        let f = (dot(sub(p, t[i]), edge) / dot(edge, edge).max(1.0e-12)).clamp(0.0, 1.0);
+        let hit = std::array::from_fn(|a| t[i][a] + edge[a] * f);
+        let distance = dot(sub(p, hit), sub(p, hit));
+        let mut weights = [0.0; 3];
+        weights[i] = 1.0 - f;
+        weights[j] = f;
+        if best.as_ref().is_none_or(|(d, _, _)| distance < *d) {
+            best = Some((distance, hit, weights));
+        }
+    }
+    best.map(|(_, hit, weights)| (hit, weights))
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -187,8 +272,14 @@ pub struct SceneModelPartPose {
     pub rotation_degrees: [f32; 3],
     /// Model-local scale delta. [1,1,1] preserves the imported rest shape.
     pub scale: [f32; 3],
+    /// Scale applied after articulation rotation. Vehicle tyres use this for
+    /// world-vertical flattening so the flat profile does not rotate with tread.
+    pub post_rotation_scale: [f32; 3],
     /// Invisible parts are collapsed to their pivot, producing no raster area.
     pub visible: bool,
+    pub dents: Vec<SceneModelDent>,
+    /// Hit UV and accumulated glass damage, carried per vertex to the glass shader.
+    pub glass_damage: Option<[f32; 3]>,
 }
 
 impl Default for SceneModelPartPose {
@@ -199,7 +290,10 @@ impl Default for SceneModelPartPose {
             translation: [0.0; 3],
             rotation_degrees: [0.0; 3],
             scale: [1.0; 3],
+            post_rotation_scale: [1.0; 3],
             visible: true,
+            dents: Vec::new(),
+            glass_damage: None,
         }
     }
 }
@@ -248,6 +342,8 @@ pub(super) struct CpuAssetMesh {
     /// Fragment models own an entity-local mutable vertex range so articulated
     /// wheels/panels can move without modifying another instance.
     pub(super) fragment_deformable: bool,
+    pub(super) main_view_only: bool,
+    pub(super) last_fragment_poses: std::collections::BTreeMap<Vec<String>, SceneModelPartPose>,
 }
 
 impl Scene3dRuntime {
@@ -443,21 +539,29 @@ impl Scene3dRuntime {
                 vertex_count,
                 skinned_first_vertex,
                 fragment_deformable,
+                main_view_only: false,
+                last_fragment_poses: std::collections::BTreeMap::new(),
             },
         );
 
+        let installed_skeleton = model
+            .skeleton
+            .as_ref()
+            .map(|skeleton| Arc::new(skeleton.clone()));
+        if let Some(skeleton) = installed_skeleton.as_ref() {
+            self.entity_skeletons
+                .insert(stable_id, (skeleton.clone(), model.skin_source_to_model));
+        } else {
+            self.entity_skeletons.remove(&stable_id);
+        }
+
         if skinned {
-            let skeleton = model
-                .skeleton
-                .as_ref()
-                .expect("skinned model checked above")
-                .clone();
             self.skinned_entities.insert(
                 stable_id,
                 animation_skinning::SkinnedEntityAnimationState::new(
                     model.id,
                     model.skin_source_to_model,
-                    Arc::new(skeleton),
+                    installed_skeleton.expect("skinned model checked above"),
                 )?,
             );
         } else {
@@ -474,6 +578,206 @@ impl Scene3dRuntime {
         self.world
             .update_spatial_from(id, transform, bounds, SceneMutationSource::Streaming)?;
         Ok(true)
+    }
+
+    pub fn entity_fragment_mesh_bounds(
+        &self,
+        entity: u64,
+        names: &[String],
+    ) -> Option<([f32; 3], [f32; 3])> {
+        let mesh = self.asset_meshes.get(&entity)?;
+        let mut min = [f32::INFINITY; 3];
+        let mut max = [f32::NEG_INFINITY; 3];
+        let mut found = false;
+        for range in mesh.local_draw_ranges.iter().filter(|range| {
+            names
+                .iter()
+                .any(|name| name.as_str() == range.mesh_name.as_ref())
+        }) {
+            let start =
+                (mesh.first_vertex as usize + range.first_vertex as usize) * FLOATS_PER_VERTEX;
+            let end = start + range.vertex_count as usize * FLOATS_PER_VERTEX;
+            for vertex in self
+                .asset_vertex_data
+                .get(start..end)?
+                .chunks_exact(FLOATS_PER_VERTEX)
+            {
+                for axis in 0..3 {
+                    min[axis] = min[axis].min(vertex[axis]);
+                    max[axis] = max[axis].max(vertex[axis]);
+                }
+                found = true;
+            }
+        }
+        found.then_some((min, max))
+    }
+
+    /// Nearest non-degenerate live fragment triangle: squared distance, point and UV.
+    pub fn entity_fragment_surface_hit(
+        &self,
+        entity: u64,
+        names: &[String],
+        point: [f32; 3],
+    ) -> Option<(f32, [f32; 3], [f32; 2])> {
+        let mesh = self.asset_meshes.get(&entity)?;
+        let mut nearest = None;
+        for range in mesh
+            .local_draw_ranges
+            .iter()
+            .filter(|r| names.iter().any(|n| n.as_str() == r.mesh_name.as_ref()))
+        {
+            let start =
+                (mesh.first_vertex as usize + range.first_vertex as usize) * FLOATS_PER_VERTEX;
+            let end = start + range.vertex_count as usize * FLOATS_PER_VERTEX;
+            for triangle in self
+                .asset_vertex_data
+                .get(start..end)?
+                .chunks_exact(3 * FLOATS_PER_VERTEX)
+            {
+                let vertices: [[f32; 3]; 3] = std::array::from_fn(|i| {
+                    std::array::from_fn(|a| triangle[i * FLOATS_PER_VERTEX + a])
+                });
+                let Some((hit, weights)) = closest_fragment_triangle(point, vertices) else {
+                    continue;
+                };
+                let distance = (0..3).map(|a| (point[a] - hit[a]).powi(2)).sum::<f32>();
+                if nearest.as_ref().is_none_or(|(best, _, _)| distance < *best) {
+                    let uv = std::array::from_fn(|a| {
+                        (0..3)
+                            .map(|i| weights[i] * triangle[i * FLOATS_PER_VERTEX + 11 + a])
+                            .sum()
+                    });
+                    nearest = Some((distance, hit, uv));
+                }
+            }
+        }
+        nearest
+    }
+
+    /// Copy only the selected live fragment geometry into a separate dynamic
+    /// entity. Materials and textures are shared; vertices and bounds are local
+    /// to the detached body, independent of the source vehicle's visibility.
+    pub fn install_detached_fragment(
+        &mut self,
+        source: u64,
+        target: u64,
+        mesh_names: &[String],
+    ) -> Result<([f32; 3], [f32; 3], Vec<[f32; 3]>), String> {
+        let source_mesh = self
+            .asset_meshes
+            .get(&source)
+            .cloned()
+            .ok_or_else(|| format!("fragment source {source} has no model"))?;
+        if self.world.entity(SceneEntityId(target)).is_none() {
+            return Err(format!("fragment target {target} does not exist"));
+        }
+        let mut data = Vec::new();
+        let mut ranges = Vec::new();
+        let mut min = [f32::INFINITY; 3];
+        let mut max = [f32::NEG_INFINITY; 3];
+        for range in source_mesh.local_draw_ranges.iter().filter(|range| {
+            mesh_names
+                .iter()
+                .any(|name| name.as_str() == range.mesh_name.as_ref())
+        }) {
+            let first = data.len() / FLOATS_PER_VERTEX;
+            let start = (source_mesh.first_vertex as usize + range.first_vertex as usize)
+                * FLOATS_PER_VERTEX;
+            let end = start + range.vertex_count as usize * FLOATS_PER_VERTEX;
+            let vertices = self
+                .asset_vertex_data
+                .get(start..end)
+                .ok_or_else(|| "fragment source vertex range is invalid".to_owned())?;
+            for vertex in vertices.chunks_exact(FLOATS_PER_VERTEX) {
+                for axis in 0..3 {
+                    min[axis] = min[axis].min(vertex[axis]);
+                    max[axis] = max[axis].max(vertex[axis]);
+                }
+            }
+            data.extend_from_slice(vertices);
+            ranges.push(AssetDrawRange {
+                first_vertex: u32::try_from(first)
+                    .map_err(|_| "fragment vertex offset overflow".to_owned())?,
+                local_center: {
+                    let mut sum = Vec3::ZERO;
+                    for vertex in vertices.chunks_exact(FLOATS_PER_VERTEX) {
+                        sum = sum.add(Vec3::new(vertex[0], vertex[1], vertex[2]));
+                    }
+                    sum.mul(1.0 / (vertices.len() / FLOATS_PER_VERTEX).max(1) as f32)
+                },
+                ..range.clone()
+            });
+        }
+        if data.is_empty() {
+            return Err("fragment has no separately bound render geometry".to_owned());
+        }
+        let center: [f32; 3] = std::array::from_fn(|axis| (min[axis] + max[axis]) * 0.5);
+        let extent: [f32; 3] =
+            std::array::from_fn(|axis| ((max[axis] - min[axis]) * 0.5).max(0.025));
+        for range in &mut ranges {
+            range.local_center = range
+                .local_center
+                .sub(Vec3::new(center[0], center[1], center[2]));
+        }
+        let mut hull = Vec::new();
+        let mut hull_keys = std::collections::BTreeSet::new();
+        for vertex in data.chunks_exact_mut(FLOATS_PER_VERTEX) {
+            for axis in 0..3 {
+                vertex[axis] -= center[axis];
+            }
+            let point = [vertex[0], vertex[1], vertex[2]];
+            if hull_keys.insert(point.map(f32::to_bits)) {
+                hull.push(point);
+            }
+        }
+        let first_vertex = u32::try_from(self.asset_vertex_data.len() / FLOATS_PER_VERTEX)
+            .map_err(|_| "fragment GPU vertex offset overflow".to_owned())?;
+        let vertex_count = u32::try_from(data.len() / FLOATS_PER_VERTEX)
+            .map_err(|_| "fragment vertex count overflow".to_owned())?;
+        let upload_from = self.asset_vertex_data.len();
+        self.asset_vertex_data.extend_from_slice(&data);
+        self.asset_upload_from_float = Some(
+            self.asset_upload_from_float
+                .map_or(upload_from, |old| old.min(upload_from)),
+        );
+        let mut opaque = Vec::new();
+        let mut alpha = Vec::new();
+        for (index, range) in ranges.iter().enumerate() {
+            let mode = range
+                .material_slot
+                .and_then(|slot| source_mesh.materials.get(slot as usize))
+                .map(|material| material.alpha_mode)
+                .unwrap_or(AssetAlphaMode::Opaque);
+            if mode == AssetAlphaMode::Blend {
+                alpha.push(index as u32);
+            } else {
+                opaque.push(index as u32);
+            }
+        }
+        self.asset_meshes.insert(
+            target,
+            CpuAssetMesh {
+                source_model_id: source_mesh.source_model_id,
+                model_id: AssetId(
+                    source_mesh.source_model_id.0 ^ target.rotate_left(23) ^ 0x4652_4147_4d45_4e54,
+                ),
+                local_bounds: SceneBounds {
+                    min: Vec3::new(-extent[0], -extent[1], -extent[2]),
+                    max: Vec3::new(extent[0], extent[1], extent[2]),
+                },
+                local_draw_ranges: Arc::from(ranges),
+                opaque_draw_range_indices: Arc::from(opaque),
+                alpha_draw_range_indices: Arc::from(alpha),
+                materials: source_mesh.materials,
+                first_vertex,
+                vertex_count,
+                skinned_first_vertex: None,
+                fragment_deformable: false,
+                main_view_only: false,
+                last_fragment_poses: std::collections::BTreeMap::new(),
+            },
+        );
+        Ok((center, extent, hull))
     }
 
     pub fn set_entity_model_part_poses(
@@ -498,6 +802,7 @@ impl Scene3dRuntime {
                 "scene entity {stable_id} cannot use fragment CPU poses while skinning is active"
             ));
         }
+        let previous_poses = mesh.last_fragment_poses.clone();
         let source_model_id = mesh.source_model_id.0;
         let first_vertex = mesh.first_vertex as usize;
         let local_draw_ranges = mesh.local_draw_ranges.clone();
@@ -514,13 +819,27 @@ impl Scene3dRuntime {
         let mut modified_vertices = 0usize;
         let mut first_modified_float = None::<usize>;
         for pose in poses {
+            if previous_poses
+                .get(&pose.mesh_names)
+                .is_some_and(|previous| previous == pose)
+            {
+                continue;
+            }
+            if pose
+                .glass_damage
+                .is_some_and(|v| v.iter().any(|x| !x.is_finite()) || !(0.0..=1.0).contains(&v[2]))
+            {
+                return Err("invalid glass damage appearance".to_owned());
+            }
             if pose
                 .pivot
                 .iter()
                 .chain(pose.translation.iter())
                 .chain(pose.rotation_degrees.iter())
                 .chain(pose.scale.iter())
+                .chain(pose.post_rotation_scale.iter())
                 .any(|value| !value.is_finite())
+                || pose.post_rotation_scale.iter().any(|value| *value <= 0.0)
             {
                 return Err(format!(
                     "scene entity {stable_id} fragment pose contains non-finite values"
@@ -542,6 +861,12 @@ impl Scene3dRuntime {
             } else {
                 Vec3::ZERO
             };
+            let post_scale = Vec3::new(
+                pose.post_rotation_scale[0],
+                pose.post_rotation_scale[1],
+                pose.post_rotation_scale[2],
+            );
+            let pose_center = pivot.add(translation);
 
             for range in local_draw_ranges.iter().filter(|range| {
                 pose.mesh_names
@@ -563,22 +888,46 @@ impl Scene3dRuntime {
                 for local_index in local_first..local_end {
                     let bind = bind_vertices[local_index];
                     let centered = bind.position.sub(pivot);
-                    let position =
-                        transform_point(centered, authored_scale, rotation, pivot.add(translation));
-                    let normal = if pose.visible {
+                    let mut position =
+                        transform_point(centered, authored_scale, rotation, pose_center);
+                    let mut normal = if pose.visible {
                         transform_point(bind.normal, Vec3::new(1.0, 1.0, 1.0), rotation, Vec3::ZERO)
                             .normalized()
                     } else {
                         bind.normal
                     };
                     let tangent_vec = Vec3::new(bind.tangent[0], bind.tangent[1], bind.tangent[2]);
-                    let tangent = if pose.visible {
+                    let mut tangent = if pose.visible {
                         transform_point(tangent_vec, Vec3::new(1.0, 1.0, 1.0), rotation, Vec3::ZERO)
                             .normalized()
                     } else {
                         tangent_vec
                     };
+                    if pose.visible && pose.post_rotation_scale != [1.0; 3] {
+                        let relative = position.sub(pose_center);
+                        position = pose_center.add(Vec3::new(
+                            relative.x * post_scale.x,
+                            relative.y * post_scale.y,
+                            relative.z * post_scale.z,
+                        ));
+                        normal = Vec3::new(
+                            normal.x / post_scale.x,
+                            normal.y / post_scale.y,
+                            normal.z / post_scale.z,
+                        )
+                        .normalized();
+                        tangent = Vec3::new(
+                            tangent.x * post_scale.x,
+                            tangent.y * post_scale.y,
+                            tangent.z * post_scale.z,
+                        )
+                        .normalized();
+                    }
 
+                    if pose.visible && !pose.dents.is_empty() {
+                        (position, normal, tangent) =
+                            apply_fragment_dents(position, normal, tangent, &pose.dents);
+                    }
                     let global_vertex = first_vertex
                         .checked_add(local_index)
                         .ok_or_else(|| "fragment global vertex overflow".to_owned())?;
@@ -601,6 +950,10 @@ impl Scene3dRuntime {
                     dst[4] = normal.x;
                     dst[5] = normal.y;
                     dst[6] = normal.z;
+                    dst[7..11].copy_from_slice(&bind.color);
+                    if let Some([u, v, damage]) = pose.glass_damage.filter(|v| v[2] > 0.0) {
+                        dst[7..11].copy_from_slice(&[u, v, damage, -1.0]);
+                    }
                     dst[13] = tangent.x;
                     dst[14] = tangent.y;
                     dst[15] = tangent.z;
@@ -608,6 +961,12 @@ impl Scene3dRuntime {
                         Some(first_modified_float.map_or(base, |value| value.min(base)));
                     modified_vertices = modified_vertices.saturating_add(1);
                 }
+            }
+        }
+        if let Some(mesh) = self.asset_meshes.get_mut(&stable_id) {
+            for pose in poses {
+                mesh.last_fragment_poses
+                    .insert(pose.mesh_names.clone(), pose.clone());
             }
         }
         if let Some(offset) = first_modified_float {
@@ -628,6 +987,7 @@ impl Scene3dRuntime {
             .is_some_and(|entity| entity.mobility == SceneMobility::Static);
         let removed = self.asset_meshes.remove(&stable_id).is_some();
         self.skinned_entities.remove(&stable_id);
+        self.entity_skeletons.remove(&stable_id);
         if removed && persistent_static {
             self.static_asset_instance_epoch = self.static_asset_instance_epoch.wrapping_add(1);
         }
@@ -759,6 +1119,7 @@ fn expand_model_triangles(
                 ));
             }
 
+            let mut partitions = BTreeMap::<Option<u16>, Vec<AssetTriangleVertex>>::new();
             for tri in indices[first..end].chunks_exact(3) {
                 let mut triangle = [AssetTriangleVertex {
                     position: Vec3::ZERO,
@@ -818,21 +1179,80 @@ fn expand_model_triangles(
                 if tangent.is_none() {
                     generate_triangle_tangent(&mut triangle);
                 }
-                out.extend_from_slice(&triangle);
+                let joint = dominant_triangle_joint(&triangle, model.skeleton.as_ref());
+                partitions
+                    .entry(joint)
+                    .or_default()
+                    .extend_from_slice(&triangle);
             }
-            let range_end_vertex = u32::try_from(out.len())
-                .map_err(|_| "expanded model vertex count exceeds u32".to_owned())?;
-            if range_end_vertex > range_first_vertex {
-                draw_ranges.push(AssetDrawRange {
-                    mesh_name: Arc::from(mesh.name.as_str()),
-                    first_vertex: range_first_vertex,
-                    vertex_count: range_end_vertex - range_first_vertex,
-                    material_slot,
-                });
+            let _ = range_first_vertex;
+            for (joint, vertices) in partitions {
+                let first_vertex = u32::try_from(out.len())
+                    .map_err(|_| "expanded model vertex offset exceeds u32".to_owned())?;
+                let vertex_count = u32::try_from(vertices.len())
+                    .map_err(|_| "expanded model partition exceeds u32".to_owned())?;
+                out.extend_from_slice(&vertices);
+                if vertex_count > 0 {
+                    draw_ranges.push(AssetDrawRange {
+                        mesh_name: Arc::from(mesh.name.as_str()),
+                        joint_lineage: Arc::from(joint_lineage(model.skeleton.as_ref(), joint)),
+                        first_vertex,
+                        vertex_count,
+                        material_slot,
+                        local_center: vertices
+                            .iter()
+                            .fold(Vec3::ZERO, |sum, v| sum.add(v.position))
+                            .mul(1.0 / vertices.len() as f32),
+                    });
+                }
             }
         }
     }
     Ok((out, draw_ranges))
+}
+
+// Skin components can share one mesh/material (head and hands are common).
+// Partition by dominant skeletal influence once, at geometry preparation.
+fn dominant_triangle_joint(
+    triangle: &[AssetTriangleVertex; 3],
+    skeleton: Option<&newviso_model::ModelSkeleton>,
+) -> Option<u16> {
+    let skeleton = skeleton?;
+    let mut weights = BTreeMap::<u16, f32>::new();
+    for vertex in triangle {
+        for influence in 0..usize::from(vertex.skin_influences) {
+            let joint = vertex.joints[influence];
+            if usize::from(joint) < skeleton.joints.len() {
+                *weights.entry(joint).or_default() += vertex.weights[influence];
+            }
+        }
+    }
+    weights
+        .into_iter()
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|entry| entry.0)
+}
+
+fn joint_lineage(
+    skeleton: Option<&newviso_model::ModelSkeleton>,
+    joint: Option<u16>,
+) -> Vec<String> {
+    let Some(skeleton) = skeleton else {
+        return Vec::new();
+    };
+    let mut cursor = joint;
+    let mut names = Vec::new();
+    while let Some(index) = cursor {
+        let Some(joint) = skeleton.joints.get(usize::from(index)) else {
+            break;
+        };
+        names.push(joint.name.clone());
+        if names.len() > skeleton.joints.len() {
+            break;
+        }
+        cursor = joint.parent;
+    }
+    names
 }
 
 fn decode_indices(buffer: &newviso_model::IndexBuffer) -> Result<Vec<u32>, String> {
@@ -1120,4 +1540,160 @@ fn transformed_model_bounds(
         },
         transform,
     )
+}
+
+#[cfg(test)]
+mod dent_tests {
+    use super::*;
+    #[test]
+    fn local_dent_deforms_contact_region_and_preserves_remote_geometry() {
+        let dent = SceneModelDent {
+            point: [0.0; 3],
+            displacement: [0.0, -0.2, 0.0],
+            radius: 1.0,
+        };
+        let (point, normal, tangent) = apply_fragment_dents(
+            Vec3::ZERO,
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            &[dent.clone()],
+        );
+        assert!((point.y + 0.2).abs() < 1.0e-6);
+        assert!(normal.y > 0.99 && tangent.x > 0.99);
+        let (remote, _, _) =
+            apply_fragment_dents(Vec3::new(2.0, 0.0, 0.0), normal, tangent, &[dent]);
+        assert!((remote.x - 2.0).abs() < 1.0e-6 && remote.y == 0.0);
+    }
+}
+
+#[cfg(test)]
+mod joint_partition_tests {
+    use super::*;
+    use newviso_model::{
+        Bounds3, IndexBuffer, MeshPrimitive, MeshResource, ModelJoint, ModelSkeleton, VertexStream,
+    };
+
+    fn stream(semantic: VertexSemantic, width: usize, values: &[f32]) -> VertexStream {
+        VertexStream {
+            semantic,
+            format: match width {
+                3 => ModelVertexFormat::Float32x3,
+                _ => ModelVertexFormat::Float32x4,
+            },
+            stride: (width * 4) as u32,
+            vertex_count: 6,
+            data: Arc::from(
+                values
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect::<Vec<_>>(),
+            ),
+        }
+    }
+
+    #[test]
+    fn mixed_head_and_hand_mesh_keeps_every_triangle_and_material() {
+        let bounds = Bounds3 {
+            min: [-1.0; 3],
+            max: [1.0; 3],
+        };
+        let joint = |name: &str, parent: Option<u16>| ModelJoint {
+            name: name.into(),
+            tag: 0,
+            parent,
+            inverse_bind_matrix: identity_matrix(),
+            bind_translation: [0.0; 3],
+            bind_rotation: [0.0, 0.0, 0.0, 1.0],
+            bind_scale: [1.0; 3],
+        };
+        let skeleton = ModelSkeleton {
+            name: "test".into(),
+            joints: vec![
+                joint("root", None),
+                joint("neck", Some(0)),
+                joint("eye", Some(1)),
+                joint("forearm", Some(0)),
+                joint("hand", Some(3)),
+            ],
+        };
+        let indices = [0u32, 1, 2, 3, 4, 5];
+        let influence: Vec<f32> = [2.0, 2.0, 2.0, 4.0, 4.0, 4.0]
+            .into_iter()
+            .flat_map(|j| [j, 0.0, 0.0, 0.0])
+            .collect();
+        let weights: Vec<f32> = (0..6).flat_map(|_| [1.0, 0.0, 0.0, 0.0]).collect();
+        let mesh = MeshResource {
+            name: "shared_skin".into(),
+            bounds,
+            vertex_streams: vec![
+                stream(
+                    VertexSemantic::Position,
+                    3,
+                    &[
+                        0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0,
+                        0.0, 1.0, 1.0,
+                    ],
+                ),
+                stream(VertexSemantic::JointIndices, 4, &influence),
+                stream(VertexSemantic::JointWeights, 4, &weights),
+            ],
+            index_buffer: IndexBuffer {
+                format: ModelIndexFormat::U32,
+                index_count: 6,
+                data: Arc::from(
+                    indices
+                        .iter()
+                        .flat_map(|i| i.to_le_bytes())
+                        .collect::<Vec<_>>(),
+                ),
+            },
+            primitives: vec![MeshPrimitive {
+                first_index: 0,
+                index_count: 6,
+                base_vertex: 0,
+                material_slot: Some(7),
+            }],
+        };
+        let model = ModelResource {
+            id: AssetId(1),
+            name: "mixed".into(),
+            bounds,
+            meshes: vec![mesh],
+            material_slots: vec![],
+            skin_source_to_model: identity_matrix(),
+            skeleton: Some(skeleton),
+            animations: vec![],
+            fragment: None,
+        };
+        let (vertices, ranges) = expand_model_triangles(&model).unwrap();
+        assert_eq!(vertices.len(), 6);
+        assert_eq!(ranges.len(), 2);
+        assert!(ranges
+            .iter()
+            .all(|range| range.mesh_name.as_ref() == "shared_skin"
+                && range.material_slot == Some(7)
+                && range.vertex_count == 3));
+        assert!(ranges[0].joint_lineage.iter().any(|j| j == "neck"));
+        assert!(ranges[1].joint_lineage.iter().any(|j| j == "forearm"));
+        assert!(!ranges[1].joint_lineage.iter().any(|j| j == "neck"));
+    }
+}
+
+#[cfg(test)]
+mod fragment_surface_tests {
+    use super::*;
+    #[test]
+    fn glass_triangle_hit_keeps_the_hit_uv_instead_of_box_overlap() {
+        let (hit, barycentric) = closest_fragment_triangle(
+            [0.25, 0.25, 0.1],
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        )
+        .unwrap();
+        assert_eq!(hit, [0.25, 0.25, 0.0]);
+        assert_eq!(barycentric, [0.5, 0.25, 0.25]);
+    }
+    #[test]
+    fn collapsed_broken_glass_is_not_a_damage_surface() {
+        assert!(closest_fragment_triangle([0.0; 3], [[0.0; 3]; 3]).is_none());
+    }
 }

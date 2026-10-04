@@ -47,6 +47,15 @@ pub trait PlatformApplication {
         }
     }
 
+    /// Semantic startup/loading state owned by the application.
+    ///
+    /// The platform provider keeps presenting the existing loading surface while
+    /// this overlay remains active. Applications that do not need a startup gate
+    /// retain the historical inactive default.
+    fn loading_overlay(&self) -> PlatformLoadingOverlayV1 {
+        PlatformLoadingOverlayV1::default()
+    }
+
     fn shutdown(&mut self) {}
 }
 
@@ -238,6 +247,11 @@ extern "C" fn step(user_data: usize, dt: f32) -> RResult<PlatformStepResultV1, R
         .frame_limit
         .is_some_and(|limit| state.frames >= limit.max(1));
     let exit_requested = state.close_requested || app_exit || frame_limit_reached;
+    let loading_overlay = if exit_requested {
+        PlatformLoadingOverlayV1::default()
+    } else {
+        state.app.loading_overlay()
+    };
 
     if exit_requested {
         state.shutdown_app();
@@ -245,7 +259,7 @@ extern "C" fn step(user_data: usize, dt: f32) -> RResult<PlatformStepResultV1, R
 
     RResult::ROk(PlatformStepResultV1 {
         exit_requested,
-        loading_overlay: PlatformLoadingOverlayV1::default(),
+        loading_overlay,
     })
 }
 

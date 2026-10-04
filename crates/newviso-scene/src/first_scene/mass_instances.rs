@@ -484,7 +484,7 @@ impl Scene3dRuntime {
                         &format!("newviso.mass_instances.{}.mesh", name),
                         vertices.len() as u64 * std::mem::size_of::<f32>() as u64,
                         "Vertex",
-                        "CpuToGpu",
+                        "GpuOnly",
                     )?;
                     render.write_buffer_f32(vertex_buffer, 0, &vertices)?;
                     (vertex_buffer, None)
@@ -503,7 +503,7 @@ impl Scene3dRuntime {
                     ),
                     capacity as u64 * MASS_INSTANCE_STRIDE,
                     "Vertex",
-                    "CpuToGpu",
+                    "GpuOnly",
                 )?;
 
                 if let Some(old) = old_instance_buffer {

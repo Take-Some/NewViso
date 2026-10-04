@@ -22,6 +22,11 @@ pub(crate) fn attach_character_skeleton(
     address: &AssetAddress,
     model: &mut ModelResource,
 ) -> Result<(), String> {
+    // Native drawable skeleton metadata is authoritative when the semantic
+    // model already carries it (notably weapon YDRs with Gun_GripR/Gun_Muzzle).
+    if model.skeleton.is_some() {
+        return Ok(());
+    }
     if !model.meshes.iter().any(|mesh| {
         mesh.vertex_streams.iter().any(|stream| {
             matches!(

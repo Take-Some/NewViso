@@ -14,6 +14,8 @@ const CORNERS: [Vec3; 8] = [
 const SPHERE_LAT_SEGMENTS: u32 = 6;
 const SPHERE_LON_SEGMENTS: u32 = 10;
 pub(super) const SPHERE_VERTEX_COUNT: u32 = SPHERE_LAT_SEGMENTS * SPHERE_LON_SEGMENTS * 6;
+pub(super) const SURFACE_MARK_SEGMENTS: u32 = 12;
+pub(super) const SURFACE_MARK_VERTEX_COUNT: u32 = SURFACE_MARK_SEGMENTS * 3;
 
 impl Cube {
     fn world_corners(&self) -> [Vec3; 8] {
@@ -105,6 +107,49 @@ pub(super) fn append_sphere_vertices(
                 append_world_vertex(out, world, normal, vertex_color);
             }
         }
+    }
+}
+
+pub(super) fn append_surface_mark_vertices(
+    position: Vec3,
+    normal: Vec3,
+    radius: f32,
+    color: [f32; 4],
+    out: &mut Vec<f32>,
+) {
+    let normal = normal.normalized();
+    let tangent = if normal.y.abs() < 0.95 {
+        Vec3::new(normal.z, 0.0, -normal.x).normalized()
+    } else {
+        Vec3::new(1.0, 0.0, 0.0)
+    };
+    let bitangent = Vec3::new(
+        normal.y * tangent.z - normal.z * tangent.y,
+        normal.z * tangent.x - normal.x * tangent.z,
+        normal.x * tangent.y - normal.y * tangent.x,
+    ).normalized();
+    let center = Vec3::new(
+        position.x + normal.x * 0.0025,
+        position.y + normal.y * 0.0025,
+        position.z + normal.z * 0.0025,
+    );
+    let tau = std::f32::consts::TAU;
+    for segment in 0..SURFACE_MARK_SEGMENTS {
+        let a0 = segment as f32 / SURFACE_MARK_SEGMENTS as f32 * tau;
+        let a1 = (segment + 1) as f32 / SURFACE_MARK_SEGMENTS as f32 * tau;
+        let p0 = Vec3::new(
+            center.x + (tangent.x * a0.cos() + bitangent.x * a0.sin()) * radius,
+            center.y + (tangent.y * a0.cos() + bitangent.y * a0.sin()) * radius,
+            center.z + (tangent.z * a0.cos() + bitangent.z * a0.sin()) * radius,
+        );
+        let p1 = Vec3::new(
+            center.x + (tangent.x * a1.cos() + bitangent.x * a1.sin()) * radius,
+            center.y + (tangent.y * a1.cos() + bitangent.y * a1.sin()) * radius,
+            center.z + (tangent.z * a1.cos() + bitangent.z * a1.sin()) * radius,
+        );
+        append_world_vertex(out, center, normal, color);
+        append_world_vertex(out, p0, normal, color);
+        append_world_vertex(out, p1, normal, color);
     }
 }
 

@@ -23,6 +23,31 @@ pub struct RenderLight {
     pub casts_shadows: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RenderLightingEnvironment {
+    pub ambient_color: [f32; 3],
+    pub ambient_intensity: f32,
+    pub directional_color: [f32; 3],
+    pub directional_intensity: f32,
+    pub directional_direction_ws: [f32; 3],
+    /// Fraction of unobstructed outdoor/sky contribution at the camera.
+    /// 0 = fully covered interior, 1 = open sky.
+    pub outdoor_exposure: f32,
+}
+
+impl Default for RenderLightingEnvironment {
+    fn default() -> Self {
+        Self {
+            ambient_color: [0.0; 3],
+            ambient_intensity: 0.0,
+            directional_color: [0.0; 3],
+            directional_intensity: 0.0,
+            directional_direction_ws: [0.0, -1.0, 0.0],
+            outdoor_exposure: 1.0,
+        }
+    }
+}
+
 impl RenderLight {
     #[inline]
     pub const fn local(

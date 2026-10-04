@@ -145,6 +145,7 @@ impl Scene3dRuntime {
             collision_local_bounds: None,
             destructible: None,
             asset_ref: None,
+            resident_geometry: false,
             render_slot: None,
             residency: SceneResidency::Resident,
             priority_score: 0.0,
@@ -180,11 +181,25 @@ impl Scene3dRuntime {
                 let position = read_vec3(transform, "position", Vec3::ZERO)?;
                 let rotation_degrees = read_vec3(transform, "rotation_degrees", Vec3::ZERO)?;
                 let scale = read_vec3(transform, "scale", Vec3::ONE)?;
+                let scene_transform = SceneTransform {
+                    position,
+                    rotation_degrees,
+                    scale,
+                };
+                let collision_local_bounds = read_collision_local_bounds(record)?;
                 let half_extent = Vec3::new(
                     scale.x.abs().max(0.1) * 0.5,
                     scale.y.abs().max(0.1) * 0.5,
                     scale.z.abs().max(0.1) * 0.5,
                 );
+                // Collision-only scene entities (notably large RSC7 YBN sectors)
+                // need their authored local bounds before the asset becomes resident.
+                // Otherwise spatial streaming sees only a 1 m placeholder at the
+                // sector origin and can leave nearby walls/floors unloaded.
+                let initial_bounds = match collision_local_bounds {
+                    Some(local) => asset_models::transformed_local_bounds(local, scene_transform)?,
+                    None => SceneBounds::from_center_half_extent(position, half_extent),
+                };
                 let mobility = match record.get("mobility").and_then(Value::as_str) {
                     Some("dynamic") => SceneMobility::Dynamic,
                     _ => SceneMobility::Static,
@@ -202,21 +217,18 @@ impl Scene3dRuntime {
                     },
                     mobility,
                     lifecycle: SceneLifecycle::Constructed,
-                    transform: SceneTransform {
-                        position,
-                        rotation_degrees,
-                        scale,
-                    },
+                    transform: scene_transform,
                     light: None,
-                    bounds: SceneBounds::from_center_half_extent(position, half_extent),
+                    bounds: initial_bounds,
                     parent: None,
                     children: Vec::new(),
                     visibility: read_visibility_mask(record),
                     lod: read_lod_policy(record)?,
                     solid: record.pointer("/collider/solid").and_then(Value::as_bool) == Some(true),
-                    collision_local_bounds: read_collision_local_bounds(record)?,
+                    collision_local_bounds,
                     destructible: read_destructible(record)?,
                     asset_ref: Some(asset_ref),
+                    resident_geometry: false,
                     render_slot: None,
                     residency: SceneResidency::Unloaded,
                     priority_score: 0.0,
@@ -285,6 +297,7 @@ impl Scene3dRuntime {
                 collision_local_bounds: read_collision_local_bounds(record)?,
                 destructible: read_destructible(record)?,
                 asset_ref: None,
+                resident_geometry: false,
                 render_slot: Some(render_slot),
                 residency: SceneResidency::Resident,
                 priority_score: 0.0,
@@ -355,6 +368,7 @@ impl Scene3dRuntime {
                     .or_else(|| record.pointer("/mesh/asset"))
                     .and_then(Value::as_str)
                     .map(str::to_owned),
+                resident_geometry: false,
                 render_slot: None,
                 residency: SceneResidency::Resident,
                 priority_score: 0.0,
@@ -415,6 +429,9 @@ impl Scene3dRuntime {
                 cubes,
                 asset_meshes: BTreeMap::new(),
                 skinned_entities: BTreeMap::new(),
+                entity_skeletons: BTreeMap::new(),
+                joint_attachments: BTreeMap::new(),
+                arm_ik_constraints: BTreeMap::new(),
                 animation_skinning_pool: animation_skinning::SkinningWorkerPool::new()?,
                 animation_skinning_in_flight: BTreeSet::new(),
                 main_view_mesh_visibility: Default::default(),
@@ -425,6 +442,8 @@ impl Scene3dRuntime {
                 asset_gpu_textures: BTreeMap::new(),
                 asset_gpu_pending_textures: BTreeMap::new(),
                 asset_gpu_materials: BTreeMap::new(),
+                vehicle_dashboards: BTreeMap::new(),
+                dashboard_gpu_materials: BTreeMap::new(),
                 asset_binding_contexts: BTreeMap::new(),
                 asset_vertex_data: Vec::new(),
                 asset_upload_from_float: None,
@@ -433,8 +452,20 @@ impl Scene3dRuntime {
                 asset_geometry_full_rebuild: false,
                 retired_asset_vertex_buffers: Vec::new(),
                 transient_spheres: Vec::new(),
+                surface_marks: Vec::new(),
                 overlay_quads: Vec::new(),
                 particles: Vec::new(),
+                physical_particles: Vec::new(),
+                physical_particle_spawns: Vec::new(),
+                removed_physical_particles: Vec::new(),
+                physical_particle_debris_enabled: false,
+                next_physical_particle_serial: 0,
+                particle_interiors: BTreeMap::new(),
+                particle_interior_stats: ParticleInteriorStats::default(),
+                particle_interior_contacts: 0,
+                particle_textures: BTreeMap::new(),
+                particle_gpu_textures: BTreeMap::new(),
+                particle_gpu_materials: BTreeMap::new(),
                 sky_visuals: BTreeMap::new(),
                 lens_flares: BTreeMap::new(),
                 sky_clouds: SkyCloudDesc::default(),

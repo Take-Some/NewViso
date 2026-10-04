@@ -102,6 +102,20 @@ pub struct ReferenceHandlingData {
     pub roll_centre_height_rear: f32,
     #[serde(alias = "m_fDownforceModifier")]
     pub downforce_modifier: f32,
+    #[serde(alias = "m_fCollisionDamageMult")]
+    pub collision_damage_multiplier: f32,
+    #[serde(alias = "m_fWeaponDamageMult")]
+    pub weapon_damage_multiplier: f32,
+    #[serde(alias = "m_fDeformationDamageMult")]
+    pub deformation_damage_multiplier: f32,
+    #[serde(alias = "m_fEngineDamageMult")]
+    pub engine_damage_multiplier: f32,
+    #[serde(alias = "m_fPetrolTankVolume")]
+    pub petrol_tank_volume: f32,
+    #[serde(alias = "m_fPetrolConsumptionRate")]
+    pub petrol_consumption_rate: f32,
+    #[serde(alias = "m_fOilVolume")]
+    pub oil_volume: f32,
 }
 
 impl Default for ReferenceHandlingData {
@@ -143,6 +157,15 @@ impl Default for ReferenceHandlingData {
             roll_centre_height_front: 0.25,
             roll_centre_height_rear: 0.25,
             downforce_modifier: 1.0,
+            collision_damage_multiplier: 1.0,
+            weapon_damage_multiplier: 1.0,
+            deformation_damage_multiplier: 0.8,
+            engine_damage_multiplier: 1.5,
+            petrol_tank_volume: 30.0,
+            // handlingMgr initializes this to zero; scripts may opt into fuel
+            // consumption with SET_PETROL_CONSUMPTION_RATE.
+            petrol_consumption_rate: 0.0,
+            oil_volume: 5.0,
         }
     }
 }
@@ -187,6 +210,13 @@ pub struct HandlingData {
     pub roll_centre_height_front: f32,
     pub roll_centre_height_rear: f32,
     pub downforce_modifier: f32,
+    pub collision_damage_multiplier: f32,
+    pub weapon_damage_multiplier: f32,
+    pub deformation_damage_multiplier: f32,
+    pub engine_damage_multiplier: f32,
+    pub petrol_tank_volume: f32,
+    pub petrol_consumption_rate: f32,
+    pub oil_volume: f32,
 }
 
 impl Default for HandlingData {
@@ -238,6 +268,13 @@ impl HandlingData {
             roll_centre_height_front: source.roll_centre_height_front,
             roll_centre_height_rear: source.roll_centre_height_rear,
             downforce_modifier: source.downforce_modifier.max(0.0),
+            collision_damage_multiplier: source.collision_damage_multiplier.max(0.0),
+            weapon_damage_multiplier: source.weapon_damage_multiplier.max(0.0),
+            deformation_damage_multiplier: source.deformation_damage_multiplier.max(0.0),
+            engine_damage_multiplier: source.engine_damage_multiplier.max(0.0),
+            petrol_tank_volume: source.petrol_tank_volume.max(0.0),
+            petrol_consumption_rate: source.petrol_consumption_rate.max(0.0),
+            oil_volume: source.oil_volume.max(0.0),
         }
     }
 
@@ -277,6 +314,13 @@ impl HandlingData {
             self.roll_centre_height_front,
             self.roll_centre_height_rear,
             self.downforce_modifier,
+            self.collision_damage_multiplier,
+            self.weapon_damage_multiplier,
+            self.deformation_damage_multiplier,
+            self.engine_damage_multiplier,
+            self.petrol_tank_volume,
+            self.petrol_consumption_rate,
+            self.oil_volume,
         ];
         if scalars.iter().any(|v| !v.is_finite())
             || self
@@ -401,6 +445,7 @@ impl Default for WaterHandling {
 #[serde(default)]
 pub struct VehicleDefinition {
     pub class: VehicleClass,
+    pub specification: crate::VehicleSpecification,
     pub handling: HandlingData,
     pub chassis_half_extents: Vec3,
     pub wheels: Vec<WheelConfig>,
@@ -420,6 +465,7 @@ impl VehicleDefinition {
     pub fn automobile() -> Self {
         Self {
             class: VehicleClass::Automobile,
+            specification: crate::VehicleSpecification::default(),
             handling: HandlingData::default(),
             chassis_half_extents: [0.92, 0.48, 2.05],
             wheels: vec![
@@ -504,6 +550,7 @@ impl VehicleDefinition {
 
     pub fn validate(&self) -> Result<(), String> {
         self.handling.validate()?;
+        self.specification.validate()?;
         if self
             .chassis_half_extents
             .iter()
@@ -667,6 +714,20 @@ pub struct VehicleInput {
 
 impl VehicleInput {
     pub fn sanitized(mut self) -> Self {
+        for value in [
+            &mut self.throttle,
+            &mut self.brake,
+            &mut self.steer,
+            &mut self.handbrake,
+            &mut self.pitch,
+            &mut self.roll,
+            &mut self.yaw,
+            &mut self.collective,
+        ] {
+            if !value.is_finite() {
+                *value = 0.0;
+            }
+        }
         self.throttle = self.throttle.clamp(-1.0, 1.0);
         self.brake = self.brake.clamp(0.0, 1.0);
         self.steer = self.steer.clamp(-1.0, 1.0);
@@ -729,14 +790,82 @@ pub struct VehicleFramePlan {
     pub angular_velocity_deltas: Vec<VehicleAngularVelocityDelta>,
 }
 
+/// Independent tyre condition. Missing wheels provide no suspension support.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TireCondition {
+    #[default]
+    Intact,
+    Punctured,
+    Rim,
+    Missing,
+}
+
+impl TireCondition {
+    pub fn radius_multiplier(self) -> f32 {
+        self.radius_multiplier_with_rubber(1.0)
+    }
+
+    pub fn radius_multiplier_with_rubber(self, rubber_remaining: f32) -> f32 {
+        let rubber = rubber_remaining.clamp(0.0, 1.0);
+        match self {
+            Self::Intact => 1.0,
+            // A flat tyre keeps its rim. Only the rubber envelope collapses as it
+            // is scrubbed away, so the effective radius approaches the bare rim.
+            Self::Punctured => 0.65 + (0.82 - 0.65) * rubber,
+            Self::Rim => 0.65,
+            Self::Missing => 0.0,
+        }
+    }
+
+    pub fn grip_multiplier(self) -> f32 {
+        self.grip_multiplier_with_rubber(1.0)
+    }
+
+    pub fn grip_multiplier_with_rubber(self, rubber_remaining: f32) -> f32 {
+        let rubber = rubber_remaining.clamp(0.0, 1.0);
+        match self {
+            Self::Intact => 1.0,
+            Self::Punctured => 0.22 + (0.48 - 0.22) * rubber,
+            Self::Rim => 0.22,
+            Self::Missing => 0.0,
+        }
+    }
+
+    pub fn rolling_resistance(self) -> f32 {
+        self.rolling_resistance_with_rubber(1.0)
+    }
+
+    pub fn rolling_resistance_with_rubber(self, rubber_remaining: f32) -> f32 {
+        let rubber = rubber_remaining.clamp(0.0, 1.0);
+        match self {
+            Self::Intact => 0.0,
+            Self::Punctured => 0.12 - (0.12 - 0.075) * rubber,
+            Self::Rim => 0.12,
+            Self::Missing => 0.0,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 pub struct WheelTelemetry {
+    pub tire_condition: TireCondition,
+    /// Fraction of the tyre carcass still surrounding the rim. Intact/flat starts
+    /// at 1.0; driving on a flat scrubs it toward 0.0, where only the rim remains.
+    pub tire_rubber_remaining: f32,
+    pub effective_radius: f32,
+    pub tire_grip_multiplier: f32,
     pub contact: bool,
+    pub contact_position: Option<Vec3>,
+    pub contact_normal: Option<Vec3>,
     pub compression: f32,
     pub suspension_velocity: f32,
     pub normal_force: f32,
     pub longitudinal_slip: f32,
     pub lateral_slip_angle: f32,
+    /// Dimensionless combined tyre slip. 1.0 is approximately the authored
+    /// traction peak; values above one mean the contact patch is sliding.
+    pub slip_intensity: f32,
     pub angular_velocity: f32,
     pub rotation_angle: f32,
     pub steer_angle: f32,
@@ -749,11 +878,38 @@ pub struct WheelTelemetry {
 #[derive(Clone, Debug, Serialize)]
 pub struct VehicleTelemetry {
     pub entity: VehicleEntity,
+    pub specification: crate::VehicleSpecification,
+    pub powertrain_state: crate::VehiclePowertrainState,
+    pub driveable_player: bool,
+    pub driveable_ai: bool,
+    pub engine_output_multiplier: f32,
+    pub enabled: bool,
+    pub player_driver: bool,
+    pub alarm: crate::systems::VehicleAlarmState,
+    pub thermal: crate::systems::VehicleThermalState,
+    pub damage_policy: crate::systems::VehicleDamagePolicy,
     pub class: VehicleClass,
     pub speed_mps: f32,
     pub speed_forward_mps: f32,
     pub gear: i8,
     pub engine_speed: f32,
+    pub engine_running: bool,
+    pub engine_starting: bool,
+    pub engine_start_remaining: f32,
+    pub failed_engine_start_attempts: u8,
+    pub engine_condition: f32,
+    pub engine_smoke_level: f32,
+    pub engine_fire_level: f32,
+    pub engine_misfiring: bool,
+    pub petrol_leak_level: f32,
+    pub petrol_fire_level: f32,
+    pub petrol_tank_level: f32,
+    pub petrol_tank_capacity: f32,
+    pub fuel_fraction: f32,
+    pub oil_level: f32,
+    pub oil_capacity: f32,
+    pub exploded: bool,
+    pub manual_gear: Option<i8>,
     pub clutch: f32,
     pub input: VehicleInput,
     pub wheels: Vec<WheelTelemetry>,

@@ -11,12 +11,12 @@ use crate::{
 use newviso_host as host_runtime;
 use newviso_input_client::InputSnapshot;
 use newviso_render_client::{
-    Extent2D, GraphicsPipelineDesc, RenderClient, RenderDrawListKind, RenderGraphDesc,
-    RenderGraphPassDesc, RenderGraphPassDomain, RenderGraphPassId, RenderGraphPassKind,
-    RenderGraphResourceDesc, RenderGraphResourceId, RenderGraphResourceSemantic,
-    RenderGraphResourceUsage, RenderLight, RenderLightKind, ShaderStage,
-    TextureFormat as RenderTextureFormat, TextureMipUpload, TextureResidencyState, VertexAttribute,
-    VertexFormat, VertexLayoutDesc, VertexStepMode,
+    Extent2D, FrameCameraContext, GraphicsPipelineDesc, RenderClient, RenderDrawListKind,
+    RenderGraphDesc, RenderGraphPassDesc, RenderGraphPassDomain, RenderGraphPassId,
+    RenderGraphPassKind, RenderGraphQueueKind, RenderGraphResourceDesc, RenderGraphResourceId,
+    RenderGraphResourceSemantic, RenderGraphResourceUsage, RenderLight, RenderLightKind,
+    RenderLightingEnvironment, ShaderStage, TextureFormat as RenderTextureFormat, TextureMipUpload,
+    TextureResidencyState, VertexAttribute, VertexFormat, VertexLayoutDesc, VertexStepMode,
 };
 use newviso_textures::{TextureFormat, TextureResource};
 use serde_json::{json, Value};
@@ -26,29 +26,62 @@ use std::collections::{BTreeMap, BTreeSet};
 mod geometry;
 
 mod animation_skinning;
+pub use animation_skinning::SceneArmIkConstraint;
 mod asset_models;
 mod atmospheric_clouds;
 #[cfg(test)]
 mod debris_stress;
 mod gpu_instance_table;
+mod joint_mesh;
 mod mass_instances;
 mod mesh_visibility;
 mod parse_helpers;
+mod particle_debris;
+mod particle_geometry;
+use particle_debris::PhysicalParticleGeometry;
+pub use particle_debris::ScenePhysicalParticleSpawn;
+mod particle_interiors;
+use particle_interiors::*;
+mod particle_styles;
+use particle_styles::*;
+pub use particle_styles::{SceneParticleMesh, SceneParticleStyle};
 mod portal_visibility;
 mod render_math;
 mod render_policy;
+mod renderer_atmosphere;
 mod renderer_frame;
 mod renderer_geometry;
+mod renderer_gpu_geometry;
 mod renderer_init;
+mod renderer_materials;
+mod renderer_pipelines;
+mod renderer_resources;
+mod renderer_shutdown;
+mod renderer_sky;
+use renderer_pipelines::{create_scene_pipelines, ScenePipelines};
+mod renderer_asset_submission;
+mod renderer_graph;
+mod renderer_passes;
+mod renderer_submission;
+#[cfg(test)]
+mod renderer_submission_tests;
+mod renderer_transparent_submission;
+use renderer_asset_submission::FrameAssetSubmission;
+use renderer_graph::main_deferred_hdr_render_graph;
+use renderer_resources::{create_frame_buffer_ring, scene_pipeline_desc};
+use renderer_submission::*;
 mod renderer_uniforms;
 mod scene_entities;
 mod scene_lighting;
 mod scene_load;
 mod scene_state;
+mod vehicle_dashboard;
+pub use vehicle_dashboard::SceneVehicleDashboard;
 mod volumetric_clouds;
 mod weather_gpu_fx;
 pub use asset_models::{
-    prepare_model_geometry, SceneModelPartPose, ScenePreparedModelGeometry, SceneResolvedMaterial,
+    prepare_model_geometry, SceneModelDent, SceneModelPartPose, ScenePreparedModelGeometry,
+    SceneResolvedMaterial,
 };
 use asset_models::{AssetDrawRange, AssetTriangleVertex, CpuAssetMaterial, CpuAssetMesh};
 use atmospheric_clouds::*;
@@ -108,7 +141,7 @@ const DEFAULT_ASSET_VERTEX_CAPACITY: u32 = 2_097_152;
 const DEFAULT_SKINNED_VERTEX_CAPACITY: u32 = 131_072;
 const ASSET_INSTANCE_CELL_SIZE: f32 = 16.0;
 const ENABLE_ASSET_HIZ_OCCLUSION: bool = true;
-const MAX_HIZ_DRAW_CANDIDATES: u32 = 4_096;
+const MAX_HIZ_DRAW_CANDIDATES: u32 = 16_384;
 const MAX_STREAMED_TEXTURE_UPLOADS_PER_FRAME: usize = 1;
 const MAX_STREAMED_MATERIAL_CREATIONS_PER_FRAME: usize = 8;
 const MAX_STREAMED_TEXTURE_DIMENSION: u32 = 2_048;
@@ -142,6 +175,14 @@ pub struct SceneTransientSphere {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct SceneSurfaceMark {
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub radius: f32,
+    pub color: [f32; 4],
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct SceneOverlayQuad {
     pub rect: [f32; 4],
     pub color: [f32; 4],
@@ -166,12 +207,15 @@ pub struct SceneParticleSpawnDesc {
     pub rotation_degrees: f32,
     pub angular_velocity_degrees: f32,
     pub blend: SceneParticleBlend,
+    pub style: Option<SceneParticleStyle>,
 }
 
 #[derive(Clone, Debug)]
 struct SceneRuntimeParticle {
     desc: SceneParticleSpawnDesc,
     age_seconds: f32,
+    trail_history: Vec<[f32; 3]>,
+    physical: Option<PhysicalParticleGeometry>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -485,6 +529,27 @@ struct GpuAssetMaterial {
     bind_group: u32,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SceneGpuWarmupStatus {
+    pub streaming_entities: usize,
+    pub material_entities: usize,
+    pub required_textures: usize,
+    pub ready_textures: usize,
+    pub pending_textures: usize,
+    pub missing_textures: usize,
+    pub required_materials: usize,
+    pub ready_materials: usize,
+}
+
+impl SceneGpuWarmupStatus {
+    pub fn fully_ready(self) -> bool {
+        self.pending_textures == 0
+            && self.missing_textures == 0
+            && self.ready_textures == self.required_textures
+            && self.ready_materials == self.required_materials
+    }
+}
+
 type GpuInstanceBatchKey = (u64, i32, i32, i32, u8);
 
 #[derive(Clone, Debug)]
@@ -580,6 +645,7 @@ struct GpuScene {
     flare_fragment_shader: u32,
     flare_pipeline: u32,
     particle_vertex_buffers: [u32; SCENE_FRAME_SLOTS],
+    particle_vertex_capacities: [u32; SCENE_FRAME_SLOTS],
     particle_additive_pipeline: u32,
 }
 
@@ -828,6 +894,15 @@ impl Default for WeatherEffectsState {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct SceneJointAttachment {
+    parent_stable_id: u64,
+    parent_joint: String,
+    child_joint: String,
+    position_offset: [f32; 3],
+    rotation_offset_degrees: [f32; 3],
+}
+
 #[derive(Debug)]
 pub struct Scene3dRuntime {
     title: String,
@@ -838,6 +913,13 @@ pub struct Scene3dRuntime {
     cubes: Vec<Cube>,
     asset_meshes: BTreeMap<u64, CpuAssetMesh>,
     skinned_entities: BTreeMap<u64, animation_skinning::SkinnedEntityAnimationState>,
+    // Skeleton/source-space transform retained for every model with a skeleton,
+    // including rigid weapon drawables whose vertices do not require skinning.
+    entity_skeletons: BTreeMap<u64, (std::sync::Arc<newviso_model::ModelSkeleton>, [f32; 16])>,
+    // Persistent joint constraints are evaluated after animation sampling each tick.
+    // Weapons use this to keep gun_gripr exactly aligned with PH_R_Hand.
+    joint_attachments: BTreeMap<u64, SceneJointAttachment>,
+    arm_ik_constraints: BTreeMap<u64, Vec<SceneArmIkConstraint>>,
     animation_skinning_pool: animation_skinning::SkinningWorkerPool,
     animation_skinning_in_flight: BTreeSet<u64>,
     main_view_mesh_visibility: mesh_visibility::MainViewMeshVisibility,
@@ -848,6 +930,8 @@ pub struct Scene3dRuntime {
     asset_gpu_textures: BTreeMap<u64, u32>,
     asset_gpu_pending_textures: BTreeMap<u64, u32>,
     asset_gpu_materials: BTreeMap<(u64, u32), GpuAssetMaterial>,
+    vehicle_dashboards: BTreeMap<u64, SceneVehicleDashboard>,
+    dashboard_gpu_materials: BTreeMap<(u64, u32), vehicle_dashboard::DashboardGpuMaterial>,
     asset_binding_contexts: BTreeMap<u64, SceneAssetBindingContext>,
     asset_vertex_data: Vec<f32>,
     asset_upload_from_float: Option<usize>,
@@ -856,8 +940,20 @@ pub struct Scene3dRuntime {
     asset_geometry_full_rebuild: bool,
     retired_asset_vertex_buffers: Vec<u32>,
     transient_spheres: Vec<SceneTransientSphere>,
+    surface_marks: Vec<SceneSurfaceMark>,
     overlay_quads: Vec<SceneOverlayQuad>,
     particles: Vec<SceneRuntimeParticle>,
+    physical_particles: Vec<SceneRuntimeParticle>,
+    physical_particle_spawns: Vec<ScenePhysicalParticleSpawn>,
+    removed_physical_particles: Vec<u64>,
+    physical_particle_debris_enabled: bool,
+    next_physical_particle_serial: u64,
+    particle_interiors: BTreeMap<u64, ParticleInteriorBounds>,
+    particle_interior_stats: ParticleInteriorStats,
+    particle_interior_contacts: u64,
+    particle_textures: BTreeMap<String, SkyTextureResources>,
+    particle_gpu_textures: BTreeMap<String, u32>,
+    particle_gpu_materials: BTreeMap<(String, u32), GpuAssetMaterial>,
     sky_visuals: BTreeMap<String, SkyVisualDesc>,
     lens_flares: BTreeMap<String, LensFlareDesc>,
     sky_clouds: SkyCloudDesc,

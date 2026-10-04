@@ -9,13 +9,15 @@ impl EngineApplication {
                 .living_world
                 .actor_runtime_views()
                 .into_iter()
-                .map(|actor| AgentActorView {
+                .map(|actor| {
+                    let enabled = actor.enabled && !self.peds.is_dead(&actor.id);
+                    AgentActorView {
                     id: actor.id,
                     position: actor.position,
-                    enabled: actor.enabled,
+                    enabled,
                     simulation_tier: actor.simulation_tier.to_owned(),
                     travel_destination: actor.travel_destination,
-                })
+                }})
                 .collect(),
             stimuli: self
                 .living_world
@@ -35,8 +37,31 @@ impl EngineApplication {
                 .collect(),
         };
 
+        self.peds.tick(&snapshot, &mut self.agents)?;
         let commands = self.agents.tick(dt, &snapshot);
-        apply_agent_commands(&mut self.living_world, commands)
+        for command in commands {
+            if let AgentCommand::Attack { actor_id, target_actor, damage, range } = command {
+                self.ped_attack(&actor_id, &target_actor, damage, range)?;
+            } else {
+                let actor_id = match &command {
+                    AgentCommand::StartTravel { actor_id, .. } | AgentCommand::CancelTravel { actor_id }
+                    | AgentCommand::MoveToPosition { actor_id, .. } => actor_id.clone(),
+                    AgentCommand::Attack { .. } => unreachable!(),
+                };
+                if let Err(error) = apply_agent_commands(&mut self.living_world, vec![command]) {
+                    self.agents.fail_active(&actor_id);
+                    host::warn("newviso.agents", format!("actor '{actor_id}' task failed: {error}"));
+                }
+            }
+        }
+        for event in self.agents.frame_events() {
+            host::publish_event_json("agent.task.lifecycle", "newviso.agents", event.clone())?;
+        }
+        for event in self.peds.drain_events() {
+            let kind = event.get("kind").and_then(Value::as_str).unwrap_or("ped.event");
+            host::publish_event_json(kind, "newviso.peds", event.clone())?;
+        }
+        Ok(())
     }
 }
 
@@ -63,6 +88,10 @@ pub(super) fn apply_agent_commands(
                     payload,
                 })?;
             }
+            AgentCommand::MoveToPosition { actor_id, request_id, position, speed, stop_distance } => {
+                world.start_travel_to_position(&actor_id, &request_id, position, speed, stop_distance)?;
+            }
+            AgentCommand::Attack { .. } => {}
             AgentCommand::CancelTravel { actor_id } => {
                 world.cancel_travel(&actor_id);
             }

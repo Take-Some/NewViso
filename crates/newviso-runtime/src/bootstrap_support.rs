@@ -1,9 +1,11 @@
+use super::engine_scripts::{compose_engine_scripts, default_player_requires_physics};
 use super::*;
 
 const SHARED_RUNTIME_DEFAULTS: &str = "config/engine/runtime.defaults.xml";
 const SHARED_ENVIRONMENT_DEFAULTS: &str = "config/engine/environment.defaults.xml";
 const SHARED_RENDER_DEFAULTS: &str = "config/engine/render.defaults.xml";
 const SHARED_VFS_MOUNTS: &str = "config/engine/vfs_mounts.xml";
+const SHARED_SCRIPTS_DEFAULTS: &str = "config/engine/scripts.defaults.xml";
 
 #[derive(Debug)]
 struct EngineConfigXmlNode {
@@ -28,7 +30,7 @@ fn load_shared_engine_xml(
         .map_err(|error| format!("Shared Assets {label} defaults XML is invalid: {error}"))
 }
 
-fn parse_engine_config_xml(bytes: &[u8], path: &Path) -> Result<Value, String> {
+pub(super) fn parse_engine_config_xml(bytes: &[u8], path: &Path) -> Result<Value, String> {
     use quick_xml::{events::Event, Reader, XmlVersion};
 
     fn attrs(
@@ -222,8 +224,10 @@ pub(super) fn resolve_project_capabilities(
     project: &ResolvedProject,
     providers: &[ProviderInfo],
     safe_mode: bool,
+    runtime_settings: &ProjectRuntimeSettings,
 ) -> Result<Vec<ResolvedCapability>, String> {
-    let required = project
+    let player_requires_physics = default_player_requires_physics(runtime_settings);
+    let mut required: Vec<_> = project
         .manifest
         .capabilities
         .required
@@ -233,7 +237,32 @@ pub(super) fn resolve_project_capabilities(
             min_version: request.min_version,
             provider: request.provider.clone(),
             required: true,
+        })
+        .collect();
+    if player_requires_physics
+        && !safe_mode
+        && !required.iter().any(|need| need.id == "physics.backend")
+    {
+        let authored = project
+            .manifest
+            .capabilities
+            .optional
+            .iter()
+            .find(|need| need.id == "physics.backend");
+        required.push(CapabilityNeed {
+            id: "physics.backend".to_owned(),
+            min_version: authored.map(|need| need.min_version).unwrap_or(1),
+            provider: authored.and_then(|need| need.provider.clone()).or_else(|| {
+                runtime_settings
+                    .variables
+                    .get("engine_player")
+                    .and_then(|player| player.get("physics_provider"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            }),
+            required: true,
         });
+    }
     let optional = project
         .manifest
         .capabilities
@@ -246,7 +275,12 @@ pub(super) fn resolve_project_capabilities(
             required: false,
         });
 
-    resolve_capabilities(providers, required.chain(optional.filter(|_| !safe_mode)))
+    resolve_capabilities(
+        providers,
+        required.iter().cloned().chain(
+            optional.filter(|need| !safe_mode && !required.iter().any(|base| base.id == need.id)),
+        ),
+    )
 }
 pub(super) fn activate_project_capabilities(
     resolved: &[ResolvedCapability],
@@ -423,6 +457,18 @@ pub(super) fn mount_project_files(
 
     Ok(())
 }
+pub(super) fn load_effective_runtime_settings(
+    project: &ResolvedProject,
+    shared_assets_dir: &Path,
+) -> Result<ProjectRuntimeSettings, String> {
+    let shared = load_shared_engine_xml(shared_assets_dir, SHARED_RUNTIME_DEFAULTS, "runtime")?;
+    let authored = AssetClient::new()
+        .json(&project.manifest.files.runtime)
+        .map_err(|error| format!("runtime settings asset load failed: {error}"))?;
+    ProjectRuntimeSettings::from_base_and_override(shared, authored)
+        .map_err(|error| error.to_string())
+}
+
 pub(super) fn load_project_files(
     project: &ResolvedProject,
     shared_assets_dir: &Path,
@@ -433,13 +479,7 @@ pub(super) fn load_project_files(
     // authority rather than through the project-overlaid VFS. This prevents a
     // project from replacing the base document wholesale; project files are
     // explicitly deep-merged below instead.
-    let shared_runtime =
-        load_shared_engine_xml(shared_assets_dir, SHARED_RUNTIME_DEFAULTS, "runtime")?;
-    let project_runtime = assets
-        .json(&project.manifest.files.runtime)
-        .map_err(|error| format!("runtime settings asset load failed: {error}"))?;
-    let runtime = ProjectRuntimeSettings::from_base_and_override(shared_runtime, project_runtime)
-        .map_err(|error| error.to_string())?;
+    let runtime = load_effective_runtime_settings(project, shared_assets_dir)?;
 
     let mut environment = load_shared_engine_xml(
         shared_assets_dir,
@@ -459,7 +499,7 @@ pub(super) fn load_project_files(
         return Err("Shared Assets render defaults must be a JSON object".to_owned());
     }
 
-    let scripts = if let Some(manifest_scripts) = project.manifest.scripts.as_ref() {
+    let project_scripts = if let Some(manifest_scripts) = project.manifest.scripts.as_ref() {
         Some(manifest_scripts.as_runtime_config())
     } else {
         project
@@ -477,6 +517,14 @@ pub(super) fn load_project_files(
             })
             .transpose()?
     };
+
+    let shared_scripts = ProjectScripts::from_value(load_shared_engine_xml(
+        shared_assets_dir,
+        SHARED_SCRIPTS_DEFAULTS,
+        "scripts",
+    )?)
+    .map_err(|error| error.to_string())?;
+    let scripts = Some(compose_engine_scripts(shared_scripts, project_scripts)?);
 
     let ui_surface = project
         .manifest
@@ -505,7 +553,8 @@ pub(super) fn load_project_files(
             "authority": "shared_assets",
             "runtime": SHARED_RUNTIME_DEFAULTS,
             "environment": SHARED_ENVIRONMENT_DEFAULTS,
-            "render": SHARED_RENDER_DEFAULTS
+            "render": SHARED_RENDER_DEFAULTS,
+            "scripts": SHARED_SCRIPTS_DEFAULTS
         },
         "capabilities": project.manifest.capabilities,
     });
@@ -594,12 +643,13 @@ pub(super) fn start_project_scripting(
     host::info(
         "newviso.scripting",
         format!(
-            "loaded project script entrypoint='{}'",
+            "loaded engine/project script graph='{}'",
             scripts
                 .modules
-                .first()
+                .iter()
                 .map(|module| module.asset.as_str())
-                .unwrap_or("<none>")
+                .collect::<Vec<_>>()
+                .join(" -> ")
         ),
     );
     Ok(Some(runtime))

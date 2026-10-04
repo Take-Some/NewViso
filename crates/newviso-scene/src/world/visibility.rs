@@ -176,9 +176,14 @@ impl SceneWorld {
             let distance = to_center.length();
             let focus_distance = center.sub(self.focus.position).length();
 
-            entity.priority_score = stream_priority(radius, focus_distance, entity.mobility);
+            // Stream against distance to the entity's authored bounds surface,
+            // not merely its transform/origin. Large collision sectors can extend
+            // hundreds of metres away from their origin; using center distance can
+            // leave a wall/floor intersecting the player completely unloaded.
+            let surface_distance = (focus_distance - radius).max(0.0);
+            entity.priority_score = stream_priority(radius, surface_distance, entity.mobility);
             let wants_streaming =
-                entity.asset_ref.is_some() && focus_distance <= entity.lod.stream_distance;
+                entity.asset_ref.is_some() && surface_distance <= entity.lod.stream_distance;
             if wants_streaming {
                 streaming_by_priority.push((entity.id, entity.priority_score));
             }

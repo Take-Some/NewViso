@@ -9,6 +9,32 @@ use std::path::{Path, PathBuf};
 
 type RootFn = extern "C" fn() -> PluginRootV1Ref;
 
+/// Pins a provider DLL while host-registered ABI objects may still reference it.
+/// This does not create or initialize a second provider module.
+pub struct ProviderLibraryGuard {
+    _library: Library,
+}
+
+impl ProviderLibraryGuard {
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, String> {
+        let path = path.as_ref();
+        let library = unsafe { Library::new(path) }.map_err(|error| {
+            format!(
+                "provider lifetime guard load failed for {}: {error}",
+                path.display()
+            )
+        })?;
+        Ok(Self { _library: library })
+    }
+
+    /// Keep provider code mapped until process exit when native driver workers
+    /// cannot be joined by the provider shutdown API. Provider shutdown and host
+    /// registry cleanup still run normally; only the loader reference is retained.
+    pub fn retain_for_process_lifetime(self) {
+        std::mem::forget(self);
+    }
+}
+
 pub struct RunningProvider {
     // Keep the dynamic library last so the ABI trait object is destroyed first.
     module: PluginModuleDyn<'static>,

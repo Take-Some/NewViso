@@ -156,6 +156,15 @@ pub struct PhysicsBodyFlags {
     pub continuous_collision: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PhysicsMassProperties {
+    pub mass: f32,
+    /// Model-local centre of mass, independent of the visual origin.
+    pub center_of_mass: PhysicsVec3,
+    /// Principal moments in kg m^2, in model-local XYZ axes.
+    pub inertia_diagonal: PhysicsVec3,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PhysicsBodySnapshot {
     pub entity: PhysicsEntityKey,
@@ -172,6 +181,11 @@ pub struct PhysicsBodySnapshot {
     pub linear_damping: Option<f32>,
     #[serde(default)]
     pub angular_damping: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mass_properties: Option<PhysicsMassProperties>,
+    /// Model-local convex components; an empty list uses the primitive shape.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub convex_hulls: Vec<Vec<PhysicsVec3>>,
     pub bounds_min: PhysicsVec3,
     pub bounds_max: PhysicsVec3,
 }
@@ -559,6 +573,31 @@ pub fn validate_frame(input: &PhysicsFrameInput) -> Result<(), String> {
     }
 
     for body in &input.bodies {
+        if let Some(properties) = body.mass_properties {
+            if !properties.mass.is_finite()
+                || properties.mass <= 0.0
+                || properties.center_of_mass.iter().any(|v| !v.is_finite())
+                || properties
+                    .inertia_diagonal
+                    .iter()
+                    .any(|v| !v.is_finite() || *v <= 0.0)
+            {
+                return Err(format!(
+                    "physics body {} has invalid mass properties",
+                    body.entity
+                ));
+            }
+        }
+        if body.convex_hulls.len() > 128
+            || body.convex_hulls.iter().any(|hull| {
+                hull.len() < 4 || hull.len() > 4096 || hull.iter().flatten().any(|v| !v.is_finite())
+            })
+        {
+            return Err(format!(
+                "physics body {} has invalid convex hulls",
+                body.entity
+            ));
+        }
         if body
             .position
             .iter()
@@ -652,6 +691,8 @@ mod tests {
                 angular_velocity: [1.0, 2.0, 3.0],
                 linear_damping: Some(0.0),
                 angular_damping: Some(8.0),
+                mass_properties: None,
+                convex_hulls: Vec::new(),
                 bounds_min: [-0.3, 0.0, -0.3],
                 bounds_max: [0.3, 1.8, 0.3],
             }],

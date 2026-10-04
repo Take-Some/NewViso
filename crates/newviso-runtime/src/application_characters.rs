@@ -108,6 +108,13 @@ impl PhysicalPathState {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CharacterAirPhase {
+    Grounded,
+    Jump,
+    Fall,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct PhysicalCharacterRuntime {
     navigation: NavigationRuntime,
@@ -116,6 +123,8 @@ pub(super) struct PhysicalCharacterRuntime {
     paths: BTreeMap<String, PhysicalPathState>,
     facing_headings: BTreeMap<String, f32>,
     active: BTreeSet<String>,
+    air_phases: BTreeMap<String, CharacterAirPhase>,
+    motion_events: Vec<(String, Value)>,
 }
 
 struct RuntimeCollisionWorld<'a> {
@@ -148,8 +157,75 @@ impl PhysicalCharacterRuntime {
         self.characters.remove(actor_id);
         self.paths.remove(actor_id);
         self.facing_headings.remove(actor_id);
+        self.air_phases.remove(actor_id);
         self.active.remove(actor_id);
         self.bindings.remove(actor_id).is_some()
+    }
+
+    pub(super) fn state(&self, actor_id: &str) -> Option<CharacterState> {
+        self.characters.state(actor_id.trim())
+    }
+
+    pub(super) fn jump(&mut self, actor_id: &str, jump_speed: f32) -> Result<bool, String> {
+        let actor_id = actor_id.trim();
+        if actor_id.is_empty() {
+            return Err("character jump actor id must not be empty".to_owned());
+        }
+        if !jump_speed.is_finite() || !(0.1..=50.0).contains(&jump_speed) {
+            return Err("character jump speed must be finite and in 0.1..=50".to_owned());
+        }
+        let binding = self
+            .bindings
+            .get(actor_id)
+            .ok_or_else(|| format!("physical character '{actor_id}' is not bound"))?
+            .clone();
+        if !binding.enabled {
+            return Ok(false);
+        }
+        let Some(mut state) = self.characters.state(actor_id) else {
+            return Ok(false);
+        };
+        if !state.grounded {
+            return Ok(false);
+        }
+
+        let support_entity = state.support_entity;
+        state.velocity[1] = jump_speed;
+        state.grounded = false;
+        state.support_entity = None;
+        self.characters.set_state(actor_id, state)?;
+        self.air_phases
+            .insert(actor_id.to_owned(), CharacterAirPhase::Jump);
+
+        self.motion_events.push((
+            "character.jump".to_owned(),
+            json!({
+                "actor_id": actor_id,
+                "entity": actor_id,
+                "position": binding.center_to_actor(state.position),
+                "velocity": state.velocity,
+                "vertical_velocity": jump_speed,
+                "horizontal_speed": (state.velocity[0] * state.velocity[0] + state.velocity[2] * state.velocity[2]).sqrt(),
+                "grounded": false,
+                "support_entity": support_entity
+            }),
+        ));
+        self.motion_events.push((
+            "character.locomotion.jump".to_owned(),
+            json!({
+                "actor_id": actor_id,
+                "entity": actor_id,
+                "position": binding.center_to_actor(state.position),
+                "velocity": state.velocity,
+                "vertical_velocity": jump_speed,
+                "grounded": false
+            }),
+        ));
+        Ok(true)
+    }
+
+    pub(super) fn drain_motion_events(&mut self) -> Vec<(String, Value)> {
+        std::mem::take(&mut self.motion_events)
     }
 
     pub(super) fn configure_navigation(&mut self, config: NavBuildConfig) -> Result<(), String> {
@@ -303,6 +379,7 @@ impl PhysicalCharacterRuntime {
                 self.characters.remove(&actor_id);
                 self.paths.remove(&actor_id);
                 self.facing_headings.remove(&actor_id);
+                self.air_phases.remove(&actor_id);
                 continue;
             };
 
@@ -468,16 +545,108 @@ impl PhysicalCharacterRuntime {
                         steering.velocity[1],
                     ],
                     dt: dt.min(0.25),
-                    allow_step: true,
-                    snap_to_ground: true,
+                    allow_step: state.grounded,
+                    // Never snap an ascending character back to the floor.
+                    snap_to_ground: vertical_velocity <= 0.0,
                 },
             )?;
 
-            world.set_actor_external_motion(
-                &actor_id,
-                binding.center_to_actor(result.state.position),
-                result.state.velocity,
-            )?;
+            let actor_position = binding.center_to_actor(result.state.position);
+            let next_phase = if result.state.grounded {
+                CharacterAirPhase::Grounded
+            } else if result.state.velocity[1] > 0.10 {
+                CharacterAirPhase::Jump
+            } else {
+                CharacterAirPhase::Fall
+            };
+            match self.air_phases.get(&actor_id).copied() {
+                None => {
+                    // Establish initial contact/air state without synthesizing
+                    // a landing event during first materialization.
+                }
+                Some(previous) if previous != next_phase => match next_phase {
+                    CharacterAirPhase::Jump => {
+                        self.motion_events.push((
+                            "character.jump".to_owned(),
+                            json!({
+                                "actor_id": actor_id,
+                                "entity": actor_id,
+                                "position": actor_position,
+                                "velocity": result.state.velocity,
+                                "vertical_velocity": result.state.velocity[1],
+                                "grounded": false
+                            }),
+                        ));
+                        self.motion_events.push((
+                            "character.locomotion.jump".to_owned(),
+                            json!({
+                                "actor_id": actor_id,
+                                "entity": actor_id,
+                                "position": actor_position,
+                                "velocity": result.state.velocity,
+                                "vertical_velocity": result.state.velocity[1],
+                                "grounded": false
+                            }),
+                        ));
+                    }
+                    CharacterAirPhase::Fall => {
+                        self.motion_events.push((
+                            "character.fall".to_owned(),
+                            json!({
+                                "actor_id": actor_id,
+                                "entity": actor_id,
+                                "position": actor_position,
+                                "velocity": result.state.velocity,
+                                "vertical_velocity": result.state.velocity[1],
+                                "grounded": false
+                            }),
+                        ));
+                        self.motion_events.push((
+                            "character.locomotion.fall".to_owned(),
+                            json!({
+                                "actor_id": actor_id,
+                                "entity": actor_id,
+                                "position": actor_position,
+                                "velocity": result.state.velocity,
+                                "vertical_velocity": result.state.velocity[1],
+                                "grounded": false
+                            }),
+                        ));
+                    }
+                    CharacterAirPhase::Grounded => {
+                        self.motion_events.push((
+                            "character.land".to_owned(),
+                            json!({
+                                "actor_id": actor_id,
+                                "entity": actor_id,
+                                "position": actor_position,
+                                "velocity": result.state.velocity,
+                                "vertical_velocity": vertical_velocity,
+                                "grounded": true,
+                                "support_entity": result.state.support_entity,
+                                "support_normal": result.state.ground_normal
+                            }),
+                        ));
+                        self.motion_events.push((
+                            "character.landing.impact".to_owned(),
+                            json!({
+                                "actor_id": actor_id,
+                                "entity": actor_id,
+                                "position": actor_position,
+                                "velocity": result.state.velocity,
+                                "vertical_velocity": vertical_velocity,
+                                "grounded": true,
+                                "support_entity": result.state.support_entity,
+                                "support_normal": result.state.ground_normal
+                            }),
+                        ));
+                    }
+                },
+                _ => {}
+            }
+            self.air_phases.insert(actor_id.clone(), next_phase);
+
+            world.set_actor_external_motion(&actor_id, actor_position, result.state.velocity)?;
         }
 
         for actor_id in previous_active.difference(&next_active) {
@@ -517,6 +686,13 @@ impl PhysicalCharacterRuntime {
                     "facing_heading_degrees": self.facing_headings
                         .get(&binding.actor_id)
                         .map(|heading| heading.to_degrees()),
+                    "air_phase": self.air_phases
+                        .get(&binding.actor_id)
+                        .map(|phase| match phase {
+                            CharacterAirPhase::Grounded => "grounded",
+                            CharacterAirPhase::Jump => "jump",
+                            CharacterAirPhase::Fall => "fall",
+                        }),
                 })
             }).collect::<Vec<_>>()
         })
@@ -693,7 +869,12 @@ impl EngineApplication {
         };
 
         self.physical_characters
-            .tick(dt, &mut self.living_world, physics, &scene_solids)
+            .tick(dt, &mut self.living_world, physics, &scene_solids)?;
+
+        for (topic, payload) in self.physical_characters.drain_motion_events() {
+            host::publish_event_json(&topic, "newviso.character", payload)?;
+        }
+        Ok(())
     }
 }
 
@@ -756,6 +937,48 @@ mod tests {
 
         let next = turn_towards_heading(0.0, std::f32::consts::PI, 15.0f32.to_radians());
         assert!((wrap_angle_radians(next).abs().to_degrees() - 15.0).abs() < 1.0e-4);
+    }
+
+    #[test]
+    fn generic_character_jump_applies_impulse_and_emits_lifecycle_event() {
+        let mut physical = PhysicalCharacterRuntime::default();
+        let binding = PhysicalCharacterBinding {
+            actor_id: "jumper".to_owned(),
+            enabled: true,
+            controller: CharacterConfig::default(),
+            body_center_offset_y: None,
+            arrival_radius: default_arrival_radius(),
+            steering_time_horizon: default_time_horizon(),
+            separation_weight: default_separation_weight(),
+            gravity: default_gravity(),
+        };
+        physical.bind(binding.clone()).unwrap();
+        physical
+            .characters
+            .upsert(
+                "jumper".to_owned(),
+                binding.controller,
+                binding.actor_to_center([0.0, 0.0, 0.0]),
+            )
+            .unwrap();
+
+        let mut state = physical.characters.state("jumper").unwrap();
+        state.grounded = true;
+        state.support_entity = Some(42);
+        physical.characters.set_state("jumper", state).unwrap();
+
+        assert!(physical.jump("jumper", 5.4).unwrap());
+        let state = physical.characters.state("jumper").unwrap();
+        assert!(!state.grounded);
+        assert!((state.velocity[1] - 5.4).abs() < 1.0e-6);
+        assert_eq!(state.support_entity, None);
+
+        let events = physical.drain_motion_events();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].0, "character.jump");
+        assert_eq!(events[1].0, "character.locomotion.jump");
+        assert_eq!(events[0].1["actor_id"], "jumper");
+        assert_eq!(events[0].1["support_entity"], 42);
     }
 
     #[test]

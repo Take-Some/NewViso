@@ -11,9 +11,10 @@ use newviso_materials::{
     BlendMode, MaterialParamValue, MaterialParameter, MaterialResource, MaterialTextureBinding,
 };
 use newviso_model::{
-    Bounds3, IndexBuffer, IndexFormat, MeshPrimitive, MeshResource, ModelFragmentMetadata,
-    ModelFragmentPart, ModelFragmentPartRole, ModelMaterialBinding, ModelMaterialSlot,
-    ModelResource, ModelWheelSlot, VertexFormat, VertexSemantic, VertexStream,
+    Bounds3, IndexBuffer, IndexFormat, MeshPrimitive, MeshResource, ModelFragmentLight,
+    ModelFragmentMetadata, ModelFragmentPart, ModelFragmentPartRole, ModelJoint,
+    ModelMaterialBinding, ModelMaterialSlot, ModelResource, ModelSkeleton, ModelWheelSlot,
+    VertexFormat, VertexSemantic, VertexStream,
 };
 use newviso_resource_runtime::{AssetAddress, AssetId, AssetRef, AssetResource, ResourceDecoder};
 use newviso_textures::{TextureColorSpace, TextureFormat, TextureMip, TextureResource};
@@ -133,6 +134,26 @@ impl ResourceDecoder for SemanticTextureDecoder {
         let texture = decode_texture_resource(address, entry, &wire)?;
         Ok(Some(Arc::new(texture)))
     }
+}
+
+fn normalize_rsc7_texture_address(address: AssetAddress) -> AssetAddress {
+    // GTA texture dictionary entry identity is case-insensitive, while the
+    // canonical NETD dictionaries are authored with lowercase entry names.
+    // Normalize only YTD entry selectors here; never alter selectors for other
+    // asset families where case may be semantically meaningful.
+    let is_ytd = address
+        .logical_path()
+        .rsplit_once('.')
+        .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("ytd"));
+    let Some(entry) = address.entry().filter(|_| is_ytd) else {
+        return address;
+    };
+    let normalized_entry = entry.to_ascii_lowercase();
+    if normalized_entry == entry {
+        return address;
+    }
+    AssetAddress::parse(&format!("{}@{}", address.logical_path(), normalized_entry))
+        .unwrap_or(address)
 }
 
 fn decode_texture_resource(
@@ -362,6 +383,10 @@ fn decode_model_resource(
     }
 
     let mut meshes = Vec::with_capacity(mesh_values.len());
+    // Vehicle fragment splitting intentionally reuses authored vertex streams
+    // across many rigid semantic index groups. Share identical wire slices in
+    // memory instead of allocating one Arc payload per split mesh.
+    let mut shared_stream_data = std::collections::BTreeMap::<(usize, usize), Arc<[u8]>>::new();
     for (mesh_index, mesh) in mesh_values.iter().enumerate() {
         let mesh_name = required_str(mesh, "name")
             .map_err(|error| format!("mesh[{mesh_index}] {error}"))?
@@ -380,6 +405,8 @@ fn decode_model_resource(
             let format = parse_vertex_format(required_str(stream, "format")?)?;
             let stride = required_u32(stream, "stride")?;
             let data = payload_slice(payload, stream, "stream")?;
+            let stream_offset = required_usize(stream, "offset")?;
+            let stream_length = required_usize(stream, "length")?;
             let expected_min = usize::try_from(vertex_count)
                 .ok()
                 .and_then(|count| count.checked_mul(stride as usize))
@@ -391,12 +418,16 @@ fn decode_model_resource(
                     expected_min
                 ));
             }
+            let shared = shared_stream_data
+                .entry((stream_offset, stream_length))
+                .or_insert_with(|| Arc::from(data))
+                .clone();
             vertex_streams.push(VertexStream {
                 semantic,
                 format,
                 stride,
                 vertex_count,
-                data: Arc::from(data),
+                data: shared,
             });
         }
 
@@ -514,23 +545,27 @@ fn decode_model_resource(
                                         .transpose()
                                         .ok()
                                         .flatten()
+                                        .map(normalize_rsc7_texture_address)
                                         .map(AssetRef::new);
+                                    let role = texture
+                                        .get("role")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("generic")
+                                        .to_owned();
+                                    let required = texture
+                                        .get("required")
+                                        .and_then(Value::as_bool)
+                                        .unwrap_or_else(|| {
+                                            !matches!(
+                                                role.trim().to_ascii_lowercase().as_str(),
+                                                "environment" | "environment_map" | "reflection"
+                                            )
+                                        });
                                     Some(ImportedTextureBinding {
-                                        role: texture
-                                            .get("role")
-                                            .and_then(Value::as_str)
-                                            .unwrap_or("generic")
-                                            .to_owned(),
+                                        role,
                                         texture_name: texture_name.to_owned(),
                                         texture: texture_ref,
-                                        // Preserve legacy authored semantics when the
-                                        // field is absent. Source importers that can
-                                        // distinguish an unresolved shader sampler from
-                                        // a real asset dependency should emit it.
-                                        required: texture
-                                            .get("required")
-                                            .and_then(Value::as_bool)
-                                            .unwrap_or(true),
+                                        required,
                                     })
                                 })
                                 .collect::<Vec<_>>()
@@ -611,6 +646,7 @@ fn decode_model_resource(
 
     let fragment = decode_optional_fragment(meta.get("fragment"), &meshes)?;
     let skin_source_to_model = decode_optional_mat4(meta.get("skin_source_to_model"))?;
+    let skeleton = decode_optional_skeleton(meta.get("skeleton"))?;
     Ok(ModelResource {
         id: AssetId::from_address(address),
         name,
@@ -618,10 +654,73 @@ fn decode_model_resource(
         meshes,
         material_slots,
         skin_source_to_model,
-        skeleton: None,
+        skeleton,
         animations: Vec::new(),
         fragment,
     })
+}
+
+fn decode_optional_skeleton(value: Option<&Value>) -> Result<Option<ModelSkeleton>, String> {
+    let Some(value) = value.filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let schema = required_str(value, "schema")?;
+    if schema != "northstar.model.skeleton.v1" {
+        return Err(format!(
+            "unsupported model skeleton schema '{schema}', expected 'northstar.model.skeleton.v1'"
+        ));
+    }
+    let name = required_str(value, "name")?.to_owned();
+    let joint_values = required(value, "joints")?
+        .as_array()
+        .ok_or_else(|| "model skeleton joints must be an array".to_owned())?;
+    if joint_values.is_empty() {
+        return Err("model skeleton contains no joints".to_owned());
+    }
+    if joint_values.len() > u16::MAX as usize {
+        return Err("model skeleton joint count exceeds u16".to_owned());
+    }
+
+    let mut joints = Vec::with_capacity(joint_values.len());
+    for (index, joint) in joint_values.iter().enumerate() {
+        let parent = joint
+            .get("parent")
+            .filter(|value| !value.is_null())
+            .map(|value| {
+                value
+                    .as_u64()
+                    .ok_or_else(|| format!("skeleton joint[{index}] parent must be unsigned"))
+                    .and_then(|value| {
+                        u16::try_from(value)
+                            .map_err(|_| format!("skeleton joint[{index}] parent exceeds u16"))
+                    })
+            })
+            .transpose()?;
+        if parent.is_some_and(|parent| parent as usize >= index) {
+            return Err(format!(
+                "skeleton joint[{index}] parent must reference an earlier dense joint"
+            ));
+        }
+        let bind_rotation = required_vec4(joint, "bind_rotation")?;
+        let rotation_norm2 = bind_rotation.iter().map(|value| value * value).sum::<f32>();
+        if !rotation_norm2.is_finite() || rotation_norm2 <= 1.0e-8 {
+            return Err(format!("skeleton joint[{index}] bind rotation is invalid"));
+        }
+        let bind_scale = required_vec3(joint, "bind_scale")?;
+        if bind_scale.iter().any(|value| value.abs() <= 1.0e-8) {
+            return Err(format!("skeleton joint[{index}] bind scale is singular"));
+        }
+        joints.push(ModelJoint {
+            name: required_str(joint, "name")?.to_owned(),
+            tag: required_u32(joint, "tag")?,
+            parent,
+            inverse_bind_matrix: decode_required_mat4(joint, "inverse_bind_matrix")?,
+            bind_translation: required_vec3(joint, "bind_translation")?,
+            bind_rotation,
+            bind_scale,
+        });
+    }
+    Ok(Some(ModelSkeleton { name, joints }))
 }
 
 fn decode_optional_fragment(
@@ -696,6 +795,12 @@ fn decode_optional_fragment(
                 .map(u16::try_from)
                 .transpose()
                 .map_err(|_| format!("fragment part[{part_index}] group_index exceeds u16"))?;
+            let parent_part_index = part
+                .get("parent_index")
+                .and_then(Value::as_u64)
+                .map(u32::try_from)
+                .transpose()
+                .map_err(|_| format!("fragment part[{part_index}] parent_index exceeds u32"))?;
             let wheel_slot = match part.get("wheel_slot").and_then(Value::as_str) {
                 None => None,
                 Some("front_left") => Some(ModelWheelSlot::FrontLeft),
@@ -733,6 +838,7 @@ fn decode_optional_fragment(
                 role,
                 bone_tag,
                 group_index,
+                parent_part_index,
                 wheel_slot,
                 mesh_names,
                 rest_transform,
@@ -741,10 +847,121 @@ fn decode_optional_fragment(
         })
         .collect::<Result<Vec<_>, String>>()?;
 
+    let lights = value
+        .get("lights")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .enumerate()
+        .map(|(light_index, light)| {
+            let index = light
+                .get("index")
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .unwrap_or(light_index as u32);
+            let part_index = light
+                .get("part_index")
+                .and_then(Value::as_u64)
+                .map(u32::try_from)
+                .transpose()
+                .map_err(|_| format!("fragment light[{light_index}] part_index exceeds u32"))?;
+            let bone_index = required_u16(light, "bone_index")
+                .map_err(|error| format!("fragment light[{light_index}] {error}"))?;
+            let bone_name = light
+                .get("bone_name")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let light_type = required_u8(light, "light_type")
+                .map_err(|error| format!("fragment light[{light_index}] {error}"))?;
+            let group_id = required_u8(light, "group_id")
+                .map_err(|error| format!("fragment light[{light_index}] {error}"))?;
+            let position = required_vec3(light, "position")
+                .map_err(|error| format!("fragment light[{light_index}] {error}"))?;
+            let direction = required_vec3(light, "direction")
+                .map_err(|error| format!("fragment light[{light_index}] {error}"))?;
+            let tangent = required_vec3(light, "tangent")
+                .map_err(|error| format!("fragment light[{light_index}] {error}"))?;
+            let color = required_vec3(light, "color")
+                .map_err(|error| format!("fragment light[{light_index}] {error}"))?;
+            let intensity = required_f32(light, "intensity")
+                .map_err(|error| format!("fragment light[{light_index}] {error}"))?;
+            let falloff = required_f32(light, "falloff")
+                .map_err(|error| format!("fragment light[{light_index}] {error}"))?;
+            let falloff_exponent = required_f32(light, "falloff_exponent")
+                .map_err(|error| format!("fragment light[{light_index}] {error}"))?;
+            let flags = required_u32(light, "flags")
+                .map_err(|error| format!("fragment light[{light_index}] {error}"))?;
+            let time_flags = required_u32(light, "time_flags")
+                .map_err(|error| format!("fragment light[{light_index}] {error}"))?;
+            let cone_inner_degrees = required_f32(light, "cone_inner_degrees")
+                .map_err(|error| format!("fragment light[{light_index}] {error}"))?;
+            let cone_outer_degrees = required_f32(light, "cone_outer_degrees")
+                .map_err(|error| format!("fragment light[{light_index}] {error}"))?;
+            let corona_intensity = required_f32(light, "corona_intensity")
+                .map_err(|error| format!("fragment light[{light_index}] {error}"))?;
+            let volume_intensity = required_f32(light, "volume_intensity")
+                .map_err(|error| format!("fragment light[{light_index}] {error}"))?;
+            Ok(ModelFragmentLight {
+                index,
+                part_index,
+                bone_index,
+                bone_name,
+                light_type,
+                group_id,
+                position,
+                direction,
+                tangent,
+                color,
+                intensity,
+                falloff,
+                falloff_exponent,
+                flags,
+                time_flags,
+                cone_inner_degrees,
+                cone_outer_degrees,
+                corona_intensity,
+                volume_intensity,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    for part in &parts {
+        if let Some(parent_index) = part.parent_part_index {
+            if parent_index == part.index {
+                return Err(format!(
+                    "fragment part '{}' cannot parent itself",
+                    part.name
+                ));
+            }
+            if !parts
+                .iter()
+                .any(|candidate| candidate.index == parent_index)
+            {
+                return Err(format!(
+                    "fragment part '{}' references missing parent index {}",
+                    part.name, parent_index
+                ));
+            }
+        }
+    }
+
+    for light in &lights {
+        if let Some(part_index) = light.part_index {
+            if !parts.iter().any(|part| part.index == part_index) {
+                return Err(format!(
+                    "fragment light {} references missing part index {}",
+                    light.index, part_index
+                ));
+            }
+        }
+    }
+
     Ok(Some(ModelFragmentMetadata {
         bound_center,
         bound_radius,
         parts,
+        lights,
     }))
 }
 
@@ -1155,11 +1372,51 @@ fn required_u32(value: &Value, key: &str) -> Result<u32, String> {
     u32::try_from(raw).map_err(|_| format!("field '{key}' exceeds u32"))
 }
 
+fn required_u16(value: &Value, key: &str) -> Result<u16, String> {
+    let raw = required(value, key)?
+        .as_u64()
+        .ok_or_else(|| format!("field '{key}' must be an unsigned integer"))?;
+    u16::try_from(raw).map_err(|_| format!("field '{key}' exceeds u16"))
+}
+
+fn required_u8(value: &Value, key: &str) -> Result<u8, String> {
+    let raw = required(value, key)?
+        .as_u64()
+        .ok_or_else(|| format!("field '{key}' must be an unsigned integer"))?;
+    u8::try_from(raw).map_err(|_| format!("field '{key}' exceeds u8"))
+}
+
+fn required_f32(value: &Value, key: &str) -> Result<f32, String> {
+    required(value, key)?
+        .as_f64()
+        .map(|value| value as f32)
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| format!("field '{key}' must be finite numeric"))
+}
+
 fn required_i32(value: &Value, key: &str) -> Result<i32, String> {
     let raw = required(value, key)?
         .as_i64()
         .ok_or_else(|| format!("field '{key}' must be an integer"))?;
     i32::try_from(raw).map_err(|_| format!("field '{key}' exceeds i32"))
+}
+
+fn required_vec4(value: &Value, key: &str) -> Result<[f32; 4], String> {
+    let array = required(value, key)?
+        .as_array()
+        .ok_or_else(|| format!("field '{key}' must be vec4"))?;
+    if array.len() != 4 {
+        return Err(format!("field '{key}' must contain exactly 4 numbers"));
+    }
+    let mut out = [0.0f32; 4];
+    for (index, target) in out.iter_mut().enumerate() {
+        *target = array[index]
+            .as_f64()
+            .map(|value| value as f32)
+            .filter(|value| value.is_finite())
+            .ok_or_else(|| format!("field '{key}[{index}]' must be finite"))?;
+    }
+    Ok(out)
 }
 
 fn required_vec3(value: &Value, key: &str) -> Result<[f32; 3], String> {
@@ -1183,6 +1440,98 @@ fn required_vec3(value: &Value, key: &str) -> Result<[f32; 3], String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fragment_authored_light_survives_semantic_decode() {
+        let value = json!({
+            "schema": "northstar.model.fragment.v1",
+            "bound_center": [0.0, 0.5, -1.0],
+            "bound_radius": 3.0,
+            "parts": [{
+                "index": 7,
+                "name": "headlight_l",
+                "role": "light",
+                "bone_tag": 111,
+                "group_index": null,
+                "parent_index": null,
+                "wheel_slot": null,
+                "mesh_names": [],
+                "rest_transform": [
+                    1.0,0.0,0.0,0.0,
+                    0.0,1.0,0.0,0.0,
+                    0.0,0.0,1.0,0.0,
+                    0.0,0.0,0.0,1.0
+                ],
+                "rest_position": [0.0, 0.0, 0.0]
+            }],
+            "lights": [{
+                "index": 2,
+                "part_index": 7,
+                "bone_index": 31,
+                "bone_name": "headlight_l",
+                "light_type": 2,
+                "group_id": 1,
+                "position": [-0.7, 0.8, 2.1],
+                "direction": [0.0, -0.1, 1.0],
+                "tangent": [1.0, 0.0, 0.0],
+                "color": [1.0, 0.8, 0.5],
+                "intensity": 7.5,
+                "falloff": 42.0,
+                "falloff_exponent": 2.0,
+                "flags": 5,
+                "time_flags": 255,
+                "cone_inner_degrees": 18.0,
+                "cone_outer_degrees": 30.0,
+                "corona_intensity": 0.6,
+                "volume_intensity": 0.25
+            }]
+        });
+        let fragment = decode_optional_fragment(Some(&value), &[])
+            .expect("decode fragment")
+            .expect("fragment");
+        assert_eq!(fragment.lights.len(), 1);
+        let light = &fragment.lights[0];
+        assert_eq!(light.index, 2);
+        assert_eq!(light.part_index, Some(7));
+        assert_eq!(light.bone_index, 31);
+        assert_eq!(light.bone_name.as_deref(), Some("headlight_l"));
+        assert_eq!(light.light_type, 2);
+        assert_eq!(light.position, [-0.7, 0.8, 2.1]);
+        assert!((light.intensity - 7.5).abs() < 1.0e-6);
+        assert!((light.cone_outer_degrees - 30.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn fragment_without_authored_lights_remains_backward_compatible() {
+        let value = json!({
+            "schema": "northstar.model.fragment.v1",
+            "bound_center": [0.0, 0.0, 0.0],
+            "bound_radius": 1.0,
+            "parts": []
+        });
+        let fragment = decode_optional_fragment(Some(&value), &[])
+            .expect("decode fragment")
+            .expect("fragment");
+        assert!(fragment.lights.is_empty());
+    }
+
+    #[test]
+    fn rsc7_ytd_texture_selectors_are_canonicalized_to_lowercase() {
+        let address =
+            AssetAddress::parse("textures/weapons/gta/w_ar_carbinerifle.ytd@W_AR_CarbineRifle")
+                .unwrap();
+        let normalized = normalize_rsc7_texture_address(address);
+        assert_eq!(
+            normalized.canonical(),
+            "textures/weapons/gta/w_ar_carbinerifle.ytd@w_ar_carbinerifle"
+        );
+
+        let non_ytd = AssetAddress::parse("materials/example.ymat@MiXeD").unwrap();
+        assert_eq!(
+            normalize_rsc7_texture_address(non_ytd).canonical(),
+            "materials/example.ymat@MiXeD"
+        );
+    }
 
     #[test]
     fn unresolved_optional_builtin_texture_does_not_become_required() {

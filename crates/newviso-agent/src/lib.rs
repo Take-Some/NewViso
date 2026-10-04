@@ -2,6 +2,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+mod ped_tests;
+mod tasks;
+mod behavior;
+pub mod peds;
+pub use tasks::AgentTaskKind;
+pub use behavior::AgentPresentationIntent;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AgentPerceptionPolicy {
     pub radius: f32,
@@ -127,29 +135,6 @@ impl AgentTaskLane {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum AgentTaskKind {
-    Idle,
-    Wait {
-        duration_seconds: f32,
-    },
-    TravelToNode {
-        #[serde(default)]
-        start_node: Option<String>,
-        destination_node: String,
-        speed: f32,
-        #[serde(default = "default_travel_mode")]
-        mode: String,
-        #[serde(default)]
-        payload: Value,
-    },
-}
-
-fn default_travel_mode() -> String {
-    "walk".to_owned()
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AgentTaskDesc {
     pub id: String,
     pub lane: AgentTaskLane,
@@ -161,31 +146,7 @@ pub struct AgentTaskDesc {
 impl AgentTaskDesc {
     pub fn validate(&self) -> Result<(), String> {
         validate_id("agent task", &self.id)?;
-        match &self.task {
-            AgentTaskKind::Idle => {}
-            AgentTaskKind::Wait { duration_seconds } => {
-                if !duration_seconds.is_finite() || !(0.0..=86_400.0).contains(duration_seconds) {
-                    return Err("agent wait duration is invalid".to_owned());
-                }
-            }
-            AgentTaskKind::TravelToNode {
-                start_node,
-                destination_node,
-                speed,
-                mode,
-                payload,
-            } => {
-                if let Some(start_node) = start_node {
-                    validate_id("agent travel start", start_node)?;
-                }
-                validate_id("agent travel destination", destination_node)?;
-                if !speed.is_finite() || !(0.001..=10_000.0).contains(speed) {
-                    return Err("agent travel speed is invalid".to_owned());
-                }
-                validate_id("agent travel mode", mode)?;
-                validate_payload(payload)?;
-            }
-        }
+        self.task.validate_at_depth(0)?;
         Ok(())
     }
 }
@@ -253,9 +214,9 @@ pub enum AgentCommand {
         mode: String,
         payload: Value,
     },
-    CancelTravel {
-        actor_id: String,
-    },
+    CancelTravel { actor_id: String },
+    MoveToPosition { actor_id: String, request_id: String, position: [f32; 3], speed: f32, stop_distance: f32 },
+    Attack { actor_id: String, target_actor: String, damage: f32, range: f32 },
 }
 
 #[derive(Clone, Debug)]
@@ -263,6 +224,11 @@ struct RuntimeTask {
     desc: AgentTaskDesc,
     status: AgentTaskStatus,
     elapsed_seconds: f32,
+    goal: Option<[f32; 3]>,
+    origin: Option<[f32; 3]>,
+    next_action_seconds: f32,
+    iteration: u64,
+    child: Option<Box<RuntimeTask>>,
 }
 
 #[derive(Clone, Debug)]
@@ -279,6 +245,8 @@ struct AgentRecord {
 pub struct AgentRuntime {
     agents: BTreeMap<String, AgentRecord>,
     frame_commands: Vec<AgentCommand>,
+    pending_commands: Vec<AgentCommand>,
+    frame_events: Vec<Value>,
 }
 
 impl AgentRuntime {
@@ -330,14 +298,10 @@ impl AgentRuntime {
             .agents
             .get_mut(agent_id.trim())
             .ok_or_else(|| format!("agent '{agent_id}' does not exist"))?;
-        record.tasks.insert(
-            desc.id.clone(),
-            RuntimeTask {
-                desc,
-                status: AgentTaskStatus::Pending,
-                elapsed_seconds: 0.0,
-            },
-        );
+        if record.active_task.as_deref() == Some(desc.id.as_str()) {
+            if let Some(cancel) = suspend_active_travel(record) { self.pending_commands.push(cancel); }
+        }
+        record.tasks.insert(desc.id.clone(), RuntimeTask::new(desc));
         record.next_think_world_seconds = 0.0;
         record.last_think_world_seconds = None;
         Ok(())
@@ -395,7 +359,8 @@ impl AgentRuntime {
     }
 
     pub fn tick(&mut self, dt: f32, snapshot: &AgentWorldSnapshot) -> Vec<AgentCommand> {
-        self.frame_commands.clear();
+        self.frame_commands = std::mem::take(&mut self.pending_commands);
+        self.frame_events.clear();
         if !dt.is_finite() || dt < 0.0 || !snapshot.world_seconds.is_finite() {
             return Vec::new();
         }
@@ -408,15 +373,15 @@ impl AgentRuntime {
 
         for record in self.agents.values_mut() {
             if !record.desc.enabled {
-                record.active_task = None;
+                if let Some(cancel) = suspend_active_travel(record) { self.frame_commands.push(cancel); }
                 continue;
             }
             let Some(actor) = actors.get(record.desc.actor_id.as_str()).copied() else {
-                record.active_task = None;
+                if let Some(cancel) = suspend_active_travel(record) { self.frame_commands.push(cancel); }
                 continue;
             };
             if !actor.enabled {
-                record.active_task = None;
+                if let Some(cancel) = suspend_active_travel(record) { self.frame_commands.push(cancel); }
                 continue;
             }
 
@@ -457,11 +422,45 @@ impl AgentRuntime {
             let Some(task) = record.tasks.get_mut(&task_id) else {
                 continue;
             };
-            advance_task(task, actor, elapsed, &mut self.frame_commands);
+            let old_status = task.status;
+            behavior::advance_task(task, actor, &actors, elapsed, &mut self.frame_commands);
+            if task.status != old_status {
+                self.frame_events.push(json!({"actor_id": actor.id, "agent_id": record.desc.id,
+                    "task_id": task.desc.id, "status": task.status}));
+            }
         }
 
         self.frame_commands.clone()
     }
+
+    pub fn is_bound(&self, agent_id: &str, actor_id: &str) -> bool {
+        self.agents.get(agent_id).is_some_and(|r| r.desc.actor_id == actor_id)
+    }
+
+    pub fn clear_tasks(&mut self, agent_id: &str) -> Result<Option<AgentCommand>, String> {
+        let record = self.agents.get_mut(agent_id)
+            .ok_or_else(|| format!("agent '{agent_id}' does not exist"))?;
+        let cancel = suspend_active_travel(record);
+        record.tasks.clear(); record.next_think_world_seconds = 0.0;
+        record.last_think_world_seconds = None;
+        Ok(cancel)
+    }
+
+    pub fn presentation(&self, actor_id: &str, position: [f32; 3]) -> AgentPresentationIntent {
+        self.agents.values().find(|r| r.desc.actor_id == actor_id && r.desc.enabled)
+            .and_then(|r| r.active_task.as_ref().and_then(|id| r.tasks.get(id)))
+            .map(|task| task.presentation(position)).unwrap_or_default()
+    }
+
+    pub fn fail_active(&mut self, actor_id: &str) {
+        for record in self.agents.values_mut().filter(|r| r.desc.actor_id == actor_id) {
+            if let Some(task) = record.active_task.as_ref().and_then(|id| record.tasks.get_mut(id)) {
+                task.status = AgentTaskStatus::Failed;
+            }
+        }
+    }
+
+    pub fn frame_events(&self) -> &[Value] { &self.frame_events }
 
     pub fn runtime_state(&self) -> Value {
         let agents = self
@@ -501,6 +500,7 @@ impl AgentRuntime {
         json!({
             "agents": agents,
             "frame_commands": self.frame_commands,
+            "frame_events": self.frame_events,
         })
     }
 }
@@ -520,11 +520,13 @@ fn task_travel_cancel(actor_id: &str, task: &RuntimeTask) -> Option<AgentCommand
     matches!(
         (&task.desc.task, task.status),
         (
-            AgentTaskKind::TravelToNode { .. },
+            _,
             AgentTaskStatus::Pending | AgentTaskStatus::Running
         )
     )
-    .then(|| AgentCommand::CancelTravel {
+    .then_some(())
+    .filter(|_| task.desc.task.owns_movement())
+    .map(|_| AgentCommand::CancelTravel {
         actor_id: actor_id.to_owned(),
     })
 }
@@ -613,61 +615,6 @@ fn select_task(record: &AgentRecord) -> Option<String> {
                 .then_with(|| b.desc.id.cmp(&a.desc.id))
         })
         .map(|task| task.desc.id.clone())
-}
-
-fn advance_task(
-    task: &mut RuntimeTask,
-    actor: &AgentActorView,
-    dt: f32,
-    commands: &mut Vec<AgentCommand>,
-) {
-    match &task.desc.task {
-        AgentTaskKind::Idle => {
-            task.status = AgentTaskStatus::Running;
-            task.elapsed_seconds += dt;
-        }
-        AgentTaskKind::Wait { duration_seconds } => {
-            if task.status == AgentTaskStatus::Pending {
-                task.status = AgentTaskStatus::Running;
-            }
-            task.elapsed_seconds += dt;
-            if task.elapsed_seconds >= *duration_seconds {
-                task.status = AgentTaskStatus::Completed;
-            }
-        }
-        AgentTaskKind::TravelToNode {
-            start_node,
-            destination_node,
-            speed,
-            mode,
-            payload,
-        } => match task.status {
-            AgentTaskStatus::Pending => {
-                if actor.travel_destination.as_deref() == Some(destination_node.as_str()) {
-                    task.status = AgentTaskStatus::Running;
-                } else {
-                    commands.push(AgentCommand::StartTravel {
-                        actor_id: actor.id.clone(),
-                        start_node: start_node.clone(),
-                        destination_node: destination_node.clone(),
-                        speed: *speed,
-                        mode: mode.clone(),
-                        payload: payload.clone(),
-                    });
-                    task.status = AgentTaskStatus::Running;
-                }
-            }
-            AgentTaskStatus::Running => {
-                task.elapsed_seconds += dt;
-                if actor.travel_destination.is_none() {
-                    task.status = AgentTaskStatus::Completed;
-                } else if actor.travel_destination.as_deref() != Some(destination_node.as_str()) {
-                    task.status = AgentTaskStatus::Failed;
-                }
-            }
-            AgentTaskStatus::Completed | AgentTaskStatus::Failed => {}
-        },
-    }
 }
 
 fn validate_id(kind: &str, value: &str) -> Result<(), String> {

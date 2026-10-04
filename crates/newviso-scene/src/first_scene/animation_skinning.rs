@@ -1,4 +1,7 @@
 use super::*;
+mod arm_ik;
+pub(super) use arm_ik::extend_bounds as arm_ik_bounds;
+pub use arm_ik::SceneArmIkConstraint;
 use newviso_model::{
     AnimationInterpolation, AnimationQuatKey, AnimationVec3Key, ModelAnimationClip, ModelSkeleton,
 };
@@ -31,6 +34,13 @@ struct DerivedJointDriver {
     bind_offset: [f32; 16],
 }
 
+#[derive(Clone, Copy, Debug)]
+struct AnimationMoverOrigin {
+    position: [f32; 3],
+    rotation_degrees: [f32; 3],
+    scale: [f32; 3],
+}
+
 #[derive(Clone, Debug)]
 struct AnimationPlayback {
     clip: Arc<ModelAnimationClip>,
@@ -39,6 +49,7 @@ struct AnimationPlayback {
     last_sample_elapsed_seconds: Option<f64>,
     transition_from: Option<AnimationTransition>,
     generation: u64,
+    mover_origin: Option<AnimationMoverOrigin>,
 }
 
 #[derive(Clone, Debug)]
@@ -51,6 +62,7 @@ struct AnimationTransition {
 }
 
 struct SkinningJob {
+    arm_ik: Vec<SceneArmIkConstraint>,
     stable_id: u64,
     source_model_id: u64,
     generation: u64,
@@ -98,7 +110,6 @@ enum SkinningCompletion {
 const SKINNING_WORKER_COUNT: usize = 4;
 const MAX_SKINNING_IN_FLIGHT: usize = 8;
 const MAX_SKINNING_RESULTS_APPLIED_PER_FRAME: usize = 4;
-const DEFAULT_ANIMATION_BLEND_SECONDS: f32 = 0.18;
 const MAX_ANIMATION_FRAME_DT: f32 = 0.1;
 const MIN_SKIN_PRESENTATION_BLEND_SECONDS: f32 = 1.0 / 240.0;
 const MAX_SKIN_PRESENTATION_BLEND_SECONDS: f32 = 0.1;
@@ -210,6 +221,9 @@ impl Scene3dRuntime {
         clip: Arc<ModelAnimationClip>,
         playback_rate: f32,
         restart_if_same: bool,
+        start_time_seconds: f32,
+        blend_seconds: f32,
+        apply_mover: bool,
     ) -> Result<bool, String> {
         if !playback_rate.is_finite() || playback_rate <= 0.0 {
             return Err(format!(
@@ -222,6 +236,31 @@ impl Scene3dRuntime {
                 clip.name, clip.duration_seconds
             ));
         }
+        if !start_time_seconds.is_finite() || start_time_seconds < 0.0 {
+            return Err(format!(
+                "animation start time must be finite and >= 0, got {start_time_seconds}"
+            ));
+        }
+        if !blend_seconds.is_finite() || blend_seconds < 0.0 {
+            return Err(format!(
+                "animation blend duration must be finite and >= 0, got {blend_seconds}"
+            ));
+        }
+        let start_time_seconds = if clip.looping {
+            start_time_seconds.rem_euclid(clip.duration_seconds)
+        } else {
+            start_time_seconds.min(clip.duration_seconds)
+        };
+        let mover_origin = if apply_mover && clip.mover.is_some() {
+            self.entity_transform_values(stable_id)
+                .map(|(position, rotation_degrees, scale)| AnimationMoverOrigin {
+                    position,
+                    rotation_degrees,
+                    scale,
+                })
+        } else {
+            None
+        };
         let state = self
             .skinned_entities
             .get_mut(&stable_id)
@@ -244,27 +283,405 @@ impl Scene3dRuntime {
         {
             if let Some(playback) = state.playback.as_mut() {
                 playback.playback_rate = playback_rate;
+                if playback.mover_origin.is_none() {
+                    playback.mover_origin = mover_origin;
+                }
             }
             return Ok(false);
         }
         state.animation_generation = state.animation_generation.wrapping_add(1).max(1);
         let generation = state.animation_generation;
-        let transition_from = state.playback.as_ref().map(|previous| AnimationTransition {
-            clip: previous.clip.clone(),
-            time_seconds: previous.time_seconds,
-            playback_rate: previous.playback_rate,
-            elapsed_seconds: 0.0,
-            duration_seconds: DEFAULT_ANIMATION_BLEND_SECONDS,
-        });
+        let transition_from = if blend_seconds > 0.0 {
+            state.playback.as_ref().map(|previous| AnimationTransition {
+                clip: previous.clip.clone(),
+                time_seconds: previous.time_seconds,
+                playback_rate: previous.playback_rate,
+                elapsed_seconds: 0.0,
+                duration_seconds: blend_seconds,
+            })
+        } else {
+            None
+        };
         state.playback = Some(AnimationPlayback {
             clip,
-            time_seconds: 0.0,
+            time_seconds: start_time_seconds,
             playback_rate,
             last_sample_elapsed_seconds: None,
             transition_from,
             generation,
+            mover_origin,
         });
         Ok(true)
+    }
+
+    fn animated_joint_model_matrix(
+        &self,
+        stable_id: u64,
+        joint_name: &str,
+    ) -> Result<[f32; 16], String> {
+        let state = self
+            .skinned_entities
+            .get(&stable_id)
+            .ok_or_else(|| format!("scene entity {stable_id} is not an installed skinned model"))?;
+        let joint_index = state
+            .skeleton
+            .joints
+            .iter()
+            .position(|joint| joint.name.eq_ignore_ascii_case(joint_name))
+            .ok_or_else(|| {
+                format!(
+                    "scene entity {stable_id} skeleton '{}' has no joint '{}'",
+                    state.skeleton.name, joint_name
+                )
+            })?;
+
+        let (translations, rotations, scales, tracked) =
+            if let Some(playback) = state.playback.as_ref() {
+                sample_clip_local_pose(&state.skeleton, &playback.clip, playback.time_seconds)?
+            } else {
+                (
+                    state
+                        .skeleton
+                        .joints
+                        .iter()
+                        .map(|joint| joint.bind_translation)
+                        .collect(),
+                    state
+                        .skeleton
+                        .joints
+                        .iter()
+                        .map(|joint| joint.bind_rotation)
+                        .collect(),
+                    state
+                        .skeleton
+                        .joints
+                        .iter()
+                        .map(|joint| joint.bind_scale)
+                        .collect(),
+                    vec![true; state.skeleton.joints.len()],
+                )
+            };
+
+        let mut globals = Vec::<[f32; 16]>::with_capacity(state.skeleton.joints.len());
+        for (index, joint) in state.skeleton.joints.iter().enumerate() {
+            let local = trs_matrix(translations[index], rotations[index], scales[index]);
+            let global = if !tracked[index] {
+                if let Some(driver) = state.derived_joint_drivers[index] {
+                    let driver_index = driver.joint as usize;
+                    if driver_index >= index {
+                        return Err(format!(
+                            "skeleton '{}' derived helper joint={} has non-topological driver={}",
+                            state.skeleton.name, index, driver_index
+                        ));
+                    }
+                    mul_mat4(globals[driver_index], driver.bind_offset)
+                } else if let Some(parent) = joint.parent {
+                    let parent = parent as usize;
+                    if parent >= index {
+                        return Err(format!(
+                            "skeleton '{}' joint={} has non-topological parent={}",
+                            state.skeleton.name, index, parent
+                        ));
+                    }
+                    mul_mat4(globals[parent], local)
+                } else {
+                    local
+                }
+            } else if let Some(parent) = joint.parent {
+                let parent = parent as usize;
+                if parent >= index {
+                    return Err(format!(
+                        "skeleton '{}' joint={} has non-topological parent={}",
+                        state.skeleton.name, index, parent
+                    ));
+                }
+                mul_mat4(globals[parent], local)
+            } else {
+                local
+            };
+            globals.push(global);
+        }
+        for global in &mut globals {
+            *global = mul_mat4(state.source_to_model, *global);
+        }
+        arm_ik::apply_to_globals(
+            &mut globals,
+            &state.skeleton,
+            &state.derived_joint_drivers,
+            &self.model_arm_ik(stable_id)?,
+        )?;
+        Ok(globals[joint_index])
+    }
+
+    pub(super) fn bind_joint_model_matrix(
+        &self,
+        stable_id: u64,
+        joint_name: &str,
+    ) -> Result<[f32; 16], String> {
+        let (skeleton, source_to_model) = self
+            .entity_skeletons
+            .get(&stable_id)
+            .ok_or_else(|| format!("scene entity {stable_id} has no installed model skeleton"))?;
+        let joint_index = skeleton
+            .joints
+            .iter()
+            .position(|joint| joint.name.eq_ignore_ascii_case(joint_name))
+            .ok_or_else(|| {
+                format!(
+                    "scene entity {stable_id} skeleton '{}' has no joint '{}'",
+                    skeleton.name, joint_name
+                )
+            })?;
+        let mut globals = Vec::<[f32; 16]>::with_capacity(skeleton.joints.len());
+        for (index, joint) in skeleton.joints.iter().enumerate() {
+            let local = trs_matrix(
+                joint.bind_translation,
+                joint.bind_rotation,
+                joint.bind_scale,
+            );
+            let global = if let Some(parent) = joint.parent {
+                let parent = parent as usize;
+                if parent >= index {
+                    return Err(format!(
+                        "skeleton '{}' joint={} has non-topological parent={}",
+                        skeleton.name, index, parent
+                    ));
+                }
+                mul_mat4(globals[parent], local)
+            } else {
+                local
+            };
+            globals.push(global);
+        }
+        Ok(mul_mat4(*source_to_model, globals[joint_index]))
+    }
+
+    pub fn entity_joint_world_matrix(
+        &self,
+        stable_id: u64,
+        joint_name: &str,
+    ) -> Result<[f32; 16], String> {
+        let model_joint = if self.skinned_entities.contains_key(&stable_id) {
+            self.animated_joint_model_matrix(stable_id, joint_name)?
+        } else {
+            self.bind_joint_model_matrix(stable_id, joint_name)?
+        };
+        let entity = self
+            .world
+            .entity(SceneEntityId(stable_id))
+            .ok_or_else(|| format!("scene entity {stable_id} disappeared"))?;
+        let entity_matrix = geometry::instance_model_matrix(
+            entity.transform.position,
+            entity.transform.rotation_degrees,
+            entity.transform.scale,
+        );
+        Ok(mul_mat4(entity_matrix, model_joint))
+    }
+
+    pub fn entity_joint_world_pose(
+        &self,
+        stable_id: u64,
+        joint_name: &str,
+    ) -> Result<([f32; 3], [f32; 3]), String> {
+        let world_joint = self.entity_joint_world_matrix(stable_id, joint_name)?;
+        Ok((
+            [world_joint[12], world_joint[13], world_joint[14]],
+            matrix_rotation_degrees(world_joint)?,
+        ))
+    }
+
+    pub fn entity_joint_world_position(
+        &self,
+        stable_id: u64,
+        joint_name: &str,
+    ) -> Result<[f32; 3], String> {
+        self.entity_joint_world_pose(stable_id, joint_name)
+            .map(|(position, _)| position)
+    }
+
+    pub fn attach_entity_joint_to_joint(
+        &mut self,
+        child: u64,
+        parent: u64,
+        parent_joint: &str,
+        child_joint: &str,
+    ) -> Result<(), String> {
+        self.attach_entity_joint_to_joint_offset(
+            child,
+            parent,
+            parent_joint,
+            child_joint,
+            [0.0; 3],
+            [0.0; 3],
+        )
+    }
+    pub fn set_entity_joint_attachment(
+        &mut self,
+        child: u64,
+        parent: u64,
+        parent_joint: &str,
+        child_joint: &str,
+    ) -> Result<(), String> {
+        self.set_entity_joint_attachment_offset(
+            child,
+            parent,
+            parent_joint,
+            child_joint,
+            [0.0; 3],
+            [0.0; 3],
+        )
+    }
+    fn attach_entity_joint_to_joint_offset(
+        &mut self,
+        child_stable_id: u64,
+        parent_stable_id: u64,
+        parent_joint: &str,
+        child_joint: &str,
+        position_offset: [f32; 3],
+        rotation_offset_degrees: [f32; 3],
+    ) -> Result<(), String> {
+        // GTA's CPedEquippedWeapon::AttachObjects aligns the child's gun_gripr
+        // matrix to the ped's PH_R_Hand by multiplying by the inverse child
+        // offset-bone transform. Reproduce that relation directly.
+        let parent_world = self.entity_joint_world_matrix(parent_stable_id, parent_joint)?;
+        let offset = geometry::instance_model_matrix(
+            Vec3::new(position_offset[0], position_offset[1], position_offset[2]),
+            Vec3::new(
+                rotation_offset_degrees[0],
+                rotation_offset_degrees[1],
+                rotation_offset_degrees[2],
+            ),
+            Vec3::new(1.0, 1.0, 1.0),
+        );
+        let parent_world = mul_mat4(parent_world, offset);
+        let child_joint_model = if child_joint.is_empty() {
+            trs_matrix([0.0; 3], [0.0, 0.0, 0.0, 1.0], [1.0; 3])
+        } else {
+            self.bind_joint_model_matrix(child_stable_id, child_joint)?
+        };
+        let child_joint_inverse = inverse_affine(child_joint_model).ok_or_else(|| {
+            format!(
+                "scene entity {child_stable_id} child joint '{}' has singular bind transform",
+                child_joint
+            )
+        })?;
+        let child_world = mul_mat4(parent_world, child_joint_inverse);
+        let scale = matrix_scale(child_world)?;
+        let rotation = matrix_rotation_degrees(child_world)?;
+        self.set_entity_transform(
+            child_stable_id,
+            [child_world[12], child_world[13], child_world[14]],
+            rotation,
+            scale,
+        )
+    }
+
+    /// Registers an engine-owned joint constraint. Unlike the old one-shot
+    /// transform command, this survives asynchronous model streaming and is
+    /// evaluated after animation sampling on every scene tick.
+    pub fn set_entity_joint_attachment_offset(
+        &mut self,
+        child_stable_id: u64,
+        parent_stable_id: u64,
+        parent_joint: &str,
+        child_joint: &str,
+        position_offset: [f32; 3],
+        rotation_offset_degrees: [f32; 3],
+    ) -> Result<(), String> {
+        if child_stable_id == parent_stable_id {
+            return Err("joint attachment cannot parent an entity to itself".to_owned());
+        }
+        let parent_joint = parent_joint.trim();
+        let child_joint = child_joint.trim();
+        if parent_joint.is_empty()
+            || position_offset
+                .iter()
+                .chain(rotation_offset_degrees.iter())
+                .any(|v| !v.is_finite())
+        {
+            return Err("joint attachment requires non-empty parent and child joints".to_owned());
+        }
+        if self.world.entity(SceneEntityId(child_stable_id)).is_none() {
+            return Err(format!("scene entity {child_stable_id} does not exist"));
+        }
+        if self.world.entity(SceneEntityId(parent_stable_id)).is_none() {
+            return Err(format!("scene entity {parent_stable_id} does not exist"));
+        }
+
+        let attachment = SceneJointAttachment {
+            parent_stable_id,
+            parent_joint: parent_joint.to_owned(),
+            child_joint: child_joint.to_owned(),
+            position_offset,
+            rotation_offset_degrees,
+        };
+        if self.joint_attachments.get(&child_stable_id) == Some(&attachment) {
+            return Ok(());
+        }
+        self.joint_attachments.insert(child_stable_id, attachment);
+
+        match self.attach_entity_joint_to_joint_offset(
+            child_stable_id,
+            parent_stable_id,
+            parent_joint,
+            child_joint,
+            position_offset,
+            rotation_offset_degrees,
+        ) {
+            Ok(()) => Ok(()),
+            Err(error) if joint_attachment_pose_pending(&error) => Ok(()),
+            Err(error) => {
+                self.joint_attachments.remove(&child_stable_id);
+                Err(error)
+            }
+        }
+    }
+
+    pub fn clear_entity_joint_attachment(&mut self, child_stable_id: u64) -> bool {
+        self.joint_attachments.remove(&child_stable_id).is_some()
+    }
+
+    pub(super) fn update_joint_attachments(&mut self) -> Result<(), String> {
+        if self.joint_attachments.is_empty() {
+            return Ok(());
+        }
+
+        let constraints = self
+            .joint_attachments
+            .iter()
+            .map(|(child, attachment)| (*child, attachment.clone()))
+            .collect::<Vec<_>>();
+        let mut stale = Vec::new();
+
+        for (child_stable_id, attachment) in constraints {
+            if self.world.entity(SceneEntityId(child_stable_id)).is_none()
+                || self
+                    .world
+                    .entity(SceneEntityId(attachment.parent_stable_id))
+                    .is_none()
+            {
+                stale.push(child_stable_id);
+                continue;
+            }
+
+            match self.attach_entity_joint_to_joint_offset(
+                child_stable_id,
+                attachment.parent_stable_id,
+                &attachment.parent_joint,
+                &attachment.child_joint,
+                attachment.position_offset,
+                attachment.rotation_offset_degrees,
+            ) {
+                Ok(()) => {}
+                Err(error) if joint_attachment_pose_pending(&error) => {}
+                Err(error) => return Err(error),
+            }
+        }
+
+        for child_stable_id in stale {
+            self.joint_attachments.remove(&child_stable_id);
+        }
+        Ok(())
     }
 
     pub fn stop_entity_animation(&mut self, stable_id: u64) -> bool {
@@ -288,23 +705,29 @@ impl Scene3dRuntime {
             return Ok(());
         }
 
-        let frame_dt = dt.clamp(0.0, MAX_ANIMATION_FRAME_DT);
-        for state in self.skinned_entities.values_mut() {
+        // Animation time is simulation time, not a presentation smoothing
+        // budget. Never discard a long frame: doing so permanently desynchronizes
+        // authored cameras, actor poses and mover tracks. Only packed-vertex
+        // presentation interpolation remains clamped below.
+        let animation_dt = dt.max(0.0);
+        let presentation_dt = animation_dt.clamp(0.0, MAX_ANIMATION_FRAME_DT);
+        let mut mover_updates = Vec::<(u64, [f32; 3], [f32; 3], [f32; 3])>::new();
+        for (stable_id, state) in self.skinned_entities.iter_mut() {
             let Some(playback) = state.playback.as_mut() else {
                 continue;
             };
             playback.time_seconds = advance_clip_time(
                 &playback.clip,
                 playback.time_seconds,
-                frame_dt * playback.playback_rate,
+                animation_dt * playback.playback_rate,
             );
             let transition_finished = if let Some(transition) = playback.transition_from.as_mut() {
                 transition.time_seconds = advance_clip_time(
                     &transition.clip,
                     transition.time_seconds,
-                    frame_dt * transition.playback_rate,
+                    animation_dt * transition.playback_rate,
                 );
-                transition.elapsed_seconds += frame_dt;
+                transition.elapsed_seconds += animation_dt;
                 transition.elapsed_seconds >= transition.duration_seconds
             } else {
                 false
@@ -312,6 +735,47 @@ impl Scene3dRuntime {
             if transition_finished {
                 playback.transition_from = None;
             }
+
+            if let (Some(origin), Some(mover)) =
+                (playback.mover_origin, playback.clip.mover.as_ref())
+            {
+                let translation = sample_vec3_clip(
+                    &mover.translations,
+                    mover.translation_interpolation,
+                    playback.time_seconds,
+                    playback.clip.looping,
+                    playback.clip.duration_seconds,
+                    [0.0; 3],
+                );
+                let rotation = sample_quat_clip(
+                    &mover.rotations,
+                    mover.rotation_interpolation,
+                    playback.time_seconds,
+                    playback.clip.looping,
+                    playback.clip.duration_seconds,
+                    [0.0, 0.0, 0.0, 1.0],
+                );
+                let base = geometry::instance_model_matrix(
+                    Vec3::new(origin.position[0], origin.position[1], origin.position[2]),
+                    Vec3::new(
+                        origin.rotation_degrees[0],
+                        origin.rotation_degrees[1],
+                        origin.rotation_degrees[2],
+                    ),
+                    Vec3::new(origin.scale[0], origin.scale[1], origin.scale[2]),
+                );
+                let mover_matrix = trs_matrix(translation, rotation, [1.0, 1.0, 1.0]);
+                let world = mul_mat4(base, mover_matrix);
+                mover_updates.push((
+                    *stable_id,
+                    [world[12], world[13], world[14]],
+                    matrix_rotation_degrees(world)?,
+                    origin.scale,
+                ));
+            }
+        }
+        for (stable_id, position, rotation_degrees, scale) in mover_updates {
+            self.apply_animation_transform(stable_id, position, rotation_degrees, scale)?;
         }
 
         let render_frame = self.frame_index;
@@ -467,7 +931,7 @@ impl Scene3dRuntime {
                     ));
                 }
 
-                blend.elapsed_seconds += frame_dt;
+                blend.elapsed_seconds += presentation_dt;
                 let alpha = if blend.duration_seconds > 0.0 {
                     (blend.elapsed_seconds / blend.duration_seconds).clamp(0.0, 1.0)
                 } else {
@@ -607,6 +1071,7 @@ impl Scene3dRuntime {
                 format!("skinned entity {} lost installed render mesh", stable_id)
             })?;
             let job = SkinningJob {
+                arm_ik: self.model_arm_ik(stable_id)?,
                 stable_id,
                 source_model_id: source_model_id.0,
                 generation,
@@ -648,7 +1113,7 @@ impl Scene3dRuntime {
 }
 
 fn run_skinning_job(job: SkinningJob) -> Result<SkinningResult, String> {
-    let palette = if let Some(transition) = job.transition_from.as_ref() {
+    let mut palette = if let Some(transition) = job.transition_from.as_ref() {
         build_blended_skin_palette(
             &job.skeleton,
             &job.derived_joint_drivers,
@@ -670,6 +1135,13 @@ fn run_skinning_job(job: SkinningJob) -> Result<SkinningResult, String> {
             job.model_to_source,
         )?
     };
+    arm_ik::apply_to_palette(
+        &mut palette,
+        &job.skeleton,
+        &job.derived_joint_drivers,
+        job.source_to_model,
+        &job.arm_ik,
+    )?;
     let packed = skin_vertices_to_packed(&job.bind_vertices, &palette)?;
     if packed.len() != job.expected_vertex_count * FLOATS_PER_VERTEX {
         return Err(format!(
@@ -725,10 +1197,35 @@ fn build_derived_joint_drivers(
 
     let mut drivers = vec![None; skeleton.joints.len()];
     for (index, joint) in skeleton.joints.iter().enumerate() {
-        let Some(base_name) = joint.name.strip_suffix("_helper") else {
+        let driver_name = if let Some(base_name) = joint.name.strip_suffix("_helper") {
+            Some(base_name)
+        } else {
+            // RSC7 ped rigs contain weighted roll bones that are siblings of
+            // the deforming thigh rather than children of it. Parent-only
+            // inheritance leaves those vertices in bind pose while the thigh
+            // rotates, which visibly stretches the character.
+            match joint.name.as_str() {
+                // Lower body roll / muscle helpers are siblings of the actual
+                // deforming limb in many RSC7 ped rigs. Driving only from their
+                // authored parent (usually pelvis/thigh) leaves weighted verts
+                // behind when the child limb rotates.
+                "RB_L_ThighRoll" | "RB_L_BumRoll" => Some("SKEL_L_Thigh"),
+                "RB_R_ThighRoll" | "RB_R_BumRoll" => Some("SKEL_R_Thigh"),
+                "MH_L_Knee" => Some("SKEL_L_Calf"),
+                "MH_R_Knee" => Some("SKEL_R_Calf"),
+
+                // Same rule for upper-body roll/elbow helpers.
+                "RB_L_ArmRoll" => Some("SKEL_L_UpperArm"),
+                "RB_R_ArmRoll" => Some("SKEL_R_UpperArm"),
+                "RB_L_ForeArmRoll" | "MH_L_Elbow" => Some("SKEL_L_Forearm"),
+                "RB_R_ForeArmRoll" | "MH_R_Elbow" => Some("SKEL_R_Forearm"),
+                _ => None,
+            }
+        };
+        let Some(driver_name) = driver_name else {
             continue;
         };
-        let Some(&driver_index) = names.get(base_name) else {
+        let Some(&driver_index) = names.get(driver_name) else {
             continue;
         };
         if driver_index >= index || driver_index > u16::MAX as usize {
@@ -1192,6 +1689,50 @@ fn slerp_quat(a: [f32; 4], mut b: [f32; 4], t: f32) -> [f32; 4] {
     ])
 }
 
+fn joint_attachment_pose_pending(error: &str) -> bool {
+    error.contains("has no installed model skeleton")
+        || error.contains("is not an installed skinned model")
+}
+
+fn matrix_scale(matrix: [f32; 16]) -> Result<[f32; 3], String> {
+    let sx = (matrix[0] * matrix[0] + matrix[1] * matrix[1] + matrix[2] * matrix[2]).sqrt();
+    let sy = (matrix[4] * matrix[4] + matrix[5] * matrix[5] + matrix[6] * matrix[6]).sqrt();
+    let sz = (matrix[8] * matrix[8] + matrix[9] * matrix[9] + matrix[10] * matrix[10]).sqrt();
+    if [sx, sy, sz]
+        .iter()
+        .any(|value| !value.is_finite() || *value <= 1.0e-8)
+    {
+        return Err("matrix has singular/non-finite scale".to_owned());
+    }
+    Ok([sx, sy, sz])
+}
+
+fn matrix_rotation_degrees(matrix: [f32; 16]) -> Result<[f32; 3], String> {
+    let mut x = [matrix[0], matrix[1], matrix[2]];
+    let mut y = [matrix[4], matrix[5], matrix[6]];
+    let mut z = [matrix[8], matrix[9], matrix[10]];
+    for axis in [&mut x, &mut y, &mut z] {
+        let length = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+        if !length.is_finite() || length <= 1.0e-8 {
+            return Err("joint world matrix has singular rotation basis".to_owned());
+        }
+        axis[0] /= length;
+        axis[1] /= length;
+        axis[2] /= length;
+    }
+
+    // Matrix convention is Rz * Ry * Rx, matching transform_point / instance_model_matrix.
+    let sy = (-x[2]).clamp(-1.0, 1.0);
+    let ry = sy.asin();
+    let cy = ry.cos();
+    let (rx, rz) = if cy.abs() > 1.0e-5 {
+        (y[2].atan2(z[2]), x[1].atan2(x[0]))
+    } else {
+        ((-z[1]).atan2(y[1]), 0.0)
+    };
+    Ok([rx.to_degrees(), ry.to_degrees(), rz.to_degrees()])
+}
+
 fn trs_matrix(translation: [f32; 3], rotation: [f32; 4], scale: [f32; 3]) -> [f32; 16] {
     let [x, y, z, w] = normalize_quat(rotation);
     let xx = x * x;
@@ -1374,6 +1915,7 @@ mod tests {
                 rotations: Vec::new(),
                 scales: Vec::new(),
             }],
+            mover: None,
         };
         let from = make_clip("from", 0.0);
         let to = make_clip("to", 10.0);
@@ -1392,6 +1934,7 @@ mod tests {
             duration_seconds: 1.0,
             looping: true,
             tracks: Vec::new(),
+            mover: None,
         };
         let t = advance_clip_time(&clip, 0.99, 1.0 / 120.0);
         assert!(t > 0.998 && t < 1.0, "t={t}");
@@ -1465,6 +2008,7 @@ mod tests {
                 rotations: Vec::new(),
                 scales: Vec::new(),
             }],
+            mover: None,
         };
         let palette =
             build_skin_palette(&skeleton, &drivers, &clip, 0.0, identity, identity).unwrap();
@@ -1477,6 +2021,74 @@ mod tests {
                 moved.x
             );
         }
+    }
+
+    #[test]
+    fn sibling_thigh_roll_follows_animated_thigh() {
+        let identity = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        let inverse_x = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 1.0,
+        ];
+        let skeleton = ModelSkeleton {
+            name: "rsc7-roll-test".to_owned(),
+            joints: vec![
+                newviso_model::ModelJoint {
+                    name: "SKEL_ROOT".to_owned(),
+                    tag: 0,
+                    parent: None,
+                    inverse_bind_matrix: identity,
+                    bind_translation: [0.0, 0.0, 0.0],
+                    bind_rotation: [0.0, 0.0, 0.0, 1.0],
+                    bind_scale: [1.0, 1.0, 1.0],
+                },
+                newviso_model::ModelJoint {
+                    name: "SKEL_L_Thigh".to_owned(),
+                    tag: 58271,
+                    parent: Some(0),
+                    inverse_bind_matrix: inverse_x,
+                    bind_translation: [1.0, 0.0, 0.0],
+                    bind_rotation: [0.0, 0.0, 0.0, 1.0],
+                    bind_scale: [1.0, 1.0, 1.0],
+                },
+                newviso_model::ModelJoint {
+                    name: "RB_L_ThighRoll".to_owned(),
+                    tag: 23639,
+                    parent: Some(0),
+                    inverse_bind_matrix: inverse_x,
+                    bind_translation: [1.0, 0.0, 0.0],
+                    bind_rotation: [0.0, 0.0, 0.0, 1.0],
+                    bind_scale: [1.0, 1.0, 1.0],
+                },
+            ],
+        };
+        let drivers = build_derived_joint_drivers(&skeleton).unwrap();
+        assert_eq!(drivers[2].map(|driver| driver.joint), Some(1));
+
+        let clip = ModelAnimationClip {
+            name: "move-thigh".to_owned(),
+            duration_seconds: 1.0,
+            looping: true,
+            tracks: vec![newviso_model::JointAnimationTrack {
+                joint: 1,
+                translation_interpolation: AnimationInterpolation::Linear,
+                rotation_interpolation: AnimationInterpolation::Linear,
+                scale_interpolation: AnimationInterpolation::Linear,
+                translations: vec![AnimationVec3Key {
+                    time_seconds: 0.0,
+                    value: [2.0, 0.0, 0.0],
+                }],
+                rotations: Vec::new(),
+                scales: Vec::new(),
+            }],
+            mover: None,
+        };
+
+        let palette =
+            build_skin_palette(&skeleton, &drivers, &clip, 0.0, identity, identity).unwrap();
+        let moved = transform_point_mat4(palette[2], Vec3::ZERO);
+        assert!((moved.x - 1.0).abs() < 1.0e-5, "roll x={}", moved.x);
     }
 
     #[test]

@@ -1,5 +1,35 @@
 use super::*;
 
+fn material_binding_uses_local_base_color(
+    binding: &newviso_materials::MaterialTextureBinding,
+) -> bool {
+    let Some(texture_name) = binding.texture_name.as_deref() else {
+        return false;
+    };
+    let texture_name = texture_name.trim().to_ascii_lowercase();
+    // These are authored shader/global placeholders, not dictionary-local
+    // albedo entries even when they happen to occupy DiffuseSampler.
+    if matches!(
+        texture_name.as_str(),
+        "givemechecker" | "long_hair_noise" | "env_smooth_concrete2"
+    ) || texture_name.starts_with("enveff_")
+    {
+        return false;
+    }
+
+    let role = binding.slot.trim().to_ascii_lowercase();
+    if matches!(role.as_str(), "base_color" | "albedo" | "diffuse" | "base") {
+        return true;
+    }
+    role == "generic" && texture_name.contains("_diff_")
+}
+
+fn material_binding_blocks_model_materialization(
+    binding: &newviso_materials::MaterialTextureBinding,
+) -> bool {
+    binding.required || material_binding_uses_local_base_color(binding)
+}
+
 enum ScenePrepareTask {
     Model {
         model: Arc<ModelResource>,
@@ -258,6 +288,17 @@ impl EngineApplication {
                     let Some(texture_name) = binding.texture_name.as_deref() else {
                         return Ok(None);
                     };
+                    // Most unresolved optional inputs are authored globals
+                    // (environment, long_hair_noise, givemechecker, etc.) and
+                    // must not be reinterpreted as entity-local YTD entries.
+                    // Base-color samplers are the exception: legacy/streamed-ped
+                    // cooks may know the texture name but leave the direct ref
+                    // unresolved. If the entity explicitly supplies a texture
+                    // dictionary, resolve that albedo there and treat it as a
+                    // materialization dependency.
+                    if !binding.required && !material_binding_uses_local_base_color(binding) {
+                        return Ok(None);
+                    }
                     let Some(dictionary) = dictionary else {
                         return Ok(None);
                     };
@@ -277,7 +318,7 @@ impl EngineApplication {
                     Ok(Some(AssetAddress::parse(&format!(
                         "{}@{}",
                         dictionary.logical_path(),
-                        texture_name
+                        texture_name.to_ascii_lowercase()
                     ))?))
                 };
 
@@ -317,7 +358,7 @@ impl EngineApplication {
                     for texture in &material.textures {
                         let Some(texture_address) = resolve_material_texture_address(texture)?
                         else {
-                            if texture.required {
+                            if material_binding_blocks_model_materialization(texture) {
                                 pending_material_dependencies =
                                     pending_material_dependencies.saturating_add(1);
                             }
@@ -337,7 +378,7 @@ impl EngineApplication {
                                 .entry(stable_id)
                                 .or_default()
                                 .insert(texture_address);
-                            if texture.required {
+                            if material_binding_blocks_model_materialization(texture) {
                                 pending_material_dependencies =
                                     pending_material_dependencies.saturating_add(1);
                             }
@@ -403,6 +444,43 @@ impl EngineApplication {
                         Some(texture) => Some(texture),
                         None => resolve_role("generic")?,
                     };
+                    let mut auxiliary_textures = BTreeMap::new();
+                    for binding in &material.textures {
+                        let role = binding.slot.trim().to_ascii_lowercase();
+                        if matches!(
+                            role.as_str(),
+                            "base_color"
+                                | "albedo"
+                                | "diffuse"
+                                | "base"
+                                | "normal"
+                                | "normal_map"
+                                | "normals"
+                                | "specular"
+                                | "spec"
+                                | "specular_map"
+                                | "emissive"
+                                | "emission"
+                                | "emissive_map"
+                                | "environment"
+                                | "environment_map"
+                                | "reflection"
+                                | "generic"
+                        ) {
+                            continue;
+                        }
+                        let Some(texture_address) = resolve_material_texture_address(binding)?
+                        else {
+                            continue;
+                        };
+                        if let Some(texture) = self
+                            .asset_streamer
+                            .get::<newviso_textures::TextureResource>(&texture_address)
+                        {
+                            auxiliary_textures.insert(role, texture);
+                        }
+                    }
+
                     Ok(newviso_scene::SceneResolvedMaterial {
                         material: material.clone(),
                         base_color,
@@ -410,6 +488,7 @@ impl EngineApplication {
                         specular: resolve_role("specular")?,
                         emissive: resolve_role("emissive")?,
                         environment: resolve_role("environment")?,
+                        auxiliary_textures,
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?;
@@ -935,5 +1014,48 @@ impl EngineApplication {
             );
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod material_binding_tests {
+    use super::*;
+
+    fn binding(
+        slot: &str,
+        name: &str,
+        required: bool,
+    ) -> newviso_materials::MaterialTextureBinding {
+        newviso_materials::MaterialTextureBinding {
+            slot: slot.to_owned(),
+            texture_name: Some(name.to_owned()),
+            texture: None,
+            required,
+        }
+    }
+
+    #[test]
+    fn unresolved_local_diffuse_uses_entity_texture_dictionary() {
+        let diffuse = binding("base_color", "head_diff_000_d_whi", false);
+        assert!(material_binding_uses_local_base_color(&diffuse));
+        assert!(material_binding_blocks_model_materialization(&diffuse));
+
+        let legacy = binding("generic", "uppr_diff_031_a_uni", false);
+        assert!(material_binding_uses_local_base_color(&legacy));
+        assert!(material_binding_blocks_model_materialization(&legacy));
+    }
+
+    #[test]
+    fn unresolved_global_shader_inputs_do_not_use_entity_texture_dictionary() {
+        for sampler in [
+            binding("hair_noise", "long_hair_noise", false),
+            binding("generic", "givemechecker", false),
+            binding("base_color", "givemechecker", false),
+            binding("environment", "ENV_SMOOTH_CONCRETE2", false),
+            binding("generic", "ENVEFF_Gray", false),
+        ] {
+            assert!(!material_binding_uses_local_base_color(&sampler));
+            assert!(!material_binding_blocks_model_materialization(&sampler));
+        }
     }
 }
