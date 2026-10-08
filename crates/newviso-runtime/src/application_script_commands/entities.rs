@@ -1,6 +1,20 @@
 use super::*;
 
 impl EngineApplication {
+    pub(super) fn apply_entity_transform_batch(&mut self, command: &Value, index: usize) -> Result<(), String> {
+        let entries = command.get("transforms").and_then(Value::as_array)
+            .ok_or_else(|| format!("script command[{index}] scene.entities.transform.batch requires array 'transforms'"))?;
+        for (batch_index, entry) in entries.iter().enumerate() {
+            let id = entry.get("id").and_then(Value::as_str).filter(|id| !id.is_empty())
+                .ok_or_else(|| format!("script command[{index}] transform[{batch_index}] requires string 'id'"))?;
+            let position = entry.get("position").map(|_| command_vec3(entry, "position", batch_index)).transpose()?;
+            let rotation = entry.get("rotation_degrees").map(|_| command_vec3(entry, "rotation_degrees", batch_index)).transpose()?;
+            let scale = entry.get("scale").map(|_| command_vec3(entry, "scale", batch_index)).transpose()?;
+            self.scene.set_runtime_entity_transform(id, position, rotation, scale)
+                .map_err(|e| format!("script command[{index}] transform[{batch_index}]: {e}"))?;
+        }
+        Ok(())
+    }
     pub(super) fn apply_entities_command(
         &mut self,
         command: &Value,

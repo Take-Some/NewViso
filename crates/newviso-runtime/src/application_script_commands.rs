@@ -58,6 +58,18 @@ impl EngineApplication {
                 .and_then(Value::as_str)
                 .ok_or_else(|| format!("script command[{index}] has no string 'op'"))?;
             match op {
+                // A single script packet may carry several ordered operations.
+                // Retain existing command handlers and their execution ordering.
+                "commands.batch" => {
+                    let items = command.get("commands").and_then(Value::as_array)
+                        .ok_or_else(|| format!("script command[{index}] commands.batch requires an array"))?;
+                    if items.iter().any(|item| item.get("op").and_then(Value::as_str) == Some("commands.batch")) {
+                        return Err(format!("script command[{index}] nested commands.batch is not supported"));
+                    }
+                    self.apply_script_commands(items)
+                        .map_err(|error| format!("script command[{index}] commands.batch: {error}"))?;
+                }
+                "scene.entities.transform.batch" => self.apply_entity_transform_batch(command, index)?,
                 "scene.render.configure"
                 | "scene.entity.process_claim.set"
                 | "scene.entity.process_rate.set"
@@ -107,6 +119,24 @@ impl EngineApplication {
                 | "vehicle.access.layout.set"
                 | "vehicle.access.reserve"
                 | "vehicle.access.release" => self.apply_vehicles_command(command, index, op)?,
+                "scene.clock.set"
+                | "scene.clock.add"
+                | "scene.clock.advance_to"
+                | "scene.clock.date.set"
+                | "scene.clock.pause"
+                | "scene.clock.fixed.set"
+                | "scene.clock.rate.set"
+                | "scene.weather.force"
+                | "scene.weather.transition"
+                | "scene.weather.resume"
+                | "scene.weather.dynamic.set"
+                | "scene.timecycle.region.set"
+                | "scene.timecycle.modifier.set"
+                | "scene.timecycle.modifier.use"
+                | "scene.timecycle.modifier.remove"
+                | "scene.timecycle.modifiers.clear" => {
+                    self.apply_climate_command(command, index, op)?;
+                }
                 "scene.clear_color.set"
                 | "scene.environment.set"
                 | "scene.orbit.configure"
