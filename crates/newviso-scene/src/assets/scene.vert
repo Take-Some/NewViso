@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 layout(set = 0, binding = 0, std140) uniform SceneFrame {
     mat4 view_proj;
@@ -17,6 +18,11 @@ layout(set = 0, binding = 0, std140) uniform SceneFrame {
     vec4 environment_haze_color_density;
     vec4 environment_haze_params;
     vec4 environment_clear_color;
+    vec4 environment_reference[64];
+    vec4 water_impacts[8];
+    vec4 water_surface;
+    vec4 water_optics;
+    vec4 water_pass;
 } frame;
 
 layout(location = 0) in vec4 in_position_mode;
@@ -48,9 +54,11 @@ void main() {
         return;
     }
 
-    vec4 world = vec4(in_position_mode.xyz, 1.0);
+    vec3 position=in_position_mode.xyz;
+    vec3 normal=normalize(in_normal);
+    vec4 world = vec4(position,1.0);
     gl_Position = frame.view_proj * world;
-    v_normal = normalize(in_normal);
-    v_world_position = in_position_mode.xyz;
+    v_normal = normal;
+    v_world_position = position;
     v_shadow_coord = frame.shadow_view_proj * world;
 }

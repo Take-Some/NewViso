@@ -52,7 +52,10 @@ impl EngineApplication {
     }
 
     pub(super) fn apply_script_commands(&mut self, commands: &[Value]) -> Result<(), String> {
+        static PROFILE_COMMANDS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let profile = *PROFILE_COMMANDS.get_or_init(|| std::env::var("NEWVISO_PERF_LOG_EVERY_FRAME").as_deref() == Ok("1"));
         for (index, command) in commands.iter().enumerate() {
+            let started = profile.then(std::time::Instant::now);
             let op = command
                 .get("op")
                 .and_then(Value::as_str)
@@ -69,6 +72,10 @@ impl EngineApplication {
                     self.apply_script_commands(items)
                         .map_err(|error| format!("script command[{index}] commands.batch: {error}"))?;
                 }
+                "snow.field.load" | "snow.field.extend" | "snow.actor.bind" | "snow.actor.unbind" | "snow.contact"
+                | "snow.weather.advance" | "snow.layers.configure" | "snow.heat.configure" | "snow.drift.configure" | "snow.dynamics.configure" | "snow.surfaces.configure" | "thermal.environment.set" | "thermal.source.upsert"
+                | "thermal.source.remove" | "thermal.body.upsert" | "thermal.body.remove" =>
+                    self.apply_cold_command(command, index, op)?,
                 "scene.entities.transform.batch" => self.apply_entity_transform_batch(command, index)?,
                 "scene.render.configure"
                 | "scene.entity.process_claim.set"
@@ -85,9 +92,13 @@ impl EngineApplication {
                 "runtime.configure" | "console.write" | "events.emit" | "platform.cursor.set" => {
                     self.apply_services_command(command, index, op)?
                 }
-                "audio.route.gain" | "audio.cue.preload" | "audio.cue.play"
+                "character.audio.motion" | "character.audio.reset" =>
+                    self.apply_character_audio_command(command, index, op)?,
+                "audio.route.gain" | "audio.cue.preload" | "audio.cue.play" | "audio.loop.set"
                 | "audio.listener.set" => self.apply_audio_command(command, index, op)?,
                 "physics.world.configure"
+                | "physics.water.configure"
+                | "physics.body.water.configure"
                 | "physics.body.upsert"
                 | "physics.body.destroy"
                 | "physics.body.velocity.set"
@@ -128,7 +139,7 @@ impl EngineApplication {
                 | "scene.clock.rate.set"
                 | "scene.weather.force"
                 | "scene.weather.transition"
-                | "scene.weather.resume"
+                | "scene.weather.wind.set" | "scene.weather.wind.clear" | "scene.weather.resume"
                 | "scene.weather.dynamic.set"
                 | "scene.timecycle.region.set"
                 | "scene.timecycle.modifier.set"
@@ -228,6 +239,7 @@ impl EngineApplication {
                 "scene.light.upsert"
                 | "scene.cloudhat.keyframe.set"
                 | "scene.sky_clouds.set"
+                | "scene.weather.lens.set"
                 | "scene.volumetric_clouds.set"
                 | "scene.atmospheric_cloud_layer.target.set"
                 | "scene.atmospheric_cloud_layer.target.clear"
@@ -236,6 +248,7 @@ impl EngineApplication {
                 "scene.entity.main_view_meshes.set"
                 | "scene.entity.joint_mesh.copy"
                 | "scene.entity.arm_ik.set"
+                | "scene.entity.animation.preload"
                 | "scene.entity.animation.play"
                 | "scene.entity.attach_to_joint"
                 | "scene.entity.attach_joint_to_joint"
@@ -245,8 +258,10 @@ impl EngineApplication {
                 "scene.camera.set_relative_to_entity" | "scene.camera.set" => {
                     self.apply_camera_command(command, index, op)?
                 }
-                "scene.particle_effect.spawn_at_joint"
+                "scene.particle_effect.preload"
+                | "scene.particle_effect.spawn_at_joint"
                 | "scene.particle_effect.spawn"
+                | "scene.water.impact"
                 | "scene.particles.spawn"
                 | "scene.particles.clear"
                 | "scene.surface_mark.add"
@@ -254,6 +269,12 @@ impl EngineApplication {
                 | "scene.transient_spheres.set"
                 | "scene.overlay_quads.set" => self.apply_effects_command(command, index, op)?,
                 _ => return Err(unsupported_command(op, index)),
+            }
+            if let Some(started) = started {
+                let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+                if elapsed_ms >= 2.0 {
+                    host::info("newviso.perf.command", format!("op={op} index={index} elapsed_ms={elapsed_ms:.3}"));
+                }
             }
         }
         Ok(())

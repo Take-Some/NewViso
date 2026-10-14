@@ -1,5 +1,6 @@
 mod character_animation;
 mod character_skeleton;
+mod fragment_physics;
 mod material;
 
 pub use character_animation::load_model_animation_clip;
@@ -474,6 +475,7 @@ fn decode_model_resource(
 
         meshes.push(MeshResource {
             name: mesh_name,
+            render_passes: decode_mesh_render_passes(mesh)?,
             vertex_streams,
             index_buffer: IndexBuffer {
                 format: index_format,
@@ -660,6 +662,23 @@ fn decode_model_resource(
     })
 }
 
+fn decode_mesh_render_passes(mesh: &Value) -> Result<newviso_model::MeshRenderPasses, String> {
+    let Some(value) = mesh.get("render_passes") else {
+        return Ok(Default::default()); // Existing native/cooked assets retain their coverage.
+    };
+    if !value.is_object() {
+        return Err("mesh render_passes must be an object".to_owned());
+    }
+    let read = |name: &str| -> Result<bool, String> {
+        match value.get(name) {
+            None => Ok(true),
+            Some(value) => value.as_bool()
+                .ok_or_else(|| format!("mesh render_passes.{name} must be boolean")),
+        }
+    };
+    Ok(newviso_model::MeshRenderPasses { color: read("color")?, shadow: read("shadow")? })
+}
+
 fn decode_optional_skeleton(value: Option<&Value>) -> Result<Option<ModelSkeleton>, String> {
     let Some(value) = value.filter(|value| !value.is_null()) else {
         return Ok(None);
@@ -838,6 +857,7 @@ fn decode_optional_fragment(
                 role,
                 bone_tag,
                 group_index,
+                physics: fragment_physics::decode(part)?,
                 parent_part_index,
                 wheel_slot,
                 mesh_names,
@@ -1668,5 +1688,23 @@ mod tests {
         assert!((shading.environment_reflection - 0.65).abs() < 1.0e-6);
         assert!((shading.alpha_cutoff - 0.33).abs() < 1.0e-6);
         assert!((shading.opacity - 0.42).abs() < 1.0e-6);
+    }
+}
+
+#[cfg(test)]
+mod mesh_render_pass_tests {
+    use super::*;
+    #[test]
+    fn mesh_render_passes_preserve_shadow_only_geometry() {
+        let passes = decode_mesh_render_passes(&json!({"render_passes":{"color":false,"shadow":true}})).unwrap();
+        assert!(!passes.color && passes.shadow);
+        let main = decode_mesh_render_passes(&json!({"render_passes":{"color":true,"shadow":false}})).unwrap();
+        assert!(main.color && !main.shadow);
+    }
+    #[test]
+    fn mesh_render_passes_keep_legacy_coverage_and_reject_malformed_policy() {
+        assert_eq!(decode_mesh_render_passes(&json!({})).unwrap(), Default::default());
+        assert!(decode_mesh_render_passes(&json!({"render_passes":{"color":"false"}})).is_err());
+        assert!(decode_mesh_render_passes(&json!({"render_passes":0})).is_err());
     }
 }

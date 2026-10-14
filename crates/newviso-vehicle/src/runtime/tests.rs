@@ -148,14 +148,12 @@ fn ignition_off_preserves_probes_and_inertia_but_removes_motor_torque() {
         )
         .unwrap();
     runtime.prepare_frame(1.0 / 120.0, 9.81, &bodies);
-    assert!(
-        runtime
-            .telemetry(42)
-            .unwrap()
-            .wheels
-            .iter()
-            .any(|w| w.angular_velocity != 0.0)
-    );
+    assert!(runtime
+        .telemetry(42)
+        .unwrap()
+        .wheels
+        .iter()
+        .any(|w| w.angular_velocity != 0.0));
 }
 
 #[test]
@@ -252,14 +250,12 @@ fn downward_triangle_normal_cannot_pull_suspension_into_ground() {
     let frame = runtime.prepare_frame(1.0 / 120.0, 9.81, &bodies);
     assert!(frame.impulses.iter().all(|p| p.impulse[1] >= 0.0));
     assert!(frame.impulses.iter().map(|p| p.impulse[1]).sum::<f32>() > 0.0);
-    assert!(
-        runtime
-            .telemetry(42)
-            .unwrap()
-            .wheels
-            .iter()
-            .all(|w| w.contact_normal.unwrap()[1] > 0.0)
-    );
+    assert!(runtime
+        .telemetry(42)
+        .unwrap()
+        .wheels
+        .iter()
+        .all(|w| w.contact_normal.unwrap()[1] > 0.0));
 }
 
 #[test]
@@ -304,14 +300,12 @@ fn brakes_do_not_add_energy_or_reverse_wheel_spin_at_low_speed() {
         .sum();
     assert!(horizontal_impulse >= 0.0);
     assert!(horizontal_impulse <= 1500.0 * 0.02 + 0.001);
-    assert!(
-        runtime
-            .telemetry(42)
-            .unwrap()
-            .wheels
-            .iter()
-            .all(|wheel| wheel.angular_velocity >= 0.0)
-    );
+    assert!(runtime
+        .telemetry(42)
+        .unwrap()
+        .wheels
+        .iter()
+        .all(|wheel| wheel.angular_velocity >= 0.0));
 }
 
 #[test]
@@ -442,12 +436,10 @@ fn probe_hits_feed_suspension_forces() {
         .collect::<Vec<_>>();
     runtime.accept_probe_hits(&hits);
     let second = runtime.prepare_frame(1.0 / 60.0, 9.81, &bodies);
-    assert!(
-        second
-            .impulses
-            .iter()
-            .any(|impulse| impulse.impulse[1] > 0.0)
-    );
+    assert!(second
+        .impulses
+        .iter()
+        .any(|impulse| impulse.impulse[1] > 0.0));
 }
 
 #[test]
@@ -643,12 +635,10 @@ fn engine_wheel_damage_does_not_prevent_start_for_player_or_ai() {
             let state = runtime.telemetry(42).unwrap();
             assert!(state.engine_running, "player={player}, tyre={condition:?}");
             assert_eq!(state.failed_engine_start_attempts, 0);
-            assert!(
-                runtime
-                    .drain_events()
-                    .iter()
-                    .all(|e| e.kind != VehicleEventKind::EngineStartFailed)
-            );
+            assert!(runtime
+                .drain_events()
+                .iter()
+                .all(|e| e.kind != VehicleEventKind::EngineStartFailed));
             runtime.set_engine_running(42, false).unwrap();
             runtime.set_engine_running(42, true).unwrap();
             assert!(runtime.telemetry(42).unwrap().engine_running);
@@ -692,14 +682,12 @@ fn engine_wheel_hits_do_not_stall_an_undamaged_engine() {
         ENGINE_HEALTH_MAX
     );
     assert_eq!(runtime.damage_state(42).unwrap().overall_health, 0.0);
-    assert!(
-        runtime
-            .telemetry(42)
-            .unwrap()
-            .wheels
-            .iter()
-            .all(|w| w.tire_condition == TireCondition::Missing)
-    );
+    assert!(runtime
+        .telemetry(42)
+        .unwrap()
+        .wheels
+        .iter()
+        .all(|w| w.tire_condition == TireCondition::Missing));
     let mut stationary = body();
     stationary.linear_velocity = [0.0; 3];
     let bodies = BTreeMap::from([(42, stationary)]);
@@ -707,12 +695,10 @@ fn engine_wheel_hits_do_not_stall_an_undamaged_engine() {
         runtime.prepare_frame(1.0 / 120.0, 9.81, &bodies);
     }
     assert!(runtime.telemetry(42).unwrap().engine_running);
-    assert!(
-        runtime
-            .drain_events()
-            .iter()
-            .all(|e| e.kind != VehicleEventKind::EngineStopped)
-    );
+    assert!(runtime
+        .drain_events()
+        .iter()
+        .all(|e| e.kind != VehicleEventKind::EngineStopped));
 }
 
 #[test]
@@ -791,12 +777,10 @@ fn engine_wheel_healthy_engine_never_fails_because_of_body_damage() {
                     .failed_engine_start_attempts,
                 0
             );
-            assert!(
-                runtime
-                    .drain_events()
-                    .iter()
-                    .all(|e| e.kind != VehicleEventKind::EngineStartFailed)
-            );
+            assert!(runtime
+                .drain_events()
+                .iter()
+                .all(|e| e.kind != VehicleEventKind::EngineStartFailed));
         }
     }
 }
@@ -827,4 +811,203 @@ fn engine_wheel_absence_does_not_bypass_real_engine_failure_or_empty_fuel() {
         runtime.set_engine_running(42, true).unwrap();
         assert!(!runtime.telemetry(42).unwrap().engine_running);
     }
+}
+
+#[test]
+fn locked_driven_wheels_do_not_emit_wheel_spin_under_throttle() {
+    let mut runtime = VehicleRuntime::new();
+    let mut definition = VehicleDefinition::automobile();
+    definition.handling.handbrake_force = 4.0;
+    runtime.upsert(7, definition).unwrap();
+    runtime.set_engine_running(7, true).unwrap();
+    runtime
+        .set_input(
+            7,
+            VehicleInput {
+                throttle: 0.1,
+                handbrake: 1.0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let bodies = BTreeMap::from([(7, body())]);
+    for _ in 0..30 {
+        let frame = runtime.prepare_frame(1.0 / 60.0, 9.81, &bodies);
+        runtime.accept_probe_hits(
+            &frame
+                .probes
+                .iter()
+                .map(|probe| VehicleProbeHit {
+                    seq: probe.seq,
+                    position: add(probe.origin, mul(probe.direction, 0.48)),
+                    normal: WORLD_UP,
+                    distance: 0.48,
+                    surface_entity: None,
+                    surface_id: None,
+                })
+                .collect::<Vec<_>>(),
+        );
+    }
+    let vehicle = runtime.telemetry(7).unwrap();
+    assert!(vehicle.wheels[2..].iter().all(|w| w.wheel_locked));
+    assert!(!runtime
+        .drain_events()
+        .iter()
+        .any(|e| e.kind == VehicleEventKind::WheelSpinStarted));
+}
+
+fn advance_on_flat_support(runtime: &mut VehicleRuntime, state: VehicleBodyState, seconds: f32) {
+    let bodies = BTreeMap::from([(7, state)]);
+    for _ in 0..(seconds * 120.0) as usize {
+        let frame = runtime.prepare_frame(1.0 / 120.0, 9.81, &bodies);
+        runtime.accept_probe_hits(
+            &frame
+                .probes
+                .iter()
+                .map(|probe| VehicleProbeHit {
+                    seq: probe.seq,
+                    position: add(probe.origin, mul(probe.direction, 0.48)),
+                    normal: WORLD_UP,
+                    distance: 0.48,
+                    surface_entity: None,
+                    surface_id: None,
+                })
+                .collect::<Vec<_>>(),
+        );
+    }
+}
+
+fn high_torque_test_vehicle() -> VehicleDefinition {
+    let mut definition = VehicleDefinition::automobile();
+    definition.handling.initial_drive_force = 2.0;
+    definition.handling.brake_bias_front = 0.95;
+    definition
+}
+
+#[test]
+fn sustained_wheelspin_without_brake_does_not_puncture_intact_tyres() {
+    let mut runtime = VehicleRuntime::new();
+    runtime.upsert(7, high_torque_test_vehicle()).unwrap();
+    runtime.set_engine_running(7, true).unwrap();
+    runtime.set_manual_gear(7, Some(1)).unwrap();
+    runtime
+        .set_input(
+            7,
+            VehicleInput {
+                throttle: 1.0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let mut state = body();
+    state.linear_velocity = [0.0; 3];
+    advance_on_flat_support(&mut runtime, state, 60.0);
+    let telemetry = runtime.telemetry(7).unwrap();
+    assert!(telemetry.wheels.iter().any(|w| w.slip_intensity > 2.0));
+    assert!(telemetry
+        .wheels
+        .iter()
+        .all(|w| { w.tire_condition == TireCondition::Intact && w.tire_temperature <= 12.5 }));
+    assert!(runtime.vehicles[&7]
+        .damage
+        .wheels
+        .iter()
+        .all(|w| w.friction_damage == 0.0));
+    assert!(!runtime.drain_events().iter().any(|e| matches!(
+        e.kind,
+        VehicleEventKind::TyrePunctured | VehicleEventKind::TyreBurst
+    )));
+}
+
+#[test]
+fn sustained_lateral_sliding_does_not_manufacture_wheel_damage() {
+    let mut runtime = VehicleRuntime::new();
+    runtime.upsert(7, VehicleDefinition::automobile()).unwrap();
+    let mut state = body();
+    state.linear_velocity = [12.0, 0.0, -10.0];
+    advance_on_flat_support(&mut runtime, state, 30.0);
+    let telemetry = runtime.telemetry(7).unwrap();
+    assert!(telemetry.wheels.iter().any(|w| w.slip_intensity > 2.0));
+    assert!(runtime.vehicles[&7]
+        .damage
+        .wheels
+        .iter()
+        .all(|w| { w.friction_damage == 0.0 && w.tyre_condition == TireCondition::Intact }));
+}
+
+#[test]
+fn actual_brake_held_burnout_retains_heat_damage_and_respects_invincibility() {
+    for invincible in [false, true] {
+        let mut runtime = VehicleRuntime::new();
+        runtime.upsert(7, high_torque_test_vehicle()).unwrap();
+        runtime.set_engine_running(7, true).unwrap();
+        runtime.set_manual_gear(7, Some(1)).unwrap();
+        runtime
+            .vehicles
+            .get_mut(&7)
+            .unwrap()
+            .damage_policy
+            .invincible = invincible;
+        runtime
+            .set_input(
+                7,
+                VehicleInput {
+                    throttle: 1.0,
+                    brake: 1.0,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mut state = body();
+        state.linear_velocity = [0.0; 3];
+        advance_on_flat_support(&mut runtime, state, 10.0);
+        let punctures = runtime
+            .drain_events()
+            .into_iter()
+            .filter(|e| e.kind == VehicleEventKind::TyrePunctured)
+            .count();
+        if invincible {
+            assert_eq!(punctures, 0);
+            assert!(runtime
+                .telemetry(7)
+                .unwrap()
+                .wheels
+                .iter()
+                .all(|w| w.tire_condition == TireCondition::Intact));
+        } else {
+            assert!(punctures > 0 && punctures <= 2);
+        }
+    }
+}
+
+#[test]
+fn changing_vehicle_class_clears_stale_burnout_heat_context() {
+    let mut runtime = VehicleRuntime::new();
+    runtime.upsert(7, VehicleDefinition::automobile()).unwrap();
+    {
+        let vehicle = runtime.vehicles.get_mut(&7).unwrap();
+        vehicle.definition.class = VehicleClass::Plane;
+        for (wheel, damage) in vehicle.wheels.iter_mut().zip(&mut vehicle.damage.wheels) {
+            wheel.burnout_active = true;
+            wheel.telemetry.contact = true;
+            wheel.telemetry.surface_class = VehicleSurfaceClass::Asphalt;
+            wheel.tyre_heat_slip_ratio = 60.0;
+            damage.tyre_temperature = TYRE_HEAT_BURST_THRESHOLD;
+        }
+    }
+    runtime.prepare_frame(1.0 / 120.0, 9.81, &BTreeMap::from([(7, body())]));
+    assert!(runtime.vehicles[&7]
+        .wheels
+        .iter()
+        .all(|w| !w.burnout_active));
+    assert!(runtime
+        .telemetry(7)
+        .unwrap()
+        .wheels
+        .iter()
+        .all(|w| w.tire_condition == TireCondition::Intact));
+    assert!(!runtime
+        .drain_events()
+        .iter()
+        .any(|e| e.kind == VehicleEventKind::TyrePunctured));
 }

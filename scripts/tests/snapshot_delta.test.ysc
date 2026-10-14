@@ -1,0 +1,36 @@
+import { createRuntimeSnapshotDecoder } from "./newviso/snapshot_delta.ysc";
+
+/** Invoked by the controlled Island integration probe in the deployed provider. */
+export function verifyRuntimeSnapshotDecoder() {
+  const check=(value,message)=>{if(!value)throw new Error("Snapshot decoder: "+message);};
+  const first=createRuntimeSnapshotDecoder(), second=createRuntimeSnapshotDecoder();
+  const source=JSON.parse('{"static":{"mesh_names":["fence"],"__proto__":{"safe":1}},"parts":[{"open":0,"physics":null}],"drop":9}');
+  const full={event:"start",__runtime_snapshot:{format:"newviso.runtime_delta.v1",revision:1,base_revision:null,value:source}};
+  const old=first(full).runtime;
+  const other=second(full).runtime;
+  const payload=first({event:"frame",__runtime_snapshot:{
+    format:"newviso.runtime_delta.v1",revision:2,base_revision:1,operations:[
+      {path:["parts",0,"open"],value:1},{path:["drop"],remove:true},
+      {path:["nullable"],value:null},{path:["static","__proto__","safe"],value:2}
+    ]}});
+  const current=payload.runtime;
+  check(old.parts[0].open===0&&old.static.__proto__.safe===1,"retained older values");
+  check(other.parts[0].open===0,"independent root decoder");
+  check(current.parts[0].open===1&&current.parts[0].physics===null,"nested mutable values");
+  check(!Object.prototype.hasOwnProperty.call(current,"drop")&&current.nullable===null,"removal and null");
+  check(current.static.__proto__.safe===2&&Object.getPrototypeOf(current.static)===Object.prototype,"prototype-safe authored keys");
+  check(Object.isFrozen(current)&&Object.isFrozen(current.parts[0]),"read-only state");
+  check(!("__runtime_snapshot" in payload),"transport hidden from consumers");
+  let rejected=false;
+  try {first({__runtime_snapshot:{format:"newviso.runtime_delta.v1",revision:3,base_revision:0,operations:[]}});}
+  catch (_) {rejected=true;}
+  check(rejected,"base mismatch rejection");
+  const unchanged=first({__runtime_snapshot:{format:"newviso.runtime_delta.v1",revision:3,base_revision:2,operations:[]}}).runtime;
+  check(unchanged===current,"no-op sharing");
+  const resized=first({__runtime_snapshot:{format:"newviso.runtime_delta.v1",revision:4,base_revision:3,operations:[{path:["parts"],value:[]}]}}).runtime;
+  check(resized.parts.length===0&&current.parts.length===1,"array replacement and retention");
+  const reset=first({__runtime_snapshot:{format:"newviso.runtime_delta.v1",revision:7,base_revision:null,value:{reset:true}}}).runtime;
+  check(reset.reset===true&&!reset.parts,"reload/full resynchronization");
+  const legacy={runtime:{legacy:true}};
+  check(first(legacy)===legacy,"full JSON fallback");
+}

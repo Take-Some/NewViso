@@ -1,6 +1,93 @@
 use super::*;
 
 impl PhysicsRuntime {
+    pub(crate) fn supports_joint_constraints(&self) -> bool {
+        self.supports_joints
+    }
+
+    pub(crate) fn upsert_joint(&mut self, joint: PhysicsJointSnapshot) -> Result<(), String> {
+        if !self.supports_joints {
+            return Err("physics provider does not support JointConstraints".into());
+        }
+        self.joints.insert(joint.id, joint);
+        Ok(())
+    }
+
+    pub(crate) fn remove_joint(&mut self, id: u64) {
+        self.joints.remove(&id);
+    }
+
+    pub(crate) fn drive_character_body(
+        &mut self,
+        entity: u64,
+        velocity: [f32; 3],
+        step_y: Option<f32>,
+    ) -> Result<(), String> {
+        let body = self
+            .bodies
+            .get(&entity)
+            .ok_or_else(|| format!("missing ped body {entity}"))?;
+        let mut position = body.position;
+        if let Some(y) = step_y {
+            position[1] = y;
+        }
+        self.drive_character_body_pose(entity, position, [0.0, 0.0, 0.0, 1.0], velocity)
+    }
+
+    pub(crate) fn drive_character_body_pose(
+        &mut self,
+        entity: u64,
+        position: [f32; 3],
+        rotation: [f32; 4],
+        velocity: [f32; 3],
+    ) -> Result<(), String> {
+        self.set_body_pose_from_script(
+            &json!({"entity": entity, "position": position, "rotation": rotation}),
+            0,
+        )?;
+        self.set_body_velocity_from_script(&json!({"entity": entity, "velocity": velocity}), 0)?;
+        self.set_character_angular_velocity(entity, [0.0; 3]);
+        Ok(())
+    }
+
+    pub(crate) fn release_character_body(&mut self, entity: u64) -> Result<(), String> {
+        self.release_character_body_towards(entity, [0.25, 0.0, 1.0])
+    }
+
+    pub(crate) fn release_character_body_towards(
+        &mut self,
+        entity: u64,
+        direction: [f32; 3],
+    ) -> Result<(), String> {
+        let body = self
+            .bodies
+            .get_mut(&entity)
+            .ok_or_else(|| format!("missing ped body {entity}"))?;
+        body.angular_damping = Some(0.35);
+        // Physical capsule fall. Skeletal ragdoll is a separate animation system.
+        let length = direction[0].hypot(direction[2]);
+        let angular = if length > 0.01 {
+            [
+                direction[2] / length * 4.0,
+                0.0,
+                -direction[0] / length * 4.0,
+            ]
+        } else {
+            [2.5, 0.0, 1.0]
+        };
+        self.set_character_angular_velocity(entity, angular);
+        Ok(())
+    }
+
+    pub(crate) fn set_character_angular_velocity(&mut self, entity: u64, velocity: [f32; 3]) {
+        // Character control runs before the fixed-step body snapshot is built.
+        // Native providers synchronize its angular velocity before commands, so
+        // this also works with providers predating SetAngularVelocity commands.
+        if let Some(body) = self.bodies.get_mut(&entity) {
+            body.angular_velocity = velocity;
+        }
+    }
+
     pub(crate) fn configure_from_script(
         &mut self,
         command: &Value,
@@ -243,6 +330,23 @@ impl PhysicsRuntime {
             .transpose()
             .map_err(|e| format!("invalid convex_hulls: {e}"))?
             .unwrap_or_default();
+        let hull_components = command
+            .get("convex_hull_components")
+            .filter(|v| !v.is_null())
+            .map(|v| serde_json::from_value::<Vec<u32>>(v.clone()))
+            .transpose()
+            .map_err(|e| format!("invalid convex_hull_components: {e}"))?;
+        if hull_components
+            .as_ref()
+            .is_some_and(|c| c.len() != convex_hulls.len())
+        {
+            return Err("convex_hull_components must align with convex_hulls".into());
+        }
+        if let Some(ids) = hull_components {
+            self.body_hull_components.insert(entity, (ids.clone(), ids));
+        } else {
+            self.body_hull_components.remove(&entity);
+        }
         let (bounds_min, bounds_max) = shape_bounds(shape, position);
 
         let replacing = self.bodies.contains_key(&entity);
@@ -321,7 +425,12 @@ impl PhysicsRuntime {
         command_index: usize,
     ) -> Result<(), String> {
         let entity = command_u64(command, "entity", command_index)?;
+        self.joints
+            .retain(|_, j| j.parent != entity && j.child != entity);
         self.bodies.remove(&entity);
+        self.separation_pairs
+            .retain(|[a, b]| *a != entity && *b != entity);
+        self.body_hull_components.remove(&entity);
         self.damage_sources.remove(&entity);
         self.scene_pose_offsets.remove(&entity);
         self.scene_rotation_offsets.remove(&entity);

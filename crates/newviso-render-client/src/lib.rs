@@ -1,11 +1,14 @@
 use newviso_host as host;
 use newviso_render_api as render_api;
+pub use render_api::{TextureId, BindingKind, GraphTextureSemantic};
 pub use render_api::{
-    Extent2D, FrameCameraContext, RenderDrawListKind, RenderGraphDesc, RenderGraphPassDesc,
-    RenderGraphPassDomain, RenderGraphPassId, RenderGraphPassKind, RenderGraphQueueKind,
-    RenderGraphResourceDesc, RenderGraphResourceId, RenderGraphResourceSemantic,
-    RenderGraphResourceUsage, RenderLight, RenderLightKind, RenderLightingEnvironment,
-    TextureFormat,
+    EnvironmentAmbientParams, EnvironmentColorParams, EnvironmentExposureParams,
+    EnvironmentFogParams, EnvironmentHeatHazeParams, EnvironmentRenderParams, Extent2D,
+    FilmicCurveParams, FrameCameraContext, RenderDrawListKind, RenderGraphDesc,
+    RenderGraphPassDesc, RenderGraphPassDomain, RenderGraphPassId, RenderGraphPassKind,
+    RenderGraphQueueKind, RenderGraphResourceDesc, RenderGraphResourceId,
+    RenderGraphResourceSemantic, RenderGraphResourceUsage, RenderLight, RenderLightKind,
+    RenderLightingEnvironment, TextureFormat,
 };
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,6 +20,7 @@ const RENDER_FRAME_STATE_V1: &str = "frame_state_v1";
 const RENDER_BEGIN_FRAME_ACQUIRE_V1: &str = "begin_frame_acquire_v1";
 const FRAME_OWNED_BUFFER_PREFIX: &str = "frame_owned/";
 static TRY_BINARY_WRITE_BUFFER: AtomicBool = AtomicBool::new(true);
+static TRY_BINARY_UNIT_BATCH: AtomicBool = AtomicBool::new(true);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RenderFrameState {
@@ -143,11 +147,122 @@ pub struct UploadPumpInfo {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub struct RenderClient;
+pub struct RenderClient<'a> {
+    unit_batch: Option<&'a std::cell::RefCell<Vec<render_api::RenderCommand>>>,
+    flush_before_immediate: bool,
+}
 
-impl RenderClient {
+impl<'a> RenderClient<'a> {
     pub const fn new() -> Self {
-        Self
+        Self { unit_batch: None, flush_before_immediate: false }
+    }
+
+    /// Record draw/state commands into one ordered provider call. The recorder
+    /// is local to this closure; ordinary clients keep immediate semantics.
+    /// Resource allocation and queries must remain outside the unit batch.
+    /// An extraction error discards the pending commands before submission.
+    pub fn record_unit_batch(
+        &self,
+        record: impl FnOnce(&RenderClient<'_>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        if self.unit_batch.is_some() && self.flush_before_immediate {
+            return record(self);
+        }
+        if self.unit_batch.is_some() {
+            return Err("nested render unit batches are not supported".into());
+        }
+        let queue = std::cell::RefCell::new(Vec::new());
+        let recorder = RenderClient { unit_batch: Some(&queue), flush_before_immediate: false };
+        record(&recorder)?;
+        let commands = queue.into_inner();
+        if commands.is_empty() {
+            return Ok(());
+        }
+        self.submit_unit_commands(commands)
+    }
+
+    /// Batch frame recording while retaining the ordering of uploads, resource
+    /// allocation and graph execution. Immediate operations first flush pending
+    /// state/draw commands; nested strict recorders append to this same queue.
+    /// The owner must abort its acquired frame if extraction/submission fails.
+    pub fn record_ordered_commands<T>(&self,
+        record: impl FnOnce(&RenderClient<'_>) -> Result<T,String>) -> Result<T,String>
+    {
+        if self.unit_batch.is_some() {
+            return Err("nested ordered frame recording is not supported".into());
+        }
+        let queue = std::cell::RefCell::new(Vec::new());
+        let recorder = RenderClient {
+            unit_batch: Some(&queue), flush_before_immediate: true,
+        };
+        let result = record(&recorder)?;
+        recorder.flush_unit_commands()?;
+        Ok(result)
+    }
+
+    fn flush_unit_commands(&self) -> Result<(),String> {
+        let Some(queue) = self.unit_batch else { return Ok(()); };
+        let commands = std::mem::take(&mut *queue.borrow_mut());
+        if commands.is_empty() { return Ok(()); }
+        self.submit_unit_commands(commands)
+    }
+
+    fn submit_unit_commands(&self, commands: Vec<render_api::RenderCommand>) -> Result<(), String> {
+        static JSON_ONLY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *JSON_ONLY.get_or_init(|| std::env::var("NEWVISO_JSON_RENDER_BATCH").as_deref() == Ok("1"))
+            || !TRY_BINARY_UNIT_BATCH.load(Ordering::Relaxed)
+        {
+            return Self::submit_json_typed_unit_commands(&commands);
+        }
+        let typed = commands;
+        // The existing binary service covers state/draw/compute commands.
+        // Keep target/frame control in JSON and preserve every segment boundary.
+        let mut begin = 0;
+        while begin < typed.len() {
+            let binary = binary_unit_command(&typed[begin]);
+            let end = begin + typed[begin..].iter()
+                .take_while(|command| binary_unit_command(command) == binary).count();
+            let segment = &typed[begin..end];
+            if binary && TRY_BINARY_UNIT_BATCH.load(Ordering::Relaxed) {
+                let packet = render_api::encode_unit_command_batch_bin(segment)?;
+                match host::call_service_owned(RENDER_SERVICE, RENDER_COMMAND_BATCH_BIN_V2, packet) {
+                    Ok(response) if response.is_empty() => {}
+                    Ok(_) => return Err("render binary unit batch returned a nonempty response".into()),
+                    Err(error) => {
+                        let detail = error.to_string();
+                        if detail.contains("unknown method") || detail.contains("unsupported method")
+                            || detail.contains("unknown render command batch binary tag")
+                        {
+                            // These errors occur before provider mutation.
+                            TRY_BINARY_UNIT_BATCH.store(false, Ordering::Relaxed);
+                            Self::submit_json_typed_unit_commands(segment)?;
+                        } else { return Err(detail); }
+                    }
+                }
+            } else {
+                Self::submit_json_typed_unit_commands(segment)?;
+            }
+            begin = end;
+        }
+        Ok(())
+    }
+
+    fn submit_json_typed_unit_commands(commands: &[render_api::RenderCommand]) -> Result<(), String> {
+        let values = commands.iter().map(serde_json::to_value)
+            .collect::<Result<Vec<_>,_>>()
+            .map_err(|error| format!("render recorded command encode failed: {error}"))?;
+        Self::submit_json_unit_commands(values)
+    }
+
+    fn submit_json_unit_commands(commands: Vec<Value>) -> Result<(), String> {
+        let expected = commands.len();
+        let response = RenderClient::new().request(json!({"CommandBatch":commands}))?;
+        let replies = response.get("CommandBatch").and_then(Value::as_array)
+            .ok_or_else(|| format!("render unit batch expected replies, got {response}"))?;
+        if replies.len()!=expected || replies.iter().any(|reply|
+            reply!=&Value::String("Unit".into()) && reply.get("Unit").is_none())
+        { return Err("render unit batch returned an incomplete or non-unit response".into()); }
+        Ok(())
     }
 
     pub fn create_buffer(
@@ -187,6 +302,7 @@ impl RenderClient {
     }
 
     pub fn write_buffer(&self, id: u32, offset: u64, data: &[u8]) -> Result<(), String> {
+        self.require_immediate()?;
         // WriteBuffer is a frame hot-path command. Sending byte payloads through
         // invoke_json expands every byte into a JSON integer and makes animated
         // vertex uploads catastrophically expensive. The renderer ABI already
@@ -194,7 +310,7 @@ impl RenderClient {
         // binary service path and retain JSON only as an old-provider fallback.
         if TRY_BINARY_WRITE_BUFFER.load(Ordering::Relaxed) {
             let packet = encode_write_buffer_bin_packet(id, offset, data)?;
-            match host::call_service(RENDER_SERVICE, RENDER_COMMAND_BATCH_BIN_V2, &packet) {
+            match host::call_service_owned(RENDER_SERVICE, RENDER_COMMAND_BATCH_BIN_V2, packet) {
                 Ok(_) => return Ok(()),
                 Err(error) => {
                     let detail = error.to_string();
@@ -247,6 +363,7 @@ impl RenderClient {
         values: &[f32],
         ranges: &[(usize, usize)],
     ) -> Result<(), String> {
+        self.require_immediate()?;
         if ranges.is_empty() {
             return Ok(());
         }
@@ -265,7 +382,7 @@ impl RenderClient {
         #[cfg(target_endian = "little")]
         if TRY_BINARY_WRITE_BUFFER.load(Ordering::Relaxed) {
             let packet = encode_write_buffer_f32_ranges_bin_packet(id, values, ranges)?;
-            match host::call_service(RENDER_SERVICE, RENDER_COMMAND_BATCH_BIN_V2, &packet) {
+            match host::call_service_owned(RENDER_SERVICE, RENDER_COMMAND_BATCH_BIN_V2, packet) {
                 Ok(_) => return Ok(()),
                 Err(error) => {
                     let detail = error.to_string();
@@ -329,6 +446,7 @@ impl RenderClient {
         data: &[u8],
         data_policy: &str,
     ) -> Result<u32, String> {
+        self.require_immediate()?;
         let packet = encode_create_texture_bin_packet(
             label,
             width,
@@ -409,6 +527,9 @@ impl RenderClient {
         &self,
         kind: Option<render_api::RenderDrawListKind>,
     ) -> Result<(), String> {
+        if self.unit_batch.is_some() {
+            return self.unit(json!({"SetDrawListKind":{"kind":kind}}));
+        }
         match self.typed_request(render_api::RenderServiceRequest::SetDrawListKind { kind })? {
             render_api::RenderServiceResponse::Unit => Ok(()),
             other => Err(format!(
@@ -603,6 +724,21 @@ impl RenderClient {
         )
     }
 
+    /// Semantic textures are resolved from the current graph pass's reads.
+    pub fn create_semantic_bind_group_layout(&self,label:&str,bindings:&[render_api::BindingKind])->Result<u32,String> {
+        command_id(self.command(json!({"CreateBindGroupLayout":{"label":label,"bindings":bindings}}))?,
+            "BindGroupLayoutId")
+    }
+    pub fn create_graph_bind_group(&self,label:&str,layout:u32,textures:[Option<u32>;4],
+        sampler:u32,uniform:(u32,u64,u64),fallback:u32)->Result<u32,String> {
+        command_id(self.command(json!({"CreateBindGroup":{
+            "label":label,"layout":layout,"texture0":textures[0],"texture1":textures[1],
+            "texture2":textures[2],"texture3":textures[3],"graph_texture_fallback":fallback,
+            "sampler0":sampler,"uniform0":{"buffer":uniform.0,"offset":uniform.1,"size":uniform.2},
+            "storage0":null,"storage1":null,"storage2":null
+        }}))?,"BindGroupId")
+    }
+
     pub fn create_bind_group(
         &self,
         label: &str,
@@ -649,6 +785,46 @@ impl RenderClient {
             }}))?,
             "BindGroupId",
         )
+    }
+
+    /// Texture/optics bindings plus an explicit frame-owned vertex field.
+    pub fn create_bind_group_with_storage(&self,label:&str,layout:u32,textures:[Option<u32>;4],
+        sampler:Option<u32>,uniform:(u32,u64,u64),storage:(u32,u64,u64))->Result<u32,String> {
+        command_id(self.command(json!({"CreateBindGroup":{
+            "label":label,"layout":layout,
+            "texture0":textures[0],"texture1":textures[1],"texture2":textures[2],"texture3":textures[3],
+            "sampler0":sampler,
+            "uniform0":{"buffer":uniform.0,"offset":uniform.1,"size":uniform.2},
+            "storage0":{"buffer":storage.0,"offset":storage.1,"size":storage.2},
+            "storage1":null,"storage2":null
+        }}))?,"BindGroupId")
+    }
+
+    /// Generic compute bindings: one frame uniform and three explicit buffers.
+    pub fn create_compute_bind_group(&self, label: &str, layout: u32,
+        uniform: (u32,u64,u64), storage: [(u32,u64,u64);3]) -> Result<u32,String>
+    {
+        let binding = |value: (u32,u64,u64)| json!({
+            "buffer":value.0,"offset":value.1,"size":value.2
+        });
+        command_id(self.command(json!({"CreateBindGroup":{
+            "label":label,"layout":layout,
+            "texture0":null,"texture1":null,"texture2":null,"texture3":null,
+            "texture4":null,"texture5":null,"sampler0":null,
+            "uniform0":binding(uniform),
+            "storage0":binding(storage[0]),"storage1":binding(storage[1]),
+            "storage2":binding(storage[2])
+        }}))?, "BindGroupId")
+    }
+
+    pub fn renderer_inspector(&self) -> Result<Value,String> {
+        self.require_immediate()?;
+        host::call_json(RENDER_SERVICE, "renderer_inspector_v1", &json!({}))
+    }
+
+    pub fn backend_info(&self) -> Result<Value,String> {
+        self.require_immediate()?;
+        host::call_json(RENDER_SERVICE, render_api::RENDER_SERVICE_METHOD_INFO, &json!({}))
     }
 
     pub fn create_shader(
@@ -781,17 +957,16 @@ impl RenderClient {
     }
 
     pub fn dispatch(&self, groups_x: u32, groups_y: u32, groups_z: u32) -> Result<(), String> {
-        self.unit(json!({"Dispatch":{
-            "groups_x":groups_x,
-            "groups_y":groups_y,
-            "groups_z":groups_z
-        }}))
+        self.unit_typed(render_api::RenderCommand::Dispatch(render_api::DispatchArgs {
+            groups_x, groups_y, groups_z,
+        }))
     }
 
     pub fn begin_frame(&self, clear_color: [f32; 4], frame_index: u64) -> Result<(), String> {
         self.unit(json!({"BeginFrame":{"clear_color":clear_color,"frame_index":frame_index}}))
     }
     pub fn frame_state(&self) -> Result<RenderFrameState, String> {
+        self.require_immediate()?;
         let value = host::call_json(RENDER_SERVICE, RENDER_FRAME_STATE_V1, &json!({}))?;
         Ok(RenderFrameState {
             active: value
@@ -820,6 +995,7 @@ impl RenderClient {
         clear_color: [f32; 4],
         frame_index: u64,
     ) -> Result<RenderFrameState, String> {
+        self.require_immediate()?;
         let value = host::call_json(
             RENDER_SERVICE,
             RENDER_BEGIN_FRAME_ACQUIRE_V1,
@@ -850,10 +1026,15 @@ impl RenderClient {
         })
     }
     pub fn set_viewport(&self, width: u32, height: u32) -> Result<(), String> {
-        self.unit(json!({"SetViewport":{"x":0.0,"y":0.0,"w":width as f32,"h":height as f32,"min_depth":0.0,"max_depth":1.0}}))
+        self.unit_typed(render_api::RenderCommand::SetViewport(render_api::Viewport {
+            x:0.0, y:0.0, w:width as f32, h:height as f32, min_depth:0.0, max_depth:1.0,
+        }))
     }
     pub fn set_scissor(&self, width: u32, height: u32) -> Result<(), String> {
-        self.unit(json!({"SetScissor":{"x":0,"y":0,"w":width,"h":height}}))
+        self.unit_typed(render_api::RenderCommand::SetScissor(render_api::RectI32 {
+            x:0, y:0, w:i32::try_from(width).map_err(|_| "scissor width exceeds i32")?,
+            h:i32::try_from(height).map_err(|_| "scissor height exceeds i32")?,
+        }))
     }
     pub fn set_ui_draw_list(&self, draw_list: Value) -> Result<(), String> {
         self.unit(json!({"SetUiDrawList":draw_list}))
@@ -863,20 +1044,29 @@ impl RenderClient {
     }
 
     pub fn set_pipeline(&self, pipeline: u32) -> Result<(), String> {
-        self.unit(json!({"SetPipeline":{"pipeline":pipeline}}))
+        self.unit_typed(render_api::RenderCommand::SetPipeline {
+            pipeline: render_api::PipelineId::new(pipeline),
+        })
     }
     pub fn set_bind_group(&self, index: u32, group: u32) -> Result<(), String> {
-        self.unit(json!({"SetBindGroup":{"index":index,"group":group}}))
+        self.unit_typed(render_api::RenderCommand::SetBindGroup {
+            index, group: render_api::BindGroupId::new(group),
+        })
     }
     pub fn set_vertex_buffer(&self, slot: u32, buffer: u32, offset: u64) -> Result<(), String> {
-        self.unit(
-            json!({"SetVertexBuffer":{"slot":slot,"slice":{"buffer":buffer,"offset":offset}}}),
-        )
+        self.unit_typed(render_api::RenderCommand::SetVertexBuffer {
+            slot, slice: render_api::BufferSlice::new(render_api::BufferId::new(buffer), offset),
+        })
     }
     pub fn set_index_buffer(&self, buffer: u32, offset: u64, format: &str) -> Result<(), String> {
-        self.unit(
-            json!({"SetIndexBuffer":{"slice":{"buffer":buffer,"offset":offset},"format":format}}),
-        )
+        let format = match format {
+            "U16" => render_api::IndexFormat::U16,
+            "U32" => render_api::IndexFormat::U32,
+            other => return Err(format!("unknown index format {other}")),
+        };
+        self.unit_typed(render_api::RenderCommand::SetIndexBuffer {
+            slice: render_api::BufferSlice::new(render_api::BufferId::new(buffer), offset), format,
+        })
     }
     pub fn draw(&self, vertex_count: u32) -> Result<(), String> {
         self.draw_range(vertex_count, 0)
@@ -892,12 +1082,9 @@ impl RenderClient {
         instance_count: u32,
         first_instance: u32,
     ) -> Result<(), String> {
-        self.unit(json!({"Draw":{
-            "vertex_count":vertex_count,
-            "instance_count":instance_count,
-            "first_vertex":first_vertex,
-            "first_instance":first_instance
-        }}))
+        self.unit_typed(render_api::RenderCommand::Draw(render_api::DrawArgs {
+            vertex_count, instance_count, first_vertex, first_instance,
+        }))
     }
     pub fn draw_indexed(&self, index_count: u32) -> Result<(), String> {
         self.draw_indexed_range_instanced(index_count, 0, 0, 1, 0)
@@ -911,13 +1098,9 @@ impl RenderClient {
         instance_count: u32,
         first_instance: u32,
     ) -> Result<(), String> {
-        self.unit(json!({"DrawIndexed":{
-            "index_count":index_count,
-            "instance_count":instance_count,
-            "first_index":first_index,
-            "vertex_offset":vertex_offset,
-            "first_instance":first_instance
-        }}))
+        self.unit_typed(render_api::RenderCommand::DrawIndexed(render_api::DrawIndexedArgs {
+            index_count, instance_count, first_index, vertex_offset, first_instance,
+        }))
     }
     pub fn dispatch_visibility_indirect_cull(
         &self,
@@ -959,12 +1142,9 @@ impl RenderClient {
         draw_count: u32,
         stride: u32,
     ) -> Result<(), String> {
-        self.unit(json!({"DrawIndexedIndirect":{
-            "buffer":buffer,
-            "offset":offset,
-            "draw_count":draw_count,
-            "stride":stride
-        }}))
+        self.unit_typed(render_api::RenderCommand::DrawIndexedIndirect(render_api::DrawIndexedIndirectArgs {
+            buffer: render_api::BufferId::new(buffer), offset, draw_count, stride,
+        }))
     }
 
     pub fn end_frame(&self) -> Result<(), String> {
@@ -1001,10 +1181,21 @@ impl RenderClient {
         let _ = self.unit(json!({"DestroyBindGroupLayout":{"id":id}}));
     }
 
+    fn require_immediate(&self) -> Result<(), String> {
+        if self.unit_batch.is_some() && self.flush_before_immediate {
+            return self.flush_unit_commands();
+        }
+        if self.unit_batch.is_some() {
+            return Err("render control/query or buffer upload cannot run inside a unit batch".into());
+        }
+        Ok(())
+    }
+
     fn typed_request(
         &self,
         request: render_api::RenderServiceRequest,
     ) -> Result<render_api::RenderServiceResponse, String> {
+        self.require_immediate()?;
         let request = serde_json::to_value(request)
             .map_err(|error| format!("render request serialization failed: {error}"))?;
         let response = host::call_json(RENDER_SERVICE, RENDER_INVOKE, &request)?;
@@ -1019,6 +1210,7 @@ impl RenderClient {
     }
 
     fn request(&self, request: Value) -> Result<Value, String> {
+        self.require_immediate()?;
         let response = host::call_json(RENDER_SERVICE, RENDER_INVOKE, &request)?;
         if let Some(problem) = response.get("Problem") {
             return Err(format!("render service problem: {problem}"));
@@ -1032,7 +1224,21 @@ impl RenderClient {
             .cloned()
             .ok_or_else(|| format!("render service expected Command response, got {response}"))
     }
+    fn unit_typed(&self, command: render_api::RenderCommand) -> Result<(), String> {
+        if let Some(queue) = self.unit_batch {
+            queue.borrow_mut().push(command);
+            return Ok(());
+        }
+        self.unit(serde_json::to_value(command)
+            .map_err(|error| format!("render command encode failed: {error}"))?)
+    }
+
     fn unit(&self, command: Value) -> Result<(), String> {
+        if let Some(queue) = self.unit_batch {
+            queue.borrow_mut().push(serde_json::from_value(command)
+                .map_err(|error| format!("render recorded command decode failed: {error}"))?);
+            return Ok(());
+        }
         let response = self.command(command)?;
         if response == Value::String("Unit".to_owned()) || response.get("Unit").is_some() {
             return Ok(());
@@ -1081,10 +1287,21 @@ fn encode_write_buffer_f32_ranges_bin_packet(
     Ok(out)
 }
 
+fn binary_unit_command(command: &render_api::RenderCommand) -> bool {
+    use render_api::RenderCommand::*;
+    matches!(command, WriteBuffer {..} | SetViewport(_) | SetScissor(_) |
+        SetPipeline {..} | SetBindGroup {..} | SetVertexBuffer {..} |
+        SetIndexBuffer {..} | Draw(_) | DrawIndexed(_) | SetRenderPhase {..} |
+        SetDrawListKind {..} | DiscardRecordedCommands | Dispatch(_) |
+        DrawIndexedIndirect(_) | DrawIndexedIndirectCount(_) |
+        DispatchVisibilityIndirectCull(_) | DispatchVisibilityIndirectCompactV2(_))
+}
+
 fn encode_write_buffer_bin_packet(id: u32, offset: u64, data: &[u8]) -> Result<Vec<u8>, String> {
     let len = u32::try_from(data.len())
         .map_err(|_| "write-buffer payload is too large for binary render packet".to_owned())?;
-    let mut out = Vec::with_capacity(data.len().saturating_add(25));
+    // NECB header: magic(8), count(4), tag(1), id(4), offset(8), length(4).
+    let mut out = Vec::with_capacity(data.len().saturating_add(29));
     out.extend_from_slice(b"NECB\x02\0\0\0");
     put_u32(&mut out, 1); // command count
     out.push(1); // RenderCommand::WriteBuffer
@@ -1191,4 +1408,92 @@ fn command_id(response: Value, field: &str) -> Result<u32, String> {
         .and_then(Value::as_u64)
         .ok_or_else(|| format!("render response has no {field}: {response}"))?;
     u32::try_from(value).map_err(|_| format!("{field} out of range: {value}"))
+}
+
+#[cfg(test)]
+mod unit_recording_tests {
+    use super::*;
+
+    #[test]
+    fn scoped_recording_preserves_target_binding_draw_and_end_order() {
+        let queue = std::cell::RefCell::new(Vec::new());
+        let client = RenderClient { unit_batch: Some(&queue), flush_before_immediate: false };
+        client.set_draw_list_kind(None).unwrap();
+        client.begin_render_target(7, Some([0.0; 4]), Some(1.0)).unwrap();
+        client.set_pipeline(3).unwrap();
+        client.set_bind_group(0, 4).unwrap();
+        client.draw_indexed_range_instanced(24, 6, 0, 2, 5).unwrap();
+        client.end_render_target().unwrap();
+        let commands: Vec<Value> = queue.into_inner().iter()
+            .map(|command| serde_json::to_value(command).unwrap()).collect();
+        assert_eq!(commands.len(), 6);
+        assert!(commands[0].get("SetDrawListKind").is_some());
+        assert!(commands[1].get("BeginRenderTarget").is_some());
+        assert_eq!(commands[2]["SetPipeline"]["pipeline"], 3);
+        assert_eq!(commands[3]["SetBindGroup"]["group"], 4);
+        assert_eq!(commands[4]["DrawIndexed"]["first_instance"], 5);
+        assert_eq!(commands[5], json!("EndRenderTarget"));
+        // Use the production service decoder to verify the recorded wire shape.
+        let request: render_api::RenderServiceRequest =
+            serde_json::from_value(json!({"CommandBatch":commands})).unwrap();
+        assert!(matches!(request, render_api::RenderServiceRequest::CommandBatch(_)));
+    }
+
+    #[test]
+    fn nested_feature_recording_preserves_order_inside_frame_recording() {
+        let queue = std::cell::RefCell::new(Vec::new());
+        let client = RenderClient { unit_batch: Some(&queue), flush_before_immediate: true };
+        client.set_pipeline(1).unwrap();
+        client.record_unit_batch(|feature| {
+            feature.set_bind_group(0,2)?;
+            feature.draw(3)
+        }).unwrap();
+        client.set_pipeline(4).unwrap();
+        let commands: Vec<Value> = queue.into_inner().iter()
+            .map(|command| serde_json::to_value(command).unwrap()).collect();
+        assert_eq!(commands.len(),4);
+        assert_eq!(commands[0]["SetPipeline"]["pipeline"],1);
+        assert_eq!(commands[1]["SetBindGroup"]["group"],2);
+        assert_eq!(commands[2]["Draw"]["vertex_count"],3);
+        assert_eq!(commands[3]["SetPipeline"]["pipeline"],4);
+        assert!(RenderClient::new().record_ordered_commands::<()>(|_| Err("failed".into())).is_err());
+    }
+
+    #[test]
+    fn binary_segments_preserve_target_compute_and_draw_boundaries() {
+        let queue = std::cell::RefCell::new(Vec::new());
+        let client = RenderClient { unit_batch: Some(&queue), flush_before_immediate: true };
+        client.begin_render_target(7, Some([0.0;4]), Some(1.0)).unwrap();
+        client.set_pipeline(3).unwrap();
+        client.set_bind_group(0,4).unwrap();
+        client.dispatch(2,3,4).unwrap();
+        client.draw_indexed_range_instanced(24,6,-2,2,5).unwrap();
+        client.end_render_target().unwrap();
+        let values: Vec<Value> = queue.into_inner().iter()
+            .map(|command| serde_json::to_value(command).unwrap()).collect();
+        let typed: Vec<render_api::RenderCommand> = values.clone().into_iter()
+            .map(|value| serde_json::from_value(value).unwrap()).collect();
+        assert_eq!(typed.iter().map(binary_unit_command).collect::<Vec<_>>(),
+            [false,true,true,true,true,false]);
+        let packet = render_api::encode_unit_command_batch_bin(&typed[1..5]).unwrap();
+        let decoded = render_api::decode_unit_command_batch_bin(&packet).unwrap();
+        let roundtrip: Vec<Value> = decoded.iter().map(|command| serde_json::to_value(command).unwrap()).collect();
+        assert_eq!(roundtrip, values[1..5]);
+        assert!(packet.len() < serde_json::to_vec(&values[1..5]).unwrap().len());
+    }
+
+    #[test]
+    fn allocation_queries_and_nested_batches_fail_before_provider_submission() {
+        let queue = std::cell::RefCell::new(Vec::new());
+        let client = RenderClient { unit_batch: Some(&queue), flush_before_immediate: false };
+        client.draw(3).unwrap();
+        assert!(client.create_buffer("illegal", 4, "Vertex", "CpuToGpu").is_err());
+        assert!(client.frame_state().is_err());
+        assert!(client.begin_frame_acquire([0.0; 4], 1).is_err());
+        assert!(client.write_buffer(1, 0, &[1, 2, 3]).is_err());
+        assert!(client.record_unit_batch(|_| panic!("nested closure must not run")).is_err());
+        assert_eq!(queue.borrow().len(), 1);
+        assert!(RenderClient::new().record_unit_batch(|_| Err("extraction failed".into())).is_err());
+        assert!(RenderClient::new().record_unit_batch(|_| Ok(())).is_ok());
+    }
 }

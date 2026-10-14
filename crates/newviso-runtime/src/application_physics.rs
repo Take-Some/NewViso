@@ -142,6 +142,11 @@ pub(super) struct PreparedStreamedCollision {
 pub(super) struct PhysicsRuntime {
     client: PhysicsClient,
     bodies: BTreeMap<u64, PhysicsBodySnapshot>,
+    joints: BTreeMap<u64, PhysicsJointSnapshot>,
+    supports_joints: bool,
+    supports_collision_filters: bool,
+    separation_pairs: BTreeSet<[u64; 2]>,
+    body_hull_components: BTreeMap<u64, (Vec<u32>, Vec<u32>)>,
     streamed_colliders: BTreeMap<u64, PhysicsFrameColliderSnapshot>,
     camera_collision_meshes: BTreeMap<u64, newviso_collision::SphereSweepMesh>,
     streamed_surface_ids: BTreeMap<u64, Vec<u32>>,
@@ -159,15 +164,20 @@ pub(super) struct PhysicsRuntime {
     next_command_seq: u64,
     accumulator: f32,
     settings: PhysicsWorldSettings,
+    water: Option<water::WaterPhysics>,
+    water_excluded: BTreeSet<u64>,
     last_output: PhysicsFrameOutput,
 }
 
 mod colliders;
 mod commands;
+mod components;
 mod damage;
+mod frame_events;
 mod math;
 mod presentation;
 mod queries;
+mod water;
 mod step;
 use math::*;
 
@@ -177,6 +187,11 @@ impl PhysicsRuntime {
         Self {
             client: PhysicsClient::new(),
             bodies: BTreeMap::new(),
+            joints: BTreeMap::new(),
+            supports_joints: false,
+            supports_collision_filters: false,
+            separation_pairs: BTreeSet::new(),
+            body_hull_components: BTreeMap::new(),
             streamed_colliders: BTreeMap::new(),
             camera_collision_meshes: BTreeMap::new(),
             streamed_surface_ids: BTreeMap::new(),
@@ -194,6 +209,8 @@ impl PhysicsRuntime {
             next_command_seq: 1,
             accumulator: 0.0,
             settings: PhysicsWorldSettings::default(),
+            water: None,
+            water_excluded: BTreeSet::new(),
             last_output: PhysicsFrameOutput::default(),
         }
     }
@@ -224,9 +241,25 @@ impl PhysicsRuntime {
             ),
         );
 
+        let supports_joints = client
+            .diagnostics()
+            .map(|info| info.capabilities.supports(PhysicsFeature::JointConstraints))
+            .unwrap_or(false);
+        let supports_collision_filters = client
+            .diagnostics()
+            .map(|info| {
+                info.capabilities
+                    .supports(PhysicsFeature::CollisionPairFiltering)
+            })
+            .unwrap_or(false);
         Ok(Self {
+            supports_collision_filters,
+            separation_pairs: BTreeSet::new(),
+            body_hull_components: BTreeMap::new(),
             client,
             bodies: BTreeMap::new(),
+            joints: BTreeMap::new(),
+            supports_joints,
             streamed_colliders: BTreeMap::new(),
             camera_collision_meshes: BTreeMap::new(),
             streamed_surface_ids: BTreeMap::new(),
@@ -244,6 +277,8 @@ impl PhysicsRuntime {
             next_command_seq: 1,
             accumulator: 0.0,
             settings: PhysicsWorldSettings::default(),
+            water: None,
+            water_excluded: BTreeSet::new(),
             last_output: PhysicsFrameOutput::default(),
         })
     }
@@ -340,6 +375,11 @@ mod tests {
         let mut runtime = PhysicsRuntime {
             client: PhysicsClient::new(),
             bodies: BTreeMap::new(),
+            joints: BTreeMap::new(),
+            supports_joints: false,
+            supports_collision_filters: false,
+            separation_pairs: BTreeSet::new(),
+            body_hull_components: BTreeMap::new(),
             streamed_colliders: BTreeMap::new(),
             camera_collision_meshes: BTreeMap::new(),
             streamed_surface_ids: BTreeMap::new(),
@@ -357,6 +397,8 @@ mod tests {
             next_command_seq: 1,
             accumulator: 0.0,
             settings: PhysicsWorldSettings::default(),
+            water: None,
+            water_excluded: BTreeSet::new(),
             last_output: PhysicsFrameOutput::default(),
         };
         let collision = CollisionMeshResource {
@@ -412,6 +454,11 @@ mod tests {
         let mut runtime = PhysicsRuntime {
             client: PhysicsClient::new(),
             bodies: BTreeMap::new(),
+            joints: BTreeMap::new(),
+            supports_joints: false,
+            supports_collision_filters: false,
+            separation_pairs: BTreeSet::new(),
+            body_hull_components: BTreeMap::new(),
             streamed_colliders: BTreeMap::new(),
             camera_collision_meshes: BTreeMap::new(),
             streamed_surface_ids: BTreeMap::new(),
@@ -429,6 +476,8 @@ mod tests {
             next_command_seq: 1,
             accumulator: 0.0,
             settings: PhysicsWorldSettings::default(),
+            water: None,
+            water_excluded: BTreeSet::new(),
             last_output: PhysicsFrameOutput::default(),
         };
         let collision = CollisionMeshResource {
@@ -483,6 +532,11 @@ mod tests {
         let mut runtime = PhysicsRuntime {
             client: PhysicsClient::new(),
             bodies: BTreeMap::new(),
+            joints: BTreeMap::new(),
+            supports_joints: false,
+            supports_collision_filters: false,
+            separation_pairs: BTreeSet::new(),
+            body_hull_components: BTreeMap::new(),
             streamed_colliders: BTreeMap::new(),
             camera_collision_meshes: BTreeMap::new(),
             streamed_surface_ids: BTreeMap::new(),
@@ -500,6 +554,8 @@ mod tests {
             next_command_seq: 1,
             accumulator: 0.0,
             settings: PhysicsWorldSettings::default(),
+            water: None,
+            water_excluded: BTreeSet::new(),
             last_output: PhysicsFrameOutput::default(),
         };
         let wall = CollisionMeshResource {
@@ -536,6 +592,11 @@ mod tests {
         let mut runtime = PhysicsRuntime {
             client: PhysicsClient::new(),
             bodies: BTreeMap::new(),
+            joints: BTreeMap::new(),
+            supports_joints: false,
+            supports_collision_filters: false,
+            separation_pairs: BTreeSet::new(),
+            body_hull_components: BTreeMap::new(),
             streamed_colliders: BTreeMap::new(),
             camera_collision_meshes: BTreeMap::new(),
             streamed_surface_ids: BTreeMap::new(),
@@ -553,6 +614,8 @@ mod tests {
             next_command_seq: 1,
             accumulator: 0.0,
             settings: PhysicsWorldSettings::default(),
+            water: None,
+            water_excluded: BTreeSet::new(),
             last_output: PhysicsFrameOutput::default(),
         };
         assert!(runtime.scene_collider_interests().is_none());
@@ -703,7 +766,7 @@ mod tests {
             .ballistic_damage_contacts
             .push(PhysicsDamageContact {
                 source: 900_000_100,
-                target: 972_000_001,
+                target: 5_644_790_730_183_409_679,
                 damage_kind: PhysicsDamageKind::Bullet,
                 direct_damage: 32.0,
                 contact_impulse: 75.0,
@@ -716,8 +779,79 @@ mod tests {
             .expect("damage contacts array");
         assert_eq!(contacts.len(), 1);
         assert_eq!(contacts[0]["source"].as_u64(), Some(900_000_100));
-        assert_eq!(contacts[0]["target"].as_u64(), Some(972_000_001));
+        assert_eq!(
+            contacts[0]["target"].as_u64(),
+            Some(5_644_790_730_183_409_679)
+        );
+        assert_eq!(contacts[0]["target_key"], "5644790730183409679");
         assert_eq!(contacts[0]["direct_damage"].as_f64(), Some(32.0));
+        runtime.upsert_body_from_script(&json!({"entity": 5_644_790_730_183_409_679_u64,
+            "position": [0, 0.9, 0], "shape": {"kind": "capsule", "radius": 0.3, "half_height": 0.6}}), 0).unwrap();
+        runtime
+            .last_output
+            .events
+            .push(PhysicsEvent::ContactBegin(PhysicsContactEvent {
+                a: 493,
+                b: 5_644_790_730_183_409_679,
+                point: [0.0; 3],
+                normal: [1.0, 0.0, 0.0],
+                impulse: 350.0,
+                relative_velocity: None,
+                materials: PhysicsContactMaterialPair::default(),
+                surface_id: None,
+                surface_entity: None,
+                surface_triangle: None,
+            }));
+        let state = runtime.runtime_state();
+        assert_eq!(state["bodies"][0]["entity_key"], "5644790730183409679");
+        assert_eq!(
+            state["events"][0]["ContactBegin"]["b_key"],
+            "5644790730183409679"
+        );
+        assert!(
+            runtime
+                .character_ground_contact_height(5_644_790_730_183_409_679)
+                .is_none(),
+            "side contact is not ground support"
+        );
+        let PhysicsEvent::ContactBegin(contact) = &mut runtime.last_output.events[0] else {
+            unreachable!()
+        };
+        contact.normal = [0.0, -1.0, 0.0];
+        contact.point[1] = 0.05;
+        assert_eq!(
+            runtime.character_ground_contact_height(5_644_790_730_183_409_679),
+            Some(0.05)
+        );
+        assert!(
+            runtime.character_ground_contact_height(493).is_none(),
+            "the lower body must not treat its ceiling as ground"
+        );
+    }
+
+    #[test]
+    fn vertical_lethal_hit_still_starts_a_physical_capsule_fall() {
+        let mut runtime = PhysicsRuntime::empty_for_tests();
+        runtime
+            .upsert_body_from_script(
+                &json!({"entity": 12, "position": [0, 0.9, 0],
+            "shape": {"kind": "capsule", "radius": 0.3, "half_height": 0.6}}),
+                0,
+            )
+            .unwrap();
+        runtime
+            .release_character_body_towards(12, [0.0, -1.0, 0.0])
+            .unwrap();
+        let velocity = runtime.bodies[&12].angular_velocity;
+        assert!(velocity[0].hypot(velocity[2]) > 1.0);
+        assert!(!runtime.pending_commands.iter().any(|command| matches!(
+            command.kind, PhysicsCommandKind::SetAngularVelocity { .. }
+        )));
+        runtime.drive_character_body(12, [1.0, 0.0, 0.0], None).unwrap();
+        assert_eq!(runtime.bodies[&12].angular_velocity, [0.0; 3]);
+        assert!(!runtime.pending_commands.iter().any(|command| matches!(
+            command.kind, PhysicsCommandKind::SetAngularVelocity { .. }
+        )));
     }
 
     #[test]

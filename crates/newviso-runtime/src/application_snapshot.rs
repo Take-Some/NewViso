@@ -1,6 +1,26 @@
 use super::*;
 
 impl EngineApplication {
+    fn player_camera_frame_state(&self) -> Value {
+        let Some(settings) = self.settings.variables.get("engine_player") else {
+            return json!({"available": false});
+        };
+        let actor = settings.get("scene_id").and_then(Value::as_str).unwrap_or("player.character");
+        let joint = settings.pointer("/first_person/eye_joint").and_then(Value::as_str).unwrap_or("SKEL_Head");
+        let Some(entity) = self.scene.runtime_entity_stable_id(actor) else {
+            return json!({"actor_id": actor, "available": false});
+        };
+        let position = self.scene.entity_joint_world_position(entity, joint).ok();
+        let delta = self.scene.entity_joint_animation_delta_pose(entity, joint).ok();
+        json!({
+            "actor_id": actor, "joint": joint, "available": position.is_some() && delta.is_some(),
+            "head_position": position,
+            "animation_translation": delta.map(|v| v.0),
+            "animation_camera_angles_degrees": delta.map(|v| v.1),
+            "animation_rotation_degrees": delta.map(|v| [v.1[0], -v.1[1], v.1[2]]),
+        })
+    }
+
     pub(super) fn runtime_state(&self) -> Value {
         self.compose_runtime_state(self.living_world.runtime_state())
     }
@@ -11,6 +31,9 @@ impl EngineApplication {
             .as_object_mut()
             .expect("scene script frame state must be a JSON object");
 
+        root.insert("climate".to_owned(), self.climate_state(false));
+        root.insert("cold".to_owned(), self.cold.state());
+
         let interval = f64::from(self.settings.scripting.world_snapshot_interval_seconds);
         let world_snapshot_fresh = interval <= 0.0
             || self.elapsed_seconds + 1.0e-9 >= self.next_script_world_snapshot_seconds;
@@ -20,9 +43,14 @@ impl EngineApplication {
             } else {
                 self.elapsed_seconds + interval
             };
-            root.insert("living_world".to_owned(), self.living_world.frame_state());
+            let mut world = self.living_world.frame_state();
+            world["persistence"] = self.world_persistence.as_ref()
+                .map(WorldPersistence::runtime_state)
+                .unwrap_or_else(|| json!({"enabled": false, "restored": false}));
+            world["presentation_transitions"] = self.world_presentations_state();
+            root.insert("living_world".to_owned(), world);
             root.insert("agents".to_owned(), self.agents.runtime_state());
-            root.insert("peds".to_owned(), self.peds.runtime_state());
+            root.insert("peds".to_owned(), self.ped_runtime_state());
             root.insert(
                 "physical_characters".to_owned(),
                 self.physical_characters.runtime_state(),
@@ -31,6 +59,7 @@ impl EngineApplication {
         // Inventory/pickup interaction is player-input critical and must not be
         // throttled with the large living-world snapshot.
         root.insert("arm_ik".to_owned(), self.scene.entity_arm_ik_snapshot());
+        root.insert("player_camera".to_owned(), self.player_camera_frame_state());
         root.insert("items".to_owned(), self.items.runtime_state());
         root.insert("vehicles".to_owned(), self.vehicles.runtime_state());
         root.insert("vehicle_tracks".to_owned(), self.vehicle_tracks_state());
@@ -51,9 +80,37 @@ impl EngineApplication {
             json!(self.elapsed_seconds),
         );
 
+        root.insert("water".to_owned(), self.scene.water_state_json());
+        root.insert("audio_loops".to_owned(), json!(self.script_audio_loops.iter()
+            .map(|(key,(cue,voice))| json!({"key":key,"cue":cue,"voice_id":voice}))
+            .collect::<Vec<_>>()));
+
+        if let Some(physics) = self.physics.as_ref() {
+            let samples = physics.water_query_positions()
+                .map(|(entity,position)| {
+                    let sample = self.scene.water_sample(position);
+                    json!({"entity":entity,"entity_key":entity.to_string(),"position":position,
+                        "height":sample.height,"normal":sample.normal,"vertical_velocity":sample.vertical_velocity})
+                }).collect::<Vec<_>>();
+            root.get_mut("water").unwrap()["body_samples"] = json!(samples);
+        }
+
         // Player/controller code needs current physics every frame.
         if let Some(physics) = self.physics.as_ref() {
-            root.insert("physics".to_owned(), physics.runtime_state());
+            let native_particles = root
+                .get("scene")
+                .and_then(|scene| scene.get("particles"))
+                .and_then(|particles| particles.get("physical_debris"))
+                .and_then(|debris| debris.get("entities"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|particle| particle.get("entity").and_then(Value::as_u64))
+                .collect::<BTreeSet<_>>();
+            root.insert(
+                "physics".to_owned(),
+                physics.script_frame_state(&native_particles),
+            );
         }
 
         let streaming = self.asset_streamer.stats();
@@ -160,6 +217,14 @@ impl EngineApplication {
         let root = runtime_state
             .as_object_mut()
             .expect("scene runtime state must be a JSON object");
+        root.insert("climate".to_owned(), self.climate_state(true));
+        root.insert("cold".to_owned(), self.cold.state());
+        root.insert("water".to_owned(), self.scene.water_state_json());
+        root.insert("audio_loops".to_owned(), json!(self.script_audio_loops.iter()
+            .map(|(key,(cue,voice))| json!({"key":key,"cue":cue,"voice_id":voice}))
+            .collect::<Vec<_>>()));
+
+        root.insert("player_camera".to_owned(), self.player_camera_frame_state());
         living_world_state["persistence"] = self
             .world_persistence
             .as_ref()
@@ -172,7 +237,7 @@ impl EngineApplication {
         );
         root.insert("living_world".to_owned(), living_world_state);
         root.insert("agents".to_owned(), self.agents.runtime_state());
-            root.insert("peds".to_owned(), self.peds.runtime_state());
+        root.insert("peds".to_owned(), self.ped_runtime_state());
         root.insert(
             "physical_characters".to_owned(),
             self.physical_characters.runtime_state(),

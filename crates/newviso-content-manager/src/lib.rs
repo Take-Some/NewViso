@@ -73,9 +73,13 @@ pub struct ContentManager {
     editor_text: String,
     saved_text: String,
     status: String,
+    surface_revision: u64,
 }
 
-impl ContentManager {}
+impl ContentManager {
+    pub fn surface_revision(&self)->u64{self.surface_revision}
+    fn invalidate_surfaces(&mut self){self.surface_revision=self.surface_revision.wrapping_add(1);}
+}
 
 fn collect_files(root: &Path, current: &Path, out: &mut Vec<ContentEntry>) -> Result<(), String> {
     let read = fs::read_dir(current).map_err(|error| {
@@ -409,6 +413,7 @@ mod tests {
             editor_text: String::new(),
             saved_text: String::new(),
             status: String::new(),
+            surface_revision: 0,
         };
         assert!(manager.resolve("../outside.txt").is_err());
     }
@@ -458,6 +463,7 @@ mod tests {
             editor_text: String::new(),
             saved_text: String::new(),
             status: String::new(),
+            surface_revision: 0,
         };
 
         manager
@@ -499,5 +505,27 @@ mod tests {
         }
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn surface_revision_changes_only_for_content_state_updates(){
+        let mut manager=ContentManager{
+            root:PathBuf::new(),project:None,entries:Vec::new(),vfs_entries:Vec::new(),
+            selected:None,vfs_selected:None,vfs_preview:String::new(),vfs_directory:String::new(),
+            vfs_search:String::new(),editor_text:String::new(),saved_text:String::new(),
+            status:String::new(),surface_revision:0,
+        };
+        let before=manager.surfaces();
+        manager.apply_dispatch(&json!({"state_patches":[],"actions":[]})).unwrap();
+        manager.apply_dispatch(&json!({"actions":[{"action_id":"other.action"}]})).unwrap();
+        assert_eq!(manager.surface_revision(),0);assert_eq!(manager.surfaces(),before);
+        manager.apply_dispatch(&json!({"state_patches":[{"changes":[{"path":"content.vfs.search","value":"snow"}]}]})).unwrap();
+        let edited=manager.surface_revision();assert!(edited>0);
+        manager.apply_dispatch(&json!({"state_patches":[{"changes":[{"path":"content.vfs.search","value":"snow"}]}]})).unwrap();
+        assert_eq!(manager.surface_revision(),edited);
+        manager.report_status("Ready");let changed=manager.surface_revision();
+        assert!(changed>edited);manager.report_status("Ready");assert_eq!(manager.surface_revision(),changed);
+        manager.apply_dispatch(&json!({"actions":[{"action_id":"content.vfs.open_dir","payload":{"path":"models"}}]})).unwrap();
+        assert!(manager.surface_revision()>changed);
     }
 }

@@ -49,6 +49,11 @@ impl RenderDrawListKind {
 
     #[inline]
     pub const fn is_compatible_with_pass(self, pass: RenderGraphPassKind) -> bool {
+        // Custom passes explicitly choose their geometry category. Changing the
+        // category must not move their commands into a built-in scene pass.
+        if matches!(pass, RenderGraphPassKind::Custom) {
+            return true;
+        }
         matches!(
             (self, pass),
             (
@@ -63,7 +68,7 @@ impl RenderDrawListKind {
                 Self::OpaqueForward,
                 RenderGraphPassKind::ForwardOpaque | RenderGraphPassKind::GBuffer,
             ) | (Self::ParticleGBuffer, RenderGraphPassKind::ParticleGBuffer)
-                | (Self::Transparent, RenderGraphPassKind::Transparent)
+                | (Self::Transparent, RenderGraphPassKind::Transparent | RenderGraphPassKind::Water)
                 | (Self::Scene2D, RenderGraphPassKind::Scene2D)
                 | (Self::Debug, RenderGraphPassKind::DebugOverlay)
         )

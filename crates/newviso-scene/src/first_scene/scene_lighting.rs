@@ -343,6 +343,7 @@ impl Scene3dRuntime {
     }
 
     pub fn set_scene_environment(&mut self, desc: SceneEnvironmentDesc) -> Result<(), String> {
+        desc.render.validate()?;
         let invalid_color = desc
             .ambient_color
             .iter()

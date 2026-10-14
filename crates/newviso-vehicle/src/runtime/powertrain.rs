@@ -13,7 +13,7 @@ pub(super) fn advance_vehicle_powertrain(
     let seed_base = entity
         ^ (vehicle.speed_mps.to_bits() as u64).rotate_left(13)
         ^ (vehicle.transmission.gear as i64 as u64).rotate_left(29);
-    let damage_signals = process_damage_frame_with_specification(
+    let mut damage_signals = process_damage_frame_with_specification(
         &mut vehicle.damage,
         vehicle.definition.class,
         &vehicle.definition.specification,
@@ -34,6 +34,25 @@ pub(super) fn advance_vehicle_powertrain(
         },
         |index| deterministic_unit(seed_base ^ (index as u64).wrapping_mul(0x9E37_79B1_85EB_CA87)),
     );
+    for (index, wheel) in wheels.iter().enumerate() {
+        let heat_damage_eligible = wheel.burnout_active
+            && wheel.telemetry.contact
+            && !vehicle.damage_policy.invincible
+            && !matches!(
+                wheel.telemetry.surface_class,
+                VehicleSurfaceClass::Snow | VehicleSurfaceClass::Ice | VehicleSurfaceClass::Water
+            );
+        if let Some(damage) = vehicle.damage.wheels.get_mut(index) {
+            if let Some(signal) = apply_tyre_heat_damage(
+                damage,
+                &vehicle.definition.specification,
+                index,
+                heat_damage_eligible,
+            ) {
+                damage_signals.push(signal);
+            }
+        }
+    }
     for signal in damage_signals {
         if let Some(index) = signal.wheel_index {
             if let (Some(wheel), Some(wheel_damage), Some(config)) = (

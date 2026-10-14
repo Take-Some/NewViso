@@ -19,6 +19,7 @@ layout(location = 2) out float v_vertex_alpha;
 
 void main() {
     mat4 model = mat4(instance_col0, instance_col1, instance_col2, instance_col3);
+    model[3].w = 1.0; // Affine transform; homogeneous sign is reflection policy.
     vec3 world = (model * vec4(in_position_mode.xyz, 1.0)).xyz;
     gl_Position = depth_frame.view_proj * vec4(world, 1.0);
     v_linear_depth = max(gl_Position.w, 0.0);

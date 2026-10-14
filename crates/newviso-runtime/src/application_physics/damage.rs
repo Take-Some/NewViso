@@ -26,8 +26,15 @@ impl PhysicsRuntime {
     }
 
     pub(crate) fn damage_contacts(&self) -> Vec<PhysicsDamageContact> {
+        self.damage_contacts_from_events(&self.last_output.events)
+    }
+
+    pub(super) fn damage_contacts_from_events(
+        &self,
+        events: &[PhysicsEvent],
+    ) -> Vec<PhysicsDamageContact> {
         let mut out = Vec::new();
-        for event in &self.last_output.events {
+        for event in events {
             let contact = match event {
                 PhysicsEvent::ContactBegin(contact) | PhysicsEvent::ContactPersist(contact) => {
                     contact

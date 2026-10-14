@@ -4,20 +4,22 @@ mod camera;
 mod first_scene;
 mod math;
 mod world;
+pub mod water;
 
 pub use first_scene::{
     prepare_model_geometry, AtmosphericCloudAnimMode, AtmosphericCloudLayerDesc,
     AtmosphericCloudLayerResources, AtmosphericCloudMeshResources, AtmosphericCloudResources,
     AtmosphericCloudTextureSet, AtmosphericCloudUvLayerDesc, AtmosphericCloudVertex,
-    CloudHatKeyframeState, LensFlareDesc, LensFlareElementDesc, LensFlareElementKind,
-    Scene3dLoadReport, Scene3dRuntime, SceneArmIkConstraint, SceneDestructionActivation,
-    SceneEnvironmentDesc, SceneGpuWarmupStatus, SceneLightDesc, SceneLightType,
-    SceneMassInstanceDesc, SceneModelDent, SceneModelPartPose, SceneOverlayQuad,
-    SceneParticleBlend, SceneParticleMesh, SceneParticleSpawnDesc, SceneParticleStyle,
-    ScenePhysicalParticleSpawn, ScenePreparedModelGeometry, SceneResolvedMaterial,
-    SceneRuntimeEntityDesc, SceneRuntimeVisualKind, SceneStreamRequest, SceneSurfaceMark,
-    SceneTransientSphere, SceneVehicleDashboard, SkyAtmosphereDesc, SkyCloudDesc, SkyDomeResources,
-    SkyIndexFormat, SkyMeshResources, SkyTextureResources, SkyVertex, SkyVisualDesc, SkyVisualKind,
+    CloudHatKeyframeState, KeyframedSkyCloudDesc, KeyframedSkyDesc, LensFlareDesc, LensFlareElementDesc,
+    LensFlareElementKind, Scene3dLoadReport, Scene3dRuntime, SceneArmIkConstraint,
+    SceneDestructionActivation, SceneEnvironmentDesc, SceneGpuWarmupStatus, SceneLightDesc,
+    SceneLightType, SceneMassInstanceDesc, SceneModelDent, SceneModelPartPose,
+    SceneNavigationGeometry, SceneOverlayQuad, SceneParticleBlend, SceneParticleMesh,
+    SceneParticleSpawnDesc, SceneParticleStyle, ScenePhysicalParticleSpawn,
+    ScenePreparedModelGeometry, SceneResolvedMaterial, SceneRuntimeEntityDesc,
+    SceneRuntimeVisualKind, SceneSnowCap, SceneStreamRequest, SceneSurfaceMark, SceneTransientSphere,
+    SceneVehicleDashboard, SkyAtmosphereDesc, SkyCloudDesc, SkyDomeResources, SkyIndexFormat,
+    SkyMeshResources, SkyTextureResources, SkyVertex, SkyVisualDesc, SkyVisualKind,
     TimeCycleBackendState, VolumetricCloudDesc, WeatherBackendState, WeatherEffectsState,
     WeatherGpuFxEmitterDesc, WeatherGpuFxLayerDesc, WeatherGpuFxRenderDesc, WeatherGpuFxResources,
     WeatherGpuFxSystemType,

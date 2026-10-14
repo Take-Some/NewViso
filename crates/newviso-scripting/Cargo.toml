@@ -11,4 +11,5 @@ newviso-compat-abi.workspace = true
 newviso-events.workspace = true
 newviso-host.workspace = true
 newviso-script-client.workspace = true
+serde.workspace = true
 serde_json.workspace = true

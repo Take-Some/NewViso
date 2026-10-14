@@ -19,6 +19,8 @@ impl Scene3dRuntime {
     }
     pub(super) fn load_scene_value(scene: Value) -> Result<(Self, Scene3dLoadReport), String> {
         let mut portal_visibility = PortalVisibilityGraph::from_scene_value(&scene)?;
+        // Keep authored root data before the scene provider normalizes ECS records.
+        let water_config = scene.get("water").cloned().unwrap_or(Value::Null);
         let load = host_runtime::call_json(
             SCENE_SERVICE,
             "scene.load_json_v1",
@@ -158,6 +160,10 @@ impl Scene3dRuntime {
         })?;
 
         let mut cubes = Vec::with_capacity(mesh_records.len());
+        let mut terrain_meshes = BTreeMap::new();
+        let mut terrain_texture_paths: Option<[String; 5]> = None;
+        let mut water_texture_paths: Option<[String;5]> = None;
+        let mut water_render_slots = BTreeSet::new();
         let mut parent_links = Vec::<(SceneEntityId, SceneEntityId)>::new();
         for (stable_id, record) in mesh_records {
             let transform = record.get("transform").ok_or("mesh has no transform")?;
@@ -171,7 +177,7 @@ impl Scene3dRuntime {
                 .and_then(Value::as_str)
                 .map(str::to_owned);
 
-            if primitive != "cube" {
+            if primitive != "cube" && primitive != "heightfield" {
                 let Some(asset_ref) = asset_ref else {
                     return Err(format!(
                         "scene mesh '{}' has neither primitive='cube' nor mesh.asset",
@@ -255,8 +261,61 @@ impl Scene3dRuntime {
                 scale: read_vec3(transform, "scale", Vec3::ONE)?,
                 base_color: read_color4(material, "base_color", [1.0, 1.0, 1.0, 1.0])?,
             };
-            let bounds = cube.bounds();
             let render_slot = cubes.len();
+            if record.pointer("/material/water_surface").and_then(Value::as_bool)==Some(true) {
+                water_render_slots.insert(render_slot);
+                {
+                    let maps=record.pointer("/material/water_textures").unwrap_or(&Value::Null);
+                    let keys=["normal_a","normal_b","foam","fog","noise"];
+                    let mut paths=Vec::with_capacity(5);
+                    for key in keys {
+                        let path=maps.get(key).and_then(Value::as_str)
+                            .filter(|v| !v.trim().is_empty())
+                            .map(str::to_owned)
+                            .unwrap_or_else(||format!("textures/environment/water/{key}.dds"));
+                        paths.push(path);
+                    }
+                    water_texture_paths=Some(paths.try_into()
+                        .map_err(|_|"water requires five authored textures")?);
+                }
+            }
+            if primitive == "heightfield" {
+                if let Some(maps) = record.pointer("/material/terrain_textures") {
+                    let keys = ["grass", "sand", "rock", "soil", "wood"];
+                    let mut paths = Vec::with_capacity(keys.len());
+                    for key in keys {
+                        let path = maps.get(key).and_then(Value::as_str)
+                            .filter(|value| !value.trim().is_empty())
+                            .ok_or_else(|| format!("terrain texture '{key}' missing"))?;
+                        paths.push(path.to_owned());
+                    }
+                    let arr: [String; 5] = paths.try_into()
+                        .map_err(|_| "terrain textures require five files")?;
+                    terrain_texture_paths = Some(arr);
+                }
+            }
+            let heightfield = if primitive == "heightfield" {
+                Some(heightfield::HeightfieldPatch::from_record(
+                    stable_id, record, cube.position, cube.scale, cube.base_color
+                )?)
+            } else { None };
+            let bounds = if let Some(patch) = &heightfield {
+                let mut bounds = Aabb {
+                    min:[f32::MAX;3], max:[f32::MIN;3]
+                };
+                for xyz in &patch.physics_vertices {
+                    for i in 0..3 {
+                        bounds.min[i]=bounds.min[i].min(xyz[i]);
+                        bounds.max[i]=bounds.max[i].max(xyz[i]);
+                    }
+                }
+                bounds
+            } else {
+                cube.bounds()
+            };
+            if let Some(patch) = heightfield {
+                terrain_meshes.insert(render_slot, patch);
+            }
             let solid = record.pointer("/collider/solid").and_then(Value::as_bool) == Some(true);
             let mobility = match record.get("mobility").and_then(Value::as_str) {
                 Some("dynamic") => SceneMobility::Dynamic,
@@ -419,6 +478,16 @@ impl Scene3dRuntime {
             mesh_name,
         };
 
+        let mut water_simulation=crate::water::WaterSimulation::default();
+        if !water_render_slots.is_empty() {
+            let profile = host_runtime::call_service(ASSET_SERVICE, "asset.raw_bytes_v1",
+                b"environment/water/defaults.json").map_err(|e|format!("shared water profile: {e}"))?;
+            let defaults: Value = serde_json::from_slice(&profile).map_err(|e|e.to_string())?;
+            water_simulation.configure_optics(&defaults)?;
+        }
+        water_simulation.configure_regions(&water_config)?;
+        water_simulation.configure_optics(&water_config)?;
+        water_simulation.enabled=!water_render_slots.is_empty();
         Ok((
             Self {
                 title,
@@ -427,6 +496,16 @@ impl Scene3dRuntime {
                 orbit,
                 render_policy: RenderPolicy::default(),
                 cubes,
+                terrain_meshes,
+                snow_cap_depths:BTreeMap::new(),
+                terrain_texture_paths,
+                terrain_gpu_material: None,
+                water_texture_paths,
+                water_render_slots,
+                water_gpu_material: None,
+                water_impacts: Vec::new(),
+                water_simulation,
+                water_gpu: None,
                 asset_meshes: BTreeMap::new(),
                 skinned_entities: BTreeMap::new(),
                 entity_skeletons: BTreeMap::new(),
@@ -447,6 +526,12 @@ impl Scene3dRuntime {
                 asset_binding_contexts: BTreeMap::new(),
                 asset_vertex_data: Vec::new(),
                 asset_upload_from_float: None,
+                geometry_upload: geometry_upload::GeometryUploadCache::default(),
+                indexed_terrain: renderer_indexed_terrain::IndexedTerrain::default(),
+                shadow_geometry_upload: geometry_upload::GeometryUploadCache::default(),
+                primitive_main_cache: Default::default(),
+                primitive_shadow_cache: Default::default(),
+                gpu_skinning: None,
                 skinned_vertex_data: Vec::new(),
                 skinned_dirty_ranges: std::array::from_fn(|_| Vec::new()),
                 asset_geometry_full_rebuild: false,
@@ -470,6 +555,7 @@ impl Scene3dRuntime {
                 lens_flares: BTreeMap::new(),
                 sky_clouds: SkyCloudDesc::default(),
                 sky_atmosphere: SkyAtmosphereDesc::default(),
+                keyframed_sky: None,
                 scene_environment: SceneEnvironmentDesc::default(),
                 timecycle_backend: TimeCycleBackendState::default(),
                 weather_backend: WeatherBackendState::default(),
@@ -477,8 +563,12 @@ impl Scene3dRuntime {
                 cloudhat_keyframe: CloudHatKeyframeState::default(),
                 weather_gpu_fx: None,
                 weather_fx_time_seconds: 0.0,
+                weather_collision: WeatherCollisionMap::default(),
                 weather_wetness: 0.0,
+                weather_wetness_external: false,
+                weather_lens_enabled: false,
                 weather_outdoor_exposure: 1.0,
+            weather_physical_shelter: false,
                 sky_time_seconds: 0.0,
                 sky_time_scale: 1.0,
                 sky_cloud_noise_phase: [1.0, 1.0],
@@ -503,6 +593,7 @@ impl Scene3dRuntime {
                 gpu_weather: None,
                 frame_index: 0,
                 last_render_camera: None,
+                shadow_focus: None,
             },
             report,
         ))

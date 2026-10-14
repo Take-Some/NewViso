@@ -6,12 +6,11 @@ impl EngineApplication {
             self.vehicle_presentations
                 .iter()
                 .map(|(&entity, binding)| {
-                    json!({
+                    let mut state = json!({
                         "entity": entity,
                         "model_id": binding.model_id,
                         "model_name": binding.model_name,
                         "wreck_fire_until_seconds": binding.wreck_fire_until_seconds,
-                        "debris": self.vehicle_debris.values().filter(|d| d.source_entity == entity).map(|d| d.runtime_state()).collect::<Vec<_>>(),
                         "body_health": binding.body_health,
                         "engine_health": binding.engine_health,
                         "deformation_count": binding.dents.len(),
@@ -38,7 +37,6 @@ impl EngineApplication {
                             "hazard": binding.lights.hazard,
                             "siren": binding.lights.siren
                         },
-                        "audio_fx": vehicle_audio_fx_runtime_state(&binding.audio_fx),
                         "dashboard": {
                             "speed_mph":binding.dashboard.display.speed_mph,
                             "speed_kmh":binding.dashboard.display.speed_mph*1.609344,
@@ -48,8 +46,7 @@ impl EngineApplication {
                             "oil_temperature":binding.dashboard.display.oil_temperature,
                             "vacuum":binding.dashboard.display.vacuum,"boost":binding.dashboard.display.boost,
                             "gear":binding.dashboard.display.gear,"lamps":binding.dashboard.display.lamps,
-                            "odometer_miles":binding.dashboard.display.odometer_miles,
-                            "render":self.scene.vehicle_dashboard_state(entity)
+                            "odometer_miles":binding.dashboard.display.odometer_miles
                         },
                         "occupants": binding.occupants.iter().map(|(seat, occupant)| json!({
                             "seat": seat,
@@ -71,44 +68,61 @@ impl EngineApplication {
                         "door_reservations": binding.door_reservations.iter().map(|(door, actor)| json!({
                             "door": door, "actor_entity": actor
                         })).collect::<Vec<_>>(),
-                        "parts": binding.parts.iter().map(|part| json!({
-                            "index": part.index,
-                            "pivot": part.pivot,
-                            "name": part.name,
-                            "role": format!("{:?}", part.role),
-                            "wheel_slot": part.wheel_slot.map(|slot| format!("{:?}", slot)),
-                            "open": part.open,
-                            "door_motion": part.door_motion.map(|motion| json!({
-                                "target_ratio": motion.target_ratio,
-                                "current_speed": motion.current_speed,
-                                "latched": motion.latched,
-                                "driven": motion.driven,
-                                "swinging": motion.swinging,
-                                "auto_reset": motion.auto_reset,
-                                "over_limit_seconds": motion.over_limit_seconds,
-                                "break_stress": motion.break_stress
-                            })),
-                            "locked": part.locked,
-                            "visible": part.visible,
-                            "damage": part.damage,
-                            "glass_hit_uv": (part.role == ModelFragmentPartRole::Glass).then_some(part.glass_hit_uv),
-                            "mesh_bounds": self.scene.entity_fragment_mesh_bounds(entity, &part.mesh_names)
-                                .map(|(min,max)| json!({"min":min,"max":max})),
-                            "loose": part.loose,
-                            "detach_velocity_boost": part.detach_velocity_boost,
-                            "fire_intensity": part.fire_intensity,
-                            "fire_remaining_seconds": part.fire_remaining_seconds,
-                            "detached_entity": part.detached_entity,
-                            "light_active": if part.role==ModelFragmentPartRole::Light {
-                                Some(self.scene.runtime_entity_state(&format!("vehicle.{entity}.light.{}",part.index)).is_some())
-                            } else {None},
-                            "presentation_override": part.presentation_override,
-                            "mesh_names": part.mesh_names
-                        })).collect::<Vec<_>>()
-                    })
+                    });
+                    // These values already own their JSON trees. Move them into
+                    // the result rather than serializing/cloning them a second time.
+                    state["debris"] = Value::Array(self.vehicle_debris.values()
+                        .filter(|d| d.source_entity == entity).map(|d| d.runtime_state()).collect());
+                    state["audio_fx"] = vehicle_audio_fx_runtime_state(&binding.audio_fx);
+                    state["dashboard"]["render"] = self.scene.vehicle_dashboard_state(entity);
+                    state["fragment_groups"] = Value::Array(binding.fragment_groups.values()
+                        .map(|g| g.snapshot()).collect());
+                    state["parts"] = Value::Array(binding.parts.iter()
+                        .map(|part| self.vehicle_part_runtime_state(entity, part)).collect());
+                    state
                 })
                 .collect(),
         )
+    }
+
+    fn vehicle_part_runtime_state(&self, entity: u64, part: &VehiclePresentationPart) -> Value {
+        let mut state = json!({
+            "index": part.index,
+            "pivot": part.pivot,
+            "name": part.name,
+            "role": format!("{:?}", part.role),
+            "wheel_slot": part.wheel_slot.map(|slot| format!("{:?}", slot)),
+            "open": part.open,
+            "door_motion": part.door_motion.map(|motion| json!({
+                "target_ratio": motion.target_ratio,
+                "current_speed": motion.current_speed,
+                "latched": motion.latched,
+                "driven": motion.driven,
+                "swinging": motion.swinging,
+                "auto_reset": motion.auto_reset,
+                "over_limit_seconds": motion.over_limit_seconds,
+                "break_stress": motion.break_stress
+            })),
+            "locked": part.locked,
+            "visible": part.visible,
+            "damage": part.damage,
+            "glass_hit_uv": (part.role == ModelFragmentPartRole::Glass).then_some(part.glass_hit_uv),
+            "mesh_bounds": self.scene.entity_fragment_mesh_bounds(entity, &part.mesh_names)
+                .map(|(min,max)| json!({"min":min,"max":max})),
+            "loose": part.loose,
+            "detach_velocity_boost": part.detach_velocity_boost,
+            "fire_intensity": part.fire_intensity,
+            "fire_remaining_seconds": part.fire_remaining_seconds,
+            "detached_entity": part.detached_entity,
+            "light_active": if part.role==ModelFragmentPartRole::Light {
+                Some(self.scene.runtime_entity_state(&format!("vehicle.{entity}.light.{}",part.index)).is_some())
+            } else {None},
+            "presentation_override": part.presentation_override,
+            "mesh_names": part.mesh_names
+        });
+        state["parent_part_index"] = json!(part.parent_part_index);
+        state["physics"] = json!(part.physics.as_ref().map(fragment_body::physics_snapshot));
+        state
     }
 
     pub(crate) fn upsert_vehicle_from_script(
@@ -309,6 +323,7 @@ impl EngineApplication {
                     })
                 })),
                 "convex_hulls": command.get("convex_hulls").cloned().unwrap_or_else(|| json!([])),
+                "convex_hull_components":command.get("convex_hull_components").cloned().unwrap_or(Value::Null),
                 "linear_damping": 0.015,
                 "angular_damping": 0.05,
                 "participates_in_queries": true,
@@ -362,6 +377,9 @@ impl EngineApplication {
                     binding.original_collision_hulls.as_ref(),
                 ) {
                     physics.restore_body_collision_hulls(entity, hulls.clone());
+                }
+                for group in binding.fragment_groups.values_mut() {
+                    group.repair();
                 }
                 binding.dents.clear();
                 binding.impact_history.clear();

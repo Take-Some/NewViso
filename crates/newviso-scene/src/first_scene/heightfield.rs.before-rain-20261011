@@ -1,0 +1,136 @@
+//! Continuous indexed terrain heightfield for project-owned scene primitives.
+//! CPU vertices and the triangle collision mesh share exactly the same heights.
+use super::*;
+
+#[derive(Clone, Debug)]
+pub(super) struct HeightfieldPatch {
+    pub entity: u64,
+    pub collides: bool,
+    pub vertices: Vec<f32>,
+    pub physics_vertices: Vec<[f32; 3]>,
+    pub triangles: Vec<[u32; 3]>,
+    columns: usize,
+}
+
+impl HeightfieldPatch {
+    /// Exact vertical intersection with the same two triangles used by rendering
+    /// and collision. A distant hill inside the broad bounds is not a rain roof.
+    pub(super) fn upward_ray_hits(&self, origin: Vec3, min_distance: f32) -> bool {
+        let points = &self.physics_vertices;
+        let rows = points.len() / self.columns;
+        let first = points[0];
+        let step_x = points[1][0] - first[0];
+        let step_z = points[self.columns][2] - first[2];
+        let x = (origin.x - first[0]) / step_x;
+        let z = (origin.z - first[2]) / step_z;
+        if !x.is_finite() || !z.is_finite() || x < 0.0 || z < 0.0
+            || x > (self.columns - 1) as f32 || z > (rows - 1) as f32 {
+            return false;
+        }
+        let col = (x.floor() as usize).min(self.columns - 2);
+        let row = (z.floor() as usize).min(rows - 2);
+        let u = x - col as f32;
+        let v = z - row as f32;
+        let a = row * self.columns + col;
+        let b = a + 1;
+        let c = a + self.columns;
+        let d = c + 1;
+        let height = if u + v <= 1.0 {
+            points[a][1] + (points[b][1] - points[a][1]) * u
+                + (points[c][1] - points[a][1]) * v
+        } else {
+            points[b][1] * (1.0 - v) + points[c][1] * (1.0 - u)
+                + points[d][1] * (u + v - 1.0)
+        };
+        height >= origin.y + min_distance.max(0.0)
+    }
+
+    pub fn from_record(entity: u64, record: &Value, center: Vec3, size: Vec3, color: [f32; 4]) -> Result<Self, String> {
+        let h = record.pointer("/mesh/heightfield").ok_or("heightfield requires mesh.heightfield")?;
+        let cols = h.get("columns").and_then(Value::as_u64).unwrap_or(0) as usize;
+        let rows = h.get("rows").and_then(Value::as_u64).unwrap_or(0) as usize;
+        if !(3..=257).contains(&cols) || !(3..=257).contains(&rows)
+           || cols * rows > 66_049 || !size.x.is_finite() || !size.z.is_finite()
+           || size.x <= 0.0 || size.z <= 0.0 {
+            return Err("heightfield rows and columns must be 3..=257 and size must be positive".into());
+        }
+        let heights = h.get("heights").and_then(Value::as_array).ok_or("heightfield missing heights array")?;
+        if heights.len() != cols * rows {
+            return Err(format!("heightfield expects {} height values, got {}",cols*rows,heights.len()));
+        }
+        let z = heights.iter().map(|v|v.as_f64().map(|f| f as f32).filter(|v|v.is_finite())
+            .ok_or("heightfield has non-finite/non-numeric height")).collect::<Result<Vec<_>,_>>()?;
+        let step_x=size.x/(cols-1) as f32;
+        let step_z=size.z/(rows-1) as f32;
+        let at=|x:usize,y:usize|z[y*cols+x];
+        let mut points=Vec::with_capacity(cols*rows);
+        let mut normals=Vec::with_capacity(cols*rows);
+        for row in 0..rows {
+            for col in 0..cols {
+                let x=center.x-size.x*0.5+col as f32*step_x;
+                let world_z=center.z-size.z*0.5+row as f32*step_z;
+                let h0=at(col,row);
+                let left=at(col.saturating_sub(1),row);
+                let right=at((col+1).min(cols-1),row);
+                let down=at(col,row.saturating_sub(1));
+                let up=at(col,(row+1).min(rows-1));
+                let hx=(right-left)/((if col==0 || col==cols-1 {1.0}else{2.0})*step_x);
+                let hz=(up-down)/((if row==0 || row==rows-1 {1.0}else{2.0})*step_z);
+                let normal=Vec3::new(-hx,1.0,-hz).normalized();
+                points.push([x,center.y+h0*size.y,world_z]);
+                normals.push(normal);
+            }
+        }
+        let mut triangles=Vec::with_capacity((cols-1)*(rows-1)*2);
+        let mut vertices=Vec::with_capacity(triangles.capacity()*3*FLOATS_PER_VERTEX);
+        for row in 0..rows-1 {
+            for col in 0..cols-1 {
+                let a=(row*cols+col) as u32;
+                let b=a+1;
+                let c=a+cols as u32;
+                let d=c+1;
+                // Winding: +Y-facing for X,Z grid.
+                for indices in [[a,c,b],[b,c,d]] {
+                    triangles.push(indices);
+                    for idx in indices {
+                        let idx=idx as usize;
+                        let point=points[idx];
+                        geometry::append_world_vertex(&mut vertices,
+                            Vec3::new(point[0],point[1],point[2]),normals[idx],color);
+                    }
+                }
+            }
+        }
+        Ok(Self{entity,collides:record.pointer("/collider/solid").and_then(Value::as_bool)==Some(true),vertices,physics_vertices:points,triangles,columns:cols})
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn heightfield_rain_shelter_uses_local_surface() {
+        let input = json!({"mesh":{"heightfield":{"columns":3,"rows":3,
+            "heights":[0,0,12,0,0,12,0,0,12]}}});
+        let mesh = HeightfieldPatch::from_record(42, &input, Vec3::ZERO,
+            Vec3::new(2.0,1.0,2.0), [1.0;4]).unwrap();
+        // The broad bounds contain a 12m hill, but the camera's cell is open.
+        assert!(!mesh.upward_ray_hits(Vec3::new(-0.5,8.0,-0.5),0.02));
+        // Both triangles interpolate the slope to 6m, not the global maximum.
+        assert!(mesh.upward_ray_hits(Vec3::new(0.5,5.0,-0.75),0.02));
+        assert!(mesh.upward_ray_hits(Vec3::new(0.5,5.0,-0.25),0.02));
+        assert!(!mesh.upward_ray_hits(Vec3::new(0.5,7.0,-0.25),0.02));
+        assert!(mesh.upward_ray_hits(Vec3::new(1.0,11.0,1.0),0.02));
+        assert!(!mesh.upward_ray_hits(Vec3::new(1.1,5.0,0.0),0.02));
+    }
+
+    #[test]
+    fn heightfield_has_continuous_edge_and_true_triangle_normals() {
+        let input=json!({"mesh":{"heightfield":{"columns":3,"rows":3,
+            "heights":[0,0,0,0,1,0,0,0,0]}}});
+        let mesh=HeightfieldPatch::from_record(42,&input,Vec3::ZERO,Vec3::new(2.0,1.0,2.0),[0.4,0.5,0.6,0.96]).unwrap();
+        assert_eq!(mesh.triangles.len(),8);
+        assert_eq!(mesh.vertices.len(),8*3*FLOATS_PER_VERTEX);
+        assert_eq!(mesh.physics_vertices[4],[0.0,1.0,0.0]);
+        assert!(mesh.vertices.chunks_exact(FLOATS_PER_VERTEX).all(|v|v[5]>0.0));
+    }
+}

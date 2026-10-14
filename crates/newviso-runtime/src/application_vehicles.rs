@@ -10,6 +10,8 @@ mod dashboard;
 use dashboard::VehicleDashboardState;
 mod damage_presentation;
 mod debris;
+mod fragment_body;
+mod fragment_damage;
 pub(super) use debris::VehicleDebrisState;
 mod doors;
 mod events;
@@ -53,6 +55,7 @@ pub(super) struct VehiclePresentationBinding {
     next_part_break_seconds: f64,
     door_motion_runtime: VehicleDoorMotionRuntime,
     original_collision_hulls: Option<Vec<Vec<[f32; 3]>>>,
+    fragment_groups: BTreeMap<u16, fragment_damage::FragmentGroupState>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -111,9 +114,12 @@ struct VehiclePresentationPart {
     rollable_window: bool,
     role: ModelFragmentPartRole,
     parent_part_index: Option<u32>,
+    physics: Option<newviso_model::ModelFragmentPartPhysics>,
     mesh_names: Vec<String>,
     pivot: [f32; 3],
     wheel_slot: Option<ModelWheelSlot>,
+    wheel_release_motion: Option<[f32; 2]>,
+    wheel_release_condition: Option<TireCondition>,
     open: f32,
     door_motion: Option<VehicleDoorMotionState>,
     locked: bool,
@@ -381,11 +387,14 @@ impl EngineApplication {
                     rollable_window: rollable_window(&part.name),
                     role: part.role,
                     parent_part_index: part.parent_part_index,
+                    physics: part.physics.clone(),
                     mesh_names: part.mesh_names.clone(),
                     pivot: part.rest_position,
                     wheel_slot: part
                         .wheel_slot
                         .or_else(|| infer_wheel_slot_from_name(&part.name)),
+                    wheel_release_motion: old.and_then(|old| old.wheel_release_motion),
+                    wheel_release_condition: old.and_then(|old| old.wheel_release_condition),
                     open: old.map_or(0.0, |old| old.open),
                     door_motion: old.and_then(|old| old.door_motion).or_else(|| {
                         matches!(
@@ -448,6 +457,7 @@ impl EngineApplication {
             rim.name = format!("{}_rim", part.name);
             rim.name_lower = rim.name.to_ascii_lowercase();
             rim.role = ModelFragmentPartRole::WheelHub;
+            rim.parent_part_index = Some(part.index);
             rim.mesh_names = rim_meshes;
             rim.damage = 0.0;
             rim.loose = false;
@@ -456,6 +466,30 @@ impl EngineApplication {
             recovered_rims.push(rim);
         }
         parts.extend(recovered_rims);
+        // Repair assets cooked before tyre/rim assembly hierarchy was retained.
+        let wheel_indices: Vec<_> = parts
+            .iter()
+            .filter(|p| p.role == ModelFragmentPartRole::Wheel)
+            .filter_map(|p| p.wheel_slot.map(|s| (s, p.index)))
+            .collect();
+        for p in parts
+            .iter_mut()
+            .filter(|p| p.role == ModelFragmentPartRole::WheelHub)
+        {
+            if let Some((_, index)) = wheel_indices.iter().find(|(s, _)| Some(*s) == p.wheel_slot) {
+                p.parent_part_index = Some(*index);
+            }
+        }
+        let mut fragment_groups = previous
+            .as_ref()
+            .map_or_else(BTreeMap::new, |b| b.fragment_groups.clone());
+        for p in &parts {
+            if let Some(physics) = &p.physics {
+                fragment_groups
+                    .entry(physics.group)
+                    .or_insert_with(|| fragment_damage::FragmentGroupState::new(physics));
+            }
+        }
 
         let handling_for_layout = self
             .vehicles
@@ -494,6 +528,7 @@ impl EngineApplication {
                     .as_ref()
                     .map_or(0.0, |b| b.wreck_fire_until_seconds),
                 parts,
+                fragment_groups,
                 impact_history: previous
                     .as_ref()
                     .map_or_else(BTreeMap::new, |b| b.impact_history.clone()),
@@ -599,6 +634,7 @@ impl EngineApplication {
                 binding.body_health = state.body_health;
                 binding.engine_health = state.engine_health;
             }
+            self.capture_vehicle_wheel_motion(entity);
             self.advance_vehicle_part_fires(entity);
             loop {
                 let pending = self.vehicle_presentations.get(&entity).and_then(|binding| {

@@ -23,6 +23,7 @@ layout(location = 0) out vec2 v_uv;
 
 void main() {
     mat4 model = mat4(instance_col0, instance_col1, instance_col2, instance_col3);
+    model[3].w = 1.0; // Reflection policy never changes world shadow geometry.
     v_uv = in_uv;
     gl_Position = frame.shadow_view_proj * model * vec4(in_position_mode.xyz, 1.0);
 }

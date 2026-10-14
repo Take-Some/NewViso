@@ -74,14 +74,28 @@ fn save_restart_and_corrupt_primary_recovery_keep_valid_state() {
         .items
         .collect("pickup.phone.01", "player", [0.0, 0.0, 0.0])
         .unwrap();
+    startup.climate = json!({"schema":"newviso.climate.save.v1", "state":{"test":true}});
+    startup.cold = json!({"schema":"newviso.cold.save.v1","state":{"test":true}});
     let store = startup.persistence.as_mut().unwrap();
     store
-        .save(&startup.world, &startup.presentations, &startup.items)
+        .save(
+            &startup.world,
+            &startup.presentations,
+            &startup.items,
+            &startup.climate,
+            &startup.cold,
+        )
         .unwrap();
     startup.world.tick_frame(0.2, &[]);
     startup.world.set_fact("stock", json!(8)).unwrap();
     store
-        .save(&startup.world, &startup.presentations, &startup.items)
+        .save(
+            &startup.world,
+            &startup.presentations,
+            &startup.items,
+            &startup.climate,
+            &startup.cold,
+        )
         .unwrap();
     let resumed = WorldStartup::open(&dir.0, "test", &settings()).unwrap();
     assert_eq!(
@@ -93,6 +107,8 @@ fn save_restart_and_corrupt_primary_recovery_keep_valid_state() {
         f32::INFINITY
     );
     assert!(resumed.persistence.as_ref().unwrap().restored);
+    assert_eq!(resumed.climate, startup.climate);
+    assert_eq!(resumed.cold, startup.cold);
     assert_eq!(
         resumed.items.inventory_quantity("player", "office.phone"),
         1
@@ -109,7 +125,13 @@ fn save_restart_and_corrupt_primary_recovery_keep_valid_state() {
         .persistence
         .as_mut()
         .unwrap()
-        .save(&recovered.world, &recovered.presentations, &recovered.items)
+        .save(
+            &recovered.world,
+            &recovered.presentations,
+            &recovered.items,
+            &recovered.climate,
+            &recovered.cold,
+        )
         .unwrap();
     assert!(WorldStartup::open(&dir.0, "test", &settings()).is_ok());
     assert!(WorldStartup::open(&dir.0, "another-project", &settings()).is_err());
@@ -122,4 +144,27 @@ fn invalid_saves_fail_without_overwriting_evidence() {
     fs::write(&path, b"broken").unwrap();
     assert!(WorldStartup::open(&dir.0, "test", &settings()).is_err());
     assert_eq!(fs::read(&path).unwrap(), b"broken");
+}
+
+#[test]
+fn autosave_admission_keeps_snapshots_out_of_ordinary_and_disabled_frames(){
+    let dir=ProjectDir::new();let mut configuration=settings();
+    configuration.autosave_interval_seconds=0.0;
+    let mut startup=WorldStartup::open(&dir.0,"test",&configuration).unwrap();
+    let store=startup.persistence.as_mut().unwrap();
+    let mut snapshots=0;
+    for _ in 0..1000 {
+        if store.autosave_due(0.01){snapshots+=1;}
+    }
+    assert_eq!(snapshots,0,"disabled autosave must not request checkpoint construction");
+    store.settings.autosave_interval_seconds=0.1;store.elapsed_since_attempt=0.0;
+    assert!(!store.autosave_due(0.05));
+    for dt in [0.0,-0.1,f32::NAN,f32::INFINITY] {
+        assert!(!store.autosave_due(dt));
+    }
+    assert!(store.autosave_due(0.051));
+    assert_eq!(store.elapsed_since_attempt,0.0);
+    assert!(!store.autosave_due(0.01));
+    assert!(store.autosave_due(0.5));
+    assert_eq!(store.elapsed_since_attempt,0.0,"a long frame admits one attempt");
 }

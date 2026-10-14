@@ -165,10 +165,20 @@ pub fn clear_event_sinks() -> usize {
 }
 
 pub fn call_service(service_id: &str, method: &str, payload: &[u8]) -> Result<Vec<u8>, String> {
+    call_service_owned(service_id, method, payload.to_vec())
+}
+
+/// Transfer an already-encoded packet into the service ABI without copying its
+/// payload again. Providers retain the same owned Blob lifetime and routing.
+pub fn call_service_owned(
+    service_id: &str,
+    method: &str,
+    payload: Vec<u8>,
+) -> Result<Vec<u8>, String> {
     match call_service_v1(
         CapabilityId::from(service_id),
         MethodName::from(method),
-        Blob::from(payload.to_vec()),
+        Blob::from(payload),
     ) {
         RResult::ROk(bytes) => Ok(bytes.into_vec()),
         RResult::RErr(error) => Err(error.to_string()),
@@ -181,7 +191,7 @@ pub fn call_json(
     payload: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let encoded = serde_json::to_vec(payload).map_err(|error| error.to_string())?;
-    let bytes = call_service(service_id, method, &encoded)?;
+    let bytes = call_service_owned(service_id, method, encoded)?;
     if bytes.is_empty() {
         return Ok(serde_json::Value::Null);
     }

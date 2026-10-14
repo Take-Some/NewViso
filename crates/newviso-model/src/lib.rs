@@ -1,3 +1,6 @@
+mod fragment_physics;
+pub use fragment_physics::{ModelFragmentPartPhysics, ModelFragmentPhysicsChild};
+
 use newviso_materials::MaterialResource;
 use newviso_resource_runtime::{AssetAddress, AssetDomain, AssetId, AssetRef, AssetResource};
 use std::{any::Any, sync::Arc};
@@ -102,9 +105,23 @@ pub struct ModelMaterialSlot {
     pub material: ModelMaterialBinding,
 }
 
+/// Source-neutral draw coverage. Shadow proxies are not visible scene meshes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MeshRenderPasses {
+    pub color: bool,
+    pub shadow: bool,
+}
+
+impl Default for MeshRenderPasses {
+    fn default() -> Self {
+        Self { color: true, shadow: true }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct MeshResource {
     pub name: String,
+    pub render_passes: MeshRenderPasses,
     pub vertex_streams: Vec<VertexStream>,
     pub index_buffer: IndexBuffer,
     pub primitives: Vec<MeshPrimitive>,
@@ -221,6 +238,7 @@ pub struct ModelFragmentPart {
     pub role: ModelFragmentPartRole,
     pub bone_tag: Option<u32>,
     pub group_index: Option<u16>,
+    pub physics: Option<ModelFragmentPartPhysics>,
     /// Optional semantic parent inside the fragment presentation hierarchy.
     /// This is deliberately separate from the authored skeleton: vehicle
     /// fragments are baked into rigid semantic mesh groups so SceneModelPartPose

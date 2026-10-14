@@ -61,6 +61,7 @@ impl Scene3dRuntime {
         let outdoor_exposure = self.weather_outdoor_exposure.clamp(0.0, 1.0);
         let ambient_visibility = ambient_sky_visibility(outdoor_exposure);
         let mut environment = RenderLightingEnvironment {
+            environment: self.scene_environment.render,
             ambient_color: self.scene_environment.ambient_color,
             ambient_intensity: self.scene_environment.ambient_intensity.max(0.0)
                 * ambient_visibility,
@@ -204,7 +205,7 @@ impl Scene3dRuntime {
                 let candidate = match light.light_type {
                     LightType::Directional => Some(directional_shadow_view_projection(
                         direction,
-                        self.camera.position,
+                        self.shadow_focus.unwrap_or(self.camera.position),
                         light.shadow_distance,
                         shadow_resolution,
                     )),
@@ -248,12 +249,14 @@ impl Scene3dRuntime {
         out[36] = shadow_bias;
         out[37] = shadow_normal_bias;
         out[38] = shadow_resolution as f32;
-        out[39] = 1.0;
+        // Shared shader UBO: PCSS angular size / penumbra quality multiplier.
+        out[39] = self.render_policy.shadow_softness;
 
         out[camera_base] = self.camera.position.x;
         out[camera_base + 1] = self.camera.position.y;
         out[camera_base + 2] = self.camera.position.z;
-        out[camera_base + 3] = 1.0;
+        // Shader animation time, never derived from per-frame camera motion.
+        out[camera_base + 3] = self.water_simulation.seconds() as f32;
 
         out[ambient_base] = self.scene_environment.ambient_color[0];
         out[ambient_base + 1] = self.scene_environment.ambient_color[1];
@@ -281,7 +284,35 @@ impl Scene3dRuntime {
         out[haze_params_base] = self.scene_environment.haze_start_distance;
 
         out[clear_color_base..clear_color_base + 4].copy_from_slice(&self.clear_color);
+        let environment_block = self.scene_environment.render.uniform_block(0.0, false);
+        for (index, lane) in environment_block.lanes.iter().enumerate() {
+            let base = clear_color_base + 4 + index * 4;
+            out[base..base + 4].copy_from_slice(lane);
+        }
 
+        // Eight water impact events follow the existing environment reference
+        // block. Unused entries stay zero-initialized and have zero strength.
+        for (i, impact) in self.water_impacts.iter().rev().take(8).enumerate() {
+            let base = clear_color_base + 4 + 64 * 4 + i * 4;
+            out[base] = impact.x;
+            out[base + 1] = impact.z;
+            out[base + 2] = impact.start_time;
+            out[base + 3] = impact.intensity;
+        }
+        let water_base = clear_color_base + 4 + 64 * 4 + 8 * 4;
+        let tuning = self.water_simulation.tuning;
+        out[water_base..water_base+4].copy_from_slice(&[
+            self.water_simulation.surface.level, tuning.ripple_scale,
+            tuning.ripple_bumpiness, tuning.ocean_bumpiness,
+        ]);
+        out[water_base+4..water_base+8].copy_from_slice(&[
+            tuning.foam_intensity, tuning.foam_scale,
+            if self.water_simulation.enabled {1.0} else {0.0},
+            if self.water_render_slots.iter().any(|slot|self.terrain_meshes.contains_key(slot)) {1.0} else {0.0},
+        ]);
+        // water_pass: x = reflection clip enable, y = authored plane height.
+        out[water_base+9] = self.water_simulation.surface.level;
+        out[water_base+10..water_base+12].copy_from_slice(&self.water_simulation.origin());
         (out, shadow_light_index.is_some())
     }
     pub(super) fn sky_frame_uniform(&self, aspect: f32) -> [f32; SKY_UNIFORM_FLOATS] {
@@ -461,6 +492,58 @@ impl Scene3dRuntime {
         out[185] = horizon_level;
         out[186] = self.camera.position.y;
         out[187] = 0.0;
+        if let Some(sky) = &self.keyframed_sky {
+            for (offset, color) in [
+                (188, sky.east),
+                (192, sky.west),
+                (196, sky.transition),
+                (200, sky.zenith),
+                (204, sky.zenith_transition),
+            ] {
+                write_sky_vec4(&mut out, offset, color, 0.0);
+            }
+            out[208..212].copy_from_slice(&sky.zenith_params);
+            out[212..216].copy_from_slice(&[sky.azimuth_position, sky.hdr, 1.0, sky.lunar_phase]);
+            let g = -0.49 - sky.mie_phase.clamp(0.0, 1.0) * 0.5;
+            let g2 = g * g;
+            out[216..220].copy_from_slice(&[
+                2.0 * g,
+                1.0 + g2,
+                sky.mie_scatter.max(0.0) / 1000.0 * 1.5 * (1.0 - g2) / (2.0 + g2),
+                sky.mie_intensity.max(0.0),
+            ]);
+            write_sky_vec4(&mut out, 220, sky.sun_color, 0.0);
+            if let Some(clouds) = &sky.clouds {
+                out[187] = 1.0;
+                let base = 228 + 64 * 4;
+                for (index, value) in [
+                    clouds.generation, clouds.density, clouds.lighting,
+                    clouds.detail, clouds.small, clouds.small_color,
+                ].iter().enumerate() {
+                    out[base + index * 4..base + index * 4 + 4].copy_from_slice(value);
+                }
+                write_sky_vec4(&mut out, base + 24, clouds.base_color, 0.0);
+                write_sky_vec4(&mut out, base + 28, clouds.mid_color, 0.0);
+                write_sky_vec4(&mut out, base + 32, clouds.shadow_color, 0.0);
+            }
+        }
+        out[224..228].copy_from_slice(&[
+            self.camera.position.x,
+            self.camera.position.y,
+            self.camera.position.z,
+            1.0,
+        ]);
+        for (index, lane) in self
+            .scene_environment
+            .render
+            .uniform_block(0.0, false)
+            .lanes
+            .iter()
+            .enumerate()
+        {
+            let base = 228 + index * 4;
+            out[base..base + 4].copy_from_slice(lane);
+        }
         out
     }
 }

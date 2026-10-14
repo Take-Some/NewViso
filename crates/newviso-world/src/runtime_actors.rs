@@ -7,7 +7,9 @@ impl LivingWorldRuntime {
             .map(|actor| {
                 let travel = self.travel.get(&actor.desc.id);
                 let travel_target_position = travel.and_then(|travel| {
-                    if let Some(position) = travel.target_position { return Some(position); }
+                    if let Some(position) = travel.target_position {
+                        return Some(position);
+                    }
                     travel.route[travel.next_waypoint_index..]
                         .iter()
                         .filter_map(|waypoint| {

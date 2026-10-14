@@ -197,6 +197,30 @@ pub(super) fn light_direction(rotation_degrees: Vec3) -> Vec3 {
     )
     .normalized()
 }
+/// Exponential, framerate-independent shadow-camera tracking. Movement
+/// cannot move the shadow projection an entire world texel in one simulation
+/// update unless the player actually teleports. Jump discontinuities reset the
+/// filter, preventing delayed shadows after scene cuts or fast travel.
+pub(super) fn track_shadow_focus(previous: Option<Vec3>, camera: Vec3, dt: f32) -> Vec3 {
+    let Some(old) = previous else { return camera };
+    if !dt.is_finite() || dt <= 0.0 { return old; }
+    let movement = camera.sub(old);
+    if movement.dot(movement) > 24.0 * 24.0 { return camera; }
+    let factor = 1.0 - (-dt.min(0.25) / 0.12).exp();
+    old.add(movement.mul(factor))
+}
+
+/// Continuous C1 light-space texel interpolation. No full-texel jumps
+/// on cell crossings, and zero derivative on the integer boundaries.
+pub(super) fn continuous_shadow_texel(value: f32, texel_size: f32) -> f32 {
+    if !texel_size.is_finite() || texel_size <= 0.0 { return value; }
+    let scaled = value / texel_size;
+    let cell = scaled.floor();
+    let phase = scaled - cell;
+    let eased = phase * phase * (3.0 - 2.0 * phase);
+    (cell + eased) * texel_size
+}
+
 pub(super) fn directional_shadow_view_projection(
     direction: Vec3,
     focus_position: Vec3,
@@ -208,16 +232,14 @@ pub(super) fn directional_shadow_view_projection(
     let half_extent = distance * 0.55;
     let (right, up, forward) = view_basis(direction, Vec3::Y);
 
-    // Stabilize the orthographic shadow camera in light space. Without
-    // texel snapping, tiny camera movements shift the whole projection by a
-    // fraction of a shadow texel and the shadow visibly swims over static
-    // geometry.
+    // Light space follows continuously. Hard rounding caused a whole-texel
+    // jump at camera grid boundaries; subtexel easing preserves continuity.
     let world_units_per_texel = (half_extent * 2.0) / shadow_resolution.max(1) as f32;
     let light_x = focus_position.dot(right);
     let light_y = focus_position.dot(up);
     let light_z = focus_position.dot(forward);
-    let snapped_x = (light_x / world_units_per_texel).round() * world_units_per_texel;
-    let snapped_y = (light_y / world_units_per_texel).round() * world_units_per_texel;
+    let snapped_x = continuous_shadow_texel(light_x, world_units_per_texel);
+    let snapped_y = continuous_shadow_texel(light_y, world_units_per_texel);
     let snapped_center = right
         .mul(snapped_x)
         .add(up.mul(snapped_y))

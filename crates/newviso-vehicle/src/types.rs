@@ -866,6 +866,17 @@ pub struct WheelTelemetry {
     /// Dimensionless combined tyre slip. 1.0 is approximately the authored
     /// traction peak; values above one mean the contact patch is sliding.
     pub slip_intensity: f32,
+    /// Contact force components in the steered tyre frame, in newtons.
+    pub longitudinal_force: f32,
+    pub lateral_force: f32,
+    /// Fraction of peak friction capacity consumed by the combined contact force.
+    pub friction_utilization: f32,
+    /// True when applied brake torque retains zero wheel rotation.
+    pub wheel_locked: bool,
+    /// Contact patch scrub speed in metres/second, including lateral sliding.
+    pub sliding_speed_mps: f32,
+    /// Reference heat units above ambient, not degrees Celsius.
+    pub tire_temperature: f32,
     pub angular_velocity: f32,
     pub rotation_angle: f32,
     pub steer_angle: f32,

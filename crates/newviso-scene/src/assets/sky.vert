@@ -66,6 +66,16 @@ layout(set = 0, binding = 0, std140) uniform SkyFrame {
     vec4 cloud_layer_speeds;
     // x = dome scale, y = fixed horizon level, z = camera world height.
     vec4 dome_geometry;
+    vec4 key_east;
+    vec4 key_west;
+    vec4 key_transition;
+    vec4 key_zenith;
+    vec4 key_zenith_transition;
+    vec4 key_zenith_params;
+    // x = azimuth position, y = HDR scale, z = enabled, w = lunar phase.
+    vec4 key_misc;
+    vec4 key_mie;
+    vec4 key_sun_color;
 } sky;
 
 layout(location = 0) in vec3 in_position;

@@ -263,7 +263,7 @@ pub(super) fn resolve_project_capabilities(
             required: true,
         });
     }
-    let optional = project
+    let mut optional: Vec<CapabilityNeed> = project
         .manifest
         .capabilities
         .optional
@@ -273,12 +273,16 @@ pub(super) fn resolve_project_capabilities(
             min_version: request.min_version,
             provider: request.provider.clone(),
             required: false,
-        });
+        })
+        .collect();
+    if !safe_mode && !required.iter().any(|x| x.id == "audio.backend") && !optional.iter().any(|x| x.id == "audio.backend") {
+        optional.push(CapabilityNeed { id: "audio.backend".into(), min_version: 1, provider: None, required: false });
+    }
 
     resolve_capabilities(
         providers,
         required.iter().cloned().chain(
-            optional.filter(|need| !safe_mode && !required.iter().any(|base| base.id == need.id)),
+            optional.into_iter().filter(|need| !safe_mode && !required.iter().any(|base| base.id == need.id)),
         ),
     )
 }
@@ -624,6 +628,7 @@ pub(super) fn start_project_scripting(
         .iter()
         .map(|module| ScriptModuleSpec {
             asset: module.asset.clone(),
+            runtime_delta: module.runtime_delta,
             on_start: module.on_start.clone(),
             on_frame: module.on_frame.clone(),
             on_event: module.on_event.clone(),

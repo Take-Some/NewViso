@@ -212,6 +212,48 @@ impl PhysicsRuntime {
         Ok((true, Some(nav_source)))
     }
 
+    /// Heightfield topology and world placement are unchanged. Refit the
+    /// camera/query BVH and move the incoming buffers directly to the provider
+    /// snapshot, avoiding generic import transforms and unused nav-tile copies.
+    pub(crate) fn update_streamed_heightfield(
+        &mut self, entity:u64, vertices:Vec<[f32;3]>, triangles:Vec<[u32;3]>, surface_id:u32
+    )->Result<(),String> {
+        let compatible=self.streamed_colliders.get(&entity).is_some_and(|old|
+            old.position==[0.0;3] && old.rotation==[0.0,0.0,0.0,1.0] &&
+            matches!(&old.collider,PhysicsCollider::Mesh(mesh) if mesh.triangles==triangles)) &&
+            self.camera_collision_meshes.contains_key(&entity);
+        if !compatible {
+            let collider=MeshCollider {vertices,material_indices:vec![0;triangles.len()],triangles};
+            collider.validate()?;
+            let (min,max)=collider_bounds(&collider)?;
+            let resource=CollisionMeshResource {
+                id:newviso_resource_runtime::AssetId(entity|(1_u64<<61)),
+                name:format!("heightfield.scene.{entity}"),
+                bounds:newviso_collision::CollisionBounds{min,max},
+                material_indices:vec![surface_id;collider.triangles.len()],
+                vertices:collider.vertices,triangles:collider.triangles,
+            };
+            let prepared=Self::prepare_streamed_collision(entity,&resource,[0.0;3],[0.0;3],[1.0;3])?;
+            self.install_prepared_streamed_collision(prepared)?;
+            return Ok(());
+        }
+        let collider=MeshCollider {vertices,material_indices:vec![0;triangles.len()],triangles};
+        collider.validate()?;
+        let (bounds_min,bounds_max)=collider_bounds(&collider)?;
+        self.camera_collision_meshes.get_mut(&entity).unwrap().refit_vertices(&collider.vertices)?;
+        self.streamed_surface_ids.insert(entity,vec![surface_id;collider.triangles.len()]);
+        let snapshot=PhysicsFrameColliderSnapshot {
+            entity,collider:PhysicsCollider::Mesh(collider),
+            flags:PhysicsBodyFlags {is_trigger:false,participates_in_queries:true,
+                casts_contacts:true,continuous_collision:false},
+            material:self.settings.scene_material,position:[0.0;3],
+            rotation:[0.0,0.0,0.0,1.0],bounds_min,bounds_max,
+        };
+        self.streamed_colliders.insert(entity,snapshot.clone());
+        self.pending_streamed_colliders.insert(entity,snapshot);
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn install_streamed_collision(
         &mut self,

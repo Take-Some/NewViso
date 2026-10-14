@@ -8,6 +8,12 @@ impl EngineApplication {
         op: &str,
     ) -> Result<(), String> {
         match op {
+            "scene.entity.animation.preload" => {
+                let clips = animation_preload_requests(command, index)?;
+                let stable_id = self.resolve_script_scene_entity(command, index, op)?;
+                let planar_root_lock = command.get("planar_root_lock").and_then(Value::as_bool).unwrap_or(false);
+                self.queue_scene_animation_preloads(stable_id, clips, planar_root_lock);
+            }
             "scene.entity.main_view_meshes.set" => {
                 let id = command.get("id").and_then(Value::as_str).ok_or_else(|| {
                     format!("script command[{index}] main_view_meshes.set requires string 'id'")
@@ -183,6 +189,10 @@ impl EngineApplication {
                     stable_id,
                     SceneAnimationBinding {
                         clip_ref: clip_ref.to_owned(),
+                        planar_root_lock: command
+                            .get("planar_root_lock")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
                         playback_rate,
                         restart_if_same,
                         start_time_seconds,
@@ -332,5 +342,29 @@ impl EngineApplication {
             _ => return Err(unsupported_command(op, index)),
         }
         Ok(())
+    }
+}
+
+fn animation_preload_requests(command: &Value, index: usize) -> Result<Vec<String>, String> {
+    let clips = command.get("clip_refs").and_then(Value::as_array)
+        .ok_or_else(|| format!("script command[{index}] animation.preload requires clip_refs array"))?;
+    if clips.is_empty() || clips.len() > 32 {
+        return Err(format!("script command[{index}] animation.preload requires 1..32 clip references"));
+    }
+    clips.iter().map(|clip| clip.as_str().filter(|value| !value.trim().is_empty())
+        .map(str::to_owned).ok_or_else(|| format!("script command[{index}] animation.preload requires nonempty string clips"))).collect()
+}
+
+#[cfg(test)]
+mod preload_tests {
+    use super::*;
+    #[test]
+    fn malformed_or_unbounded_preloads_are_rejected_before_queueing() {
+        for value in [json!({}), json!({"clip_refs":[]}), json!({"clip_refs":[""]}),
+            json!({"clip_refs":[7]}), json!({"clip_refs":vec!["clip";33]})] {
+            assert!(animation_preload_requests(&value, 0).is_err());
+        }
+        assert_eq!(animation_preload_requests(&json!({"clip_refs":["walk","idle"]}), 0).unwrap(),
+            vec!["walk", "idle"]);
     }
 }

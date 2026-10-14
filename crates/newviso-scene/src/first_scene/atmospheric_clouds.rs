@@ -8,7 +8,7 @@ pub(super) const ATMOSPHERIC_CLOUD_FRAGMENT_SHADER: &[u8] =
 pub(super) const ATMOSPHERIC_CLOUD_VERTEX_FLOATS: usize = 16;
 pub(super) const ATMOSPHERIC_CLOUD_VERTEX_STRIDE: u64 =
     (ATMOSPHERIC_CLOUD_VERTEX_FLOATS * std::mem::size_of::<f32>()) as u64;
-pub(super) const ATMOSPHERIC_CLOUD_UNIFORM_FLOATS: usize = 204;
+pub(super) const ATMOSPHERIC_CLOUD_UNIFORM_FLOATS: usize = 204 + 64 * 4;
 pub(super) const ATMOSPHERIC_SOFT_DEPTH_UNIFORM_FLOATS: usize = 20;
 pub(super) const ATMOSPHERIC_DEPTH_VERTEX_SHADER: &[u8] =
     include_bytes!("../assets/atmospheric_depth.vert.spv");
@@ -534,7 +534,13 @@ impl Scene3dRuntime {
             return Vec::new();
         };
         let view_proj = camera_view_projection(&self.camera, aspect);
-        let (sun_direction, sun_intensity) = self.atmospheric_sun();
+        let (sun_direction, sun_intensity) = if self.cloudhat_keyframe.enabled {
+            // CloudHat light is a TC radiance, not the emissive sun-disc intensity.
+            (self.cloudhat_keyframe.light_direction
+                .unwrap_or_else(|| self.atmospheric_sun().0), 1.0)
+        } else {
+            self.atmospheric_sun()
+        };
         let camera_height = self.camera.position.y;
 
         resources
@@ -643,7 +649,12 @@ impl Scene3dRuntime {
                 };
 
                 out[76..80].copy_from_slice(&layer.desc.density_shift_scale);
-                out[80..84].copy_from_slice(&layer.desc.scatter);
+                let scatter = if self.cloudhat_keyframe.enabled {
+                    cloud_keyframe_scatter(self.cloudhat_keyframe.density_shift_scale_scattering)
+                } else {
+                    layer.desc.scatter
+                };
+                out[80..84].copy_from_slice(&scatter);
                 out[84..88].copy_from_slice(&layer.desc.piercing);
                 out[88..92].copy_from_slice(&layer.desc.scale_diffuse_fill_ambient);
                 out[92..96].copy_from_slice(&layer.desc.wrap_lighting);
@@ -762,6 +773,17 @@ impl Scene3dRuntime {
                 out[201] = 0.0;
                 out[202] = 0.0;
                 out[203] = 0.0;
+                for (index, lane) in self
+                    .scene_environment
+                    .render
+                    .uniform_block(0.0, false)
+                    .lanes
+                    .iter()
+                    .enumerate()
+                {
+                    let base = 204 + index * 4;
+                    out[base..base + 4].copy_from_slice(lane);
+                }
                 out
             })
             .collect()
@@ -1149,5 +1171,36 @@ mod tests {
         );
         assert!((runtime.transition_duration - 6.0).abs() < 1.0e-6);
         assert!((runtime.transition_delay - 2.0).abs() < 1.0e-6);
+    }
+}
+
+
+// CloudHatSettings + CloudHat::SetShaderVariables artist-to-render conversion.
+fn cloud_keyframe_scatter(density_shift_scale_g_scale: [f32; 4]) -> [f32; 4] {
+    let g = density_shift_scale_g_scale[2].clamp(-0.999999, 0.999999);
+    let g2 = g * g;
+    [g, g2, 1.5 * (1.0 - g2) / (2.0 + g2), density_shift_scale_g_scale[3] * 0.2]
+}
+
+#[cfg(test)]
+mod cloud_scattering_reference_tests {
+    use super::cloud_keyframe_scatter;
+
+    #[test]
+    fn cloud_keyframe_scattering_uses_artist_g_and_widget_rescale() {
+        // Independent hand calculation: g=.7 -> g^2=.49, phase coefficient=17/55.333...
+        let c = cloud_keyframe_scatter([0.1, 2.0, 0.7, 0.5]);
+        assert!((c[1] - 0.49).abs() < 1e-6);
+        assert!((c[2] - 0.30722892).abs() < 1e-6);
+        assert!((c[3] - 0.1).abs() < 1e-6);
+        // The sign belongs to the keyframe, not the mesh's -0.75 material default.
+        let phase = |cos: f32| c[2] * (1.0 + cos * cos)
+            / (1.0 + c[1] - 2.0 * c[0] * cos).powf(1.5);
+        assert!(phase(1.0) > phase(-1.0) * 100.0);
+        for g in [-1.0, 1.0] {
+            let c = cloud_keyframe_scatter([0.0, 1.0, g, 1.0]);
+            assert!(c.iter().all(|x| x.is_finite()));
+            assert!(c[0].abs() < 1.0 && c[2] >= 0.0);
+        }
     }
 }

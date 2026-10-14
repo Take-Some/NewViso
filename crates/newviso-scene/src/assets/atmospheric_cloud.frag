@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 layout(set = 0, binding = 0, std140) uniform AtmosphericCloudFrame {
     mat4 view_proj;
@@ -46,7 +47,11 @@ layout(set = 0, binding = 0, std140) uniform AtmosphericCloudFrame {
     vec4 key_piercing_light;
     vec4 key_scale_diffuse_fill_ambient_wrap;
     vec4 keyframe_meta;
+    vec4 environment_reference[64];
 } cloud;
+
+#define ENV_LANE(i) cloud.environment_reference[i]
+#include "environment.glsl"
 
 layout(set = 0, binding = 1) uniform texture2D t_density;
 layout(set = 0, binding = 2) uniform texture2D t_normal;
@@ -248,9 +253,13 @@ void main() {
     vec3 frame_tint = has_keyframe
         ? cloud.key_cloud_color.rgb
         : vec3(1.0);
-    // CloudScaleFillColors is a CPU-side CloudHat keyframe control rather
-    // than a CloudsPS cbuffer field. Preserve it in runtime state, but do not
-    // invent a shader-side global gain for it.
+    // CloudHat scales each fill color independently before CloudsPS lighting.
+    if (has_keyframe) {
+        frame_sky *= cloud.key_scale_fill_colors.x;
+        frame_bounce *= cloud.key_scale_fill_colors.y;
+        frame_east *= cloud.key_scale_fill_colors.z;
+        frame_west *= cloud.key_scale_fill_colors.w;
+    }
     vec3 N = tangent_to_world(normalize(normal_ts));
     vec3 L = normalize(cloud.sun_direction_intensity.xyz);
     vec3 V = normalize(cloud.camera_alpha.xyz - v_world_position);
@@ -262,8 +271,8 @@ void main() {
     vec3 hemi = clamp(
         vec3(
             N.x * 0.5 + 0.5,
-            N.z * -0.8 + 0.2,
-            N.z * 0.571429 + 0.428571
+            N.y * -0.8 + 0.2,
+            N.y * (1.0 / 1.75) + (0.75 / 1.75)
         ),
         0.0,
         1.0
@@ -299,9 +308,9 @@ void main() {
     );
     float phase = (1.0 + view_sun * view_sun)
         / pow(phase_denom, 1.5);
-    float scattering_const = has_keyframe ? frame_density.z : cloud.scatter.z;
-    float scattering_scale = has_keyframe ? frame_density.w : cloud.scatter.w;
-    phase *= scattering_const * scattering_scale;
+    // CPU supplies g, g^2, phase coefficient and rescaled strength from the
+    // current blended keyframe. Raw frame_density.z is artist g, not a gain.
+    phase *= cloud.scatter.z * cloud.scatter.w;
     vec3 scatter_light = sun_color * phase;
 
     float inverse_density = 1.0 - density;
@@ -403,11 +412,17 @@ void main() {
 
     color *= max(cloud.layer_color_density.rgb, vec3(0.0));
 
-    float shoulder = max(cloud.cloud_night.a, 0.0);
-    color = color / (vec3(1.0) + color * shoulder);
+    if (!environment_enabled()) {
+        float shoulder = max(cloud.cloud_night.a, 0.0);
+        color = color / (vec3(1.0) + color * shoulder);
+    }
 
     float camera_distance = length(v_world_position - cloud.camera_alpha.xyz);
 
+    if (environment_enabled()) {
+        vec4 fog=environment_fog(cloud.camera_alpha.xyz,v_world_position,0.0);
+        color=mix(color,fog.rgb,fog.a);
+    } else {
     // Match the opaque scene's distance haze and height fog so distant
     // CloudHat geometry belongs to the same atmosphere instead of floating in
     // front of the horizon.
@@ -450,6 +465,7 @@ void main() {
         fog
     );
 
+    }
     float soft_intersection = 1.0;
     if (cloud.soft_depth_params.w > 0.5) {
         vec2 viewport_extent = max(cloud.soft_depth_params.xy, vec2(1.0));

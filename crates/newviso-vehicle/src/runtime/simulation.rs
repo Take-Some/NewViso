@@ -323,6 +323,16 @@ pub(super) fn simulate_ground_vehicle(
         .count()
         .max(1) as f32;
 
+    let (handbrake_force_scale, handbrake_grip) =
+        if vehicle.definition.class == VehicleClass::Automobile {
+            vehicle
+                .event_state
+                .handbrake_age
+                .map_or((1.0, 1.0), tires::handbrake_response)
+        } else {
+            (1.0, 1.0)
+        };
+
     for index in 0..wheel_count {
         let config = &vehicle.definition.wheels[index];
         let rubber_remaining = vehicle
@@ -343,16 +353,66 @@ pub(super) fn simulate_ground_vehicle(
             .tire_condition
             .grip_multiplier_with_rubber(rubber_remaining);
 
+        let front_drive = handling.front_drive_weight();
+        let drive_bias = if config.front {
+            front_drive
+        } else {
+            1.0 - front_drive
+        };
+        let drive_divisor = if config.front {
+            driven_front
+        } else {
+            driven_rear
+        };
+        // CWheel::SetHandBrakeForce disconnects drive torque at the braked axle.
+        let drive_request = if config.driven && !(config.handbrake && vehicle.input.handbrake > 0.1)
+        {
+            // Keep explicitly-authored driven wheels useful even when the handling
+            // bias is exactly 0/1, while still preserving front/rear distribution.
+            let authored_floor = if drive_bias <= 0.001 { 0.0 } else { 0.05 };
+            total_drive_force * drive_bias.max(authored_floor) / drive_divisor
+        } else {
+            0.0
+        };
+
+        let brake_bias = if config.front {
+            handling.brake_bias_front
+        } else {
+            1.0 - handling.brake_bias_front
+        };
+        let brake_request =
+            handling.brake_force * handling.mass * gravity * vehicle.input.brake * brake_bias
+                / (wheel_count as f32 * 0.5).max(1.0);
+        let handbrake_request = if config.handbrake {
+            handling.handbrake_force * handbrake_force_scale * handling.mass * gravity * vehicle.input.handbrake
+                // Reference assigns handbrake force at each rear wheel. Preserve
+                // that two-wheel axle scale for explicitly authored multi-axle layouts.
+                * 2.0
+                / handbrake_wheels
+        } else {
+            0.0
+        };
+
+        let wheel_inertia = (0.5 * mass_per_wheel * 0.08 * radius * radius).max(0.05);
         let Some(contact) = state.contact else {
-            if config.driven {
-                state.angular_velocity +=
-                    total_drive_force.signum() * total_drive_force.abs() * 0.0007 * dt
-                        / radius.max(0.05);
-            }
-            state.angular_velocity *= (1.0 - dt * 0.15).max(0.0);
+            state.angular_velocity += drive_request * radius / wheel_inertia * dt;
+            state.angular_velocity = tires::brake_spin(
+                state.angular_velocity,
+                brake_request + handbrake_request,
+                radius,
+                wheel_inertia,
+                dt,
+            );
+            state.rotation_initialized |= state.angular_velocity.abs() > EPSILON;
+            state.angular_velocity *= (-dt * 0.15).exp();
             state.rotation_angle = wrap_angle(state.rotation_angle + state.angular_velocity * dt);
             state.telemetry.angular_velocity = state.angular_velocity;
             state.telemetry.rotation_angle = state.rotation_angle;
+            state.telemetry.longitudinal_force = 0.0;
+            state.telemetry.lateral_force = 0.0;
+            state.telemetry.friction_utilization = 0.0;
+            state.telemetry.wheel_locked = false;
+            state.telemetry.sliding_speed_mps = 0.0;
             continue;
         };
 
@@ -394,33 +454,24 @@ pub(super) fn simulate_ground_vehicle(
             [0.0, -1.0, 0.0],
         );
         let probe_origin = add(mount, mul(up, config.travel_up));
-        let point = add(probe_origin, mul(suspension_down, contact.distance));
+        // Reproject the previous support plane under the current suspension ray.
+        // Reusing the old query distance offsets tyre forces and marks after motion.
+        let denominator = dot(suspension_down, normal);
+        let distance = if denominator.abs() > 0.05 {
+            dot(sub(contact.position, probe_origin), normal) / denominator
+        } else {
+            contact.distance
+        };
+        let point = add(probe_origin, mul(suspension_down, distance.max(0.0)));
         let offset = sub(point, body.position);
         let point_velocity = add(body.linear_velocity, cross(body.angular_velocity, offset));
         let fwd_speed = dot(point_velocity, tyre_forward);
         let side_speed = dot(point_velocity, tyre_side);
 
-        if state.angular_velocity.abs() < 0.01 {
+        if !state.rotation_initialized {
             state.angular_velocity = fwd_speed / radius;
+            state.rotation_initialized = true;
         }
-        let wheel_linear = state.angular_velocity * radius;
-        // Use wheel and road speed in the denominator so launch and burnout
-        // slip stays finite around zero vehicle speed.
-        let reference_speed = fwd_speed.abs().max(wheel_linear.abs()).max(1.0);
-        let raw_long_slip = (wheel_linear - fwd_speed) / reference_speed;
-        let raw_lat_slip = (-side_speed).atan2(fwd_speed.abs().max(0.75));
-        let long_slip = relaxed_slip(
-            state.telemetry.longitudinal_slip,
-            raw_long_slip,
-            dt,
-            vehicle.speed_mps,
-        );
-        let lat_slip = relaxed_slip(
-            state.telemetry.lateral_slip_angle,
-            raw_lat_slip,
-            dt,
-            vehicle.speed_mps,
-        );
 
         let traction_bias = if config.front {
             handling.traction_bias_front * 2.0
@@ -429,135 +480,88 @@ pub(super) fn simulate_ground_vehicle(
         }
         .max(0.05);
 
-        let low_speed_loss = if handling.low_speed_traction_loss_mult > 0.0 {
-            let ratio = (vehicle.speed_mps / 8.0).clamp(0.0, 1.0);
-            (1.0 - (1.0 - ratio)
-                * handling.low_speed_traction_loss_mult.clamp(0.0, 1.0)
-                * vehicle.input.throttle.abs())
-            .max(0.2)
+        // Reference reduces launch grip only for a driven tyre at full throttle.
+        // Applying it to the front brakes also destroyed a rear-drive burnout.
+        let low_speed_loss = if handling.low_speed_traction_loss_mult > 0.0
+            && drive_request.abs() > EPSILON
+            && vehicle.input.throttle.abs() >= 0.95
+        {
+            let mult = handling.low_speed_traction_loss_mult;
+            let floor = (0.25 / mult).min(1.0);
+            let speed_term = floor + (0.08 / mult * fwd_speed.abs()).min(1.0 - floor);
+            let material_compensation =
+                1.0 + (1.0 - contact.grip_multiplier).max(0.0) * handling.traction_loss_mult * 5.0;
+            let pitch_compensation =
+                1.0 + forward[1].abs().clamp(0.0, 1.0).asin() / std::f32::consts::PI * 5.0;
+            (speed_term * material_compensation * pitch_compensation).clamp(0.01, 1.0)
         } else {
             1.0
         };
-        let traction_loss = (handling.traction_loss_mult * low_speed_loss).max(0.05);
-
-        let peak_lat = (handling.traction_curve_lateral_rad * 0.45).max(0.03);
-        let end_lat = handling.traction_curve_lateral_rad.max(peak_lat + 0.01);
+        // Source traction_loss_mult controls material loss. It is not a direct
+        // grip multiplier: increasing it must not increase dry-road friction.
+        let material_loss =
+            (1.0 + (contact.grip_multiplier - 1.0) * handling.traction_loss_mult).max(0.001);
+        let peak_lat = (handling.traction_curve_lateral_rad / 2.5).max(0.01);
         let load = normal_force[index];
-        // Loaded tyres gain force sub-linearly. Mild load sensitivity keeps the
-        // outside tyre dominant without making the inside tyre unrealistically sticky.
         let load_sensitivity = (static_load / load.max(static_load * 0.25))
             .powf(0.065)
             .clamp(0.82, 1.12);
-        let handbrake_lateral = if config.handbrake {
-            (1.0 - vehicle.input.handbrake * 0.58).clamp(0.36, 1.0)
-        } else {
-            1.0
-        };
-        let lateral_mu = traction_coefficient(
-            lat_slip,
-            peak_lat,
-            end_lat,
-            handling.traction_curve_max,
-            handling.traction_curve_min,
-        ) * traction_bias
-            * traction_loss
+        let grip = traction_bias
+            * handbrake_grip
+            * low_speed_loss
+            * material_loss
             * config.grip_multiplier
-            * contact.grip_multiplier
-            * tire_grip
-            * load_sensitivity
-            * handbrake_lateral;
-        let longitudinal_mu = traction_coefficient(
-            long_slip,
-            0.12,
-            0.42,
-            handling.traction_curve_max,
-            handling.traction_curve_min,
-        ) * traction_bias
-            * traction_loss
-            * config.grip_multiplier
-            * contact.grip_multiplier
             * tire_grip
             * load_sensitivity;
-
-        let front_drive = handling.front_drive_weight();
-        let drive_bias = if config.front {
-            front_drive
-        } else {
-            1.0 - front_drive
-        };
-        let drive_divisor = if config.front {
-            driven_front
-        } else {
-            driven_rear
-        };
-        let drive_request = if config.driven {
-            // Keep explicitly-authored driven wheels useful even when the handling
-            // bias is exactly 0/1, while still preserving front/rear distribution.
-            let authored_floor = if drive_bias <= 0.001 { 0.0 } else { 0.05 };
-            total_drive_force * drive_bias.max(authored_floor) / drive_divisor
-        } else {
-            0.0
-        };
-
-        let brake_bias = if config.front {
-            handling.brake_bias_front
-        } else {
-            1.0 - handling.brake_bias_front
-        };
-        let brake_request =
-            handling.brake_force * handling.mass * gravity * vehicle.input.brake * brake_bias
-                / (wheel_count as f32 * 0.5).max(1.0);
-        let handbrake_request = if config.handbrake {
-            handling.handbrake_force * handling.mass * gravity * vehicle.input.handbrake
-                / handbrake_wheels
-        } else {
-            0.0
-        };
-
-        // A brake dissipates motion; it must never accelerate through zero.
-        // The old low-speed dead zone let residual wheel spin push parked cars,
-        // and the explicit torque step could reverse a locked wheel each tick.
-        let braking = brake_request + handbrake_request;
-        let brake_force = (-fwd_speed * mass_per_wheel / dt).clamp(-braking, braking);
-        // Apply extra rolling drag at this wheel's contact patch. The off-centre
-        // impulse changes yaw naturally; cap it so it cannot reverse motion.
         let resistance = state
             .tire_condition
             .rolling_resistance_with_rubber(rubber_remaining)
-            * normal_force[index];
-        let rolling_drag = (-fwd_speed * mass_per_wheel / dt).clamp(-resistance, resistance);
-        let requested_long = drive_request + brake_force + rolling_drag;
-        let wheel_inertia = (0.5 * mass_per_wheel * 0.08 * radius * radius).max(0.05);
-        let slip_mass = 1.0 / (1.0 / mass_per_wheel + radius * radius / wheel_inertia);
-        let slip_limit = (wheel_linear - fwd_speed).abs() * slip_mass / dt;
-        let slip_force = if braking > EPSILON {
-            0.0
+            * load;
+        let response = tires::solve_contact(tires::TireContactInput {
+            angular_velocity: state.angular_velocity,
+            forward_speed: fwd_speed,
+            side_speed,
+            drive_force: drive_request,
+            brake_force: brake_request + handbrake_request + resistance,
+            radius,
+            wheel_inertia,
+            supported_mass: mass_per_wheel,
+            load,
+            grip,
+            lateral_peak: peak_lat * material_loss,
+            maximum: handling.traction_curve_max,
+            minimum: handling.traction_curve_min,
+            dt,
+        });
+        let long_force = response.longitudinal_force;
+        let side_force = response.lateral_force;
+        // Brake-held, powered wheelspin is the intentional burnout mode. A
+        // full-throttle launch or a lateral skid must not arm thermal punctures.
+        let drive_direction = drive_request.signum();
+        state.burnout_active = config.driven
+            && drive_request.abs() > EPSILON
+            && vehicle.input.brake > 0.1
+            && vehicle.speed_mps < 2.0
+            && load > EPSILON
+            && !response.locked
+            && response.rotational_slip_ratio * drive_direction > 2.0;
+        state.tyre_heat_slip_ratio = if state.burnout_active {
+            response.rotational_slip_ratio
         } else {
-            long_slip.signum() * (longitudinal_mu * load).min(slip_limit)
+            response.longitudinal_slip.clamp(-1.0, 1.0)
         };
-
-        let mut long_force = requested_long + slip_force;
-        // traction_coefficient already includes the build-up to the peak.
-        // Multiplying by slip again made the old response quadratic and caused
-        // delayed steering followed by snap breakaway.
-        let mut side_force = lat_slip.signum() * lateral_mu * load;
-        if side_force * side_speed > 0.0 {
-            side_force = -side_force;
-        }
-
-        let capacity = load
-            * handling.traction_curve_max
-            * traction_bias
-            * traction_loss
-            * config.grip_multiplier
-            * contact.grip_multiplier
-            * tire_grip;
-        let combined = (long_force * long_force + side_force * side_force).sqrt();
-        if combined > capacity && combined > EPSILON {
-            let scale = capacity / combined;
-            long_force *= scale;
-            side_force *= scale;
-        }
+        let long_slip = relaxed_slip(
+            state.telemetry.longitudinal_slip,
+            response.longitudinal_slip,
+            dt,
+            vehicle.speed_mps,
+        );
+        let lat_slip = relaxed_slip(
+            state.telemetry.lateral_slip_angle,
+            response.lateral_slip_angle,
+            dt,
+            vehicle.speed_mps,
+        );
 
         let force = add(
             mul(normal, load),
@@ -577,13 +581,7 @@ pub(super) fn simulate_ground_vehicle(
             point: add(point, mul(up, roll_centre.clamp(0.0, 1.0))),
         });
 
-        let reaction_torque = -long_force * radius;
-        let drive_torque = drive_request * radius;
-        let brake_torque = (brake_request + handbrake_request) * radius;
-        state.angular_velocity += (drive_torque + reaction_torque) / wheel_inertia * dt;
-        let spin = state.angular_velocity;
-        let brake_step = brake_torque / wheel_inertia * dt;
-        state.angular_velocity = spin.signum() * (spin.abs() - brake_step).max(0.0);
+        state.angular_velocity = response.angular_velocity;
         let max_spin = handling.max_gearing_velocity_mps * 2.0 / radius.max(0.05);
         state.angular_velocity = state.angular_velocity.clamp(-max_spin, max_spin);
         state.rotation_angle = wrap_angle(state.rotation_angle + state.angular_velocity * dt);
@@ -604,7 +602,14 @@ pub(super) fn simulate_ground_vehicle(
             normal_force: load,
             longitudinal_slip: long_slip,
             lateral_slip_angle: lat_slip,
-            slip_intensity: combined_slip_intensity(long_slip, lat_slip, peak_lat),
+            slip_intensity: combined_slip_intensity(long_slip, lat_slip, peak_lat)
+                .max(response.slip_intensity),
+            longitudinal_force: long_force,
+            lateral_force: side_force,
+            friction_utilization: response.friction_utilization,
+            wheel_locked: response.locked,
+            sliding_speed_mps: response.sliding_speed,
+            tire_temperature: vehicle.damage.wheels[index].tyre_temperature,
             angular_velocity: state.angular_velocity,
             rotation_angle: state.rotation_angle,
             steer_angle,

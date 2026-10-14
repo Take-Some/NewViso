@@ -104,7 +104,9 @@ pub(crate) struct WorldTravelRecord {
     pub(crate) distance_travelled: f64,
 }
 
-fn default_arrival_radius() -> f32 { 0.18 }
+fn default_arrival_radius() -> f32 {
+    0.18
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct WorldTravelCompletion {

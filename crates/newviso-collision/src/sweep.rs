@@ -38,6 +38,7 @@ pub struct SphereSweepHit {
 #[derive(Clone, Copy, Debug)]
 struct IndexedTriangle {
     vertices: [V; 3],
+    vertex_indices: [u32; 3],
     source_index: u32,
 }
 
@@ -68,6 +69,7 @@ impl SphereSweepMesh {
             }
             triangles.push(IndexedTriangle {
                 vertices: tri,
+                vertex_indices: *ids,
                 source_index: u32::try_from(source_index)
                     .map_err(|_| "sphere sweep mesh triangle index exceeds u32")?,
             });
@@ -80,6 +82,37 @@ impl SphereSweepMesh {
             mesh.build(0, mesh.triangles.len());
         }
         Ok(mesh)
+    }
+
+    /// Refit bounds and triangle positions for unchanged topology. This does
+    /// not re-sort leaves, allocate a tree or change source triangle identity.
+    pub fn refit_vertices(&mut self, vertices:&[V])->Result<(),String> {
+        if vertices.iter().flatten().any(|v|!v.is_finite()) ||
+            self.triangles.iter().any(|t|t.vertex_indices.iter().any(|i|*i as usize>=vertices.len())) {
+            return Err("invalid sphere sweep refit vertices".into());
+        }
+        for triangle in &mut self.triangles {
+            triangle.vertices=triangle.vertex_indices.map(|i|vertices[i as usize]);
+        }
+        // Build stores parents before children; reverse order visits the leaves
+        // first, so every internal bound can be reduced from its two children.
+        for index in (0..self.nodes.len()).rev() {
+            let (min,max)=if let Some((a,b))=self.nodes[index].children {
+                (std::array::from_fn(|k|self.nodes[a].min[k].min(self.nodes[b].min[k])),
+                 std::array::from_fn(|k|self.nodes[a].max[k].max(self.nodes[b].max[k])))
+            } else {
+                let node=&self.nodes[index];
+                let mut min=[f32::INFINITY;3];let mut max=[f32::NEG_INFINITY;3];
+                for t in &self.triangles[node.start..node.end] {
+                    for p in &t.vertices {for k in 0..3 {
+                        min[k]=min[k].min(p[k]);max[k]=max[k].max(p[k]);
+                    }}
+                }
+                (min,max)
+            };
+            self.nodes[index].min=min;self.nodes[index].max=max;
+        }
+        Ok(())
     }
 
     fn build(&mut self, start: usize, end: usize) -> usize {
@@ -493,6 +526,62 @@ mod tests {
             &[[0, 1, 2], [0, 2, 3]],
         )
         .unwrap()
+    }
+    #[test]
+    fn deformation_refit_matches_rebuilt_queries_and_preserves_triangle_ids() {
+        let n=17;
+        let mut vertices=Vec::new();let mut indices=Vec::new();
+        for z in 0..n {for x in 0..n {vertices.push([x as f32,0.0,z as f32]);}}
+        for z in 0..n-1 {for x in 0..n-1 {
+            let a=(z*n+x) as u32;let b=a+1;let c=a+n as u32;let d=c+1;
+            indices.extend([[a,b,c],[b,d,c]]);
+        }}
+        let mut refitted=SphereSweepMesh::new(&vertices,&indices).unwrap();
+        let node_count=refitted.nodes.len();
+        for p in &mut vertices {p[1]=(p[0]*0.31).sin()+(p[2]*0.17).cos();}
+        refitted.refit_vertices(&vertices).unwrap();
+        assert_eq!(refitted.nodes.len(),node_count);
+        let rebuilt=SphereSweepMesh::new(&vertices,&indices).unwrap();
+        for z in 1..15 {for x in 1..15 {
+            let origin=[x as f32+0.23,6.0,z as f32+0.37];
+            let delta=[0.0,-10.0,0.0];
+            let a=refitted.sweep_hit(origin,delta,0.2).unwrap();
+            let b=rebuilt.sweep_hit(origin,delta,0.2).unwrap();
+            assert!((a.fraction-b.fraction).abs()<1e-6);
+            for k in 0..3 {assert!((a.normal[k]-b.normal[k]).abs()<1e-5);}
+            let a=refitted.nearest_triangle(origin,8.0).unwrap();
+            let b=rebuilt.nearest_triangle(origin,8.0).unwrap();
+            assert!((a.distance-b.distance).abs()<1e-5);
+            assert_eq!(a.triangle_index,b.triangle_index);
+        }}
+    }
+    #[test]
+    fn invalid_refit_leaves_collision_queries_unchanged() {
+        let mut mesh=wall();
+        let before=mesh.sweep_hit([0.0,0.0,2.0],[0.0,0.0,-4.0],0.2);
+        assert!(mesh.refit_vertices(&[[0.0;3];2]).is_err());
+        let invalid=[[0.0;3],[1.0;3],[2.0;3],[f32::NAN,0.0,0.0]];
+        assert!(mesh.refit_vertices(&invalid).is_err());
+        assert_eq!(before,mesh.sweep_hit([0.0,0.0,2.0],[0.0,0.0,-4.0],0.2));
+    }
+    #[test]
+    #[ignore="CPU microbenchmark; invoke explicitly with --ignored --nocapture"]
+    fn benchmark_heightfield_bvh_refit() {
+        let n=33;
+        let vertices=(0..n*n).map(|i|[(i%n) as f32,(i as f32*0.03).sin(),(i/n) as f32]).collect::<Vec<_>>();
+        let mut indices=Vec::new();
+        for z in 0..n-1 {for x in 0..n-1 {
+            let a=(z*n+x) as u32;let b=a+1;let c=a+n as u32;indices.extend([[a,b,c],[b,c+1,c]]);
+        }}
+        let mut mesh=SphereSweepMesh::new(&vertices,&indices).unwrap();
+        let count=100;
+        let start=std::time::Instant::now();
+        for _ in 0..count {std::hint::black_box(SphereSweepMesh::new(&vertices,&indices).unwrap());}
+        let rebuild_ms=start.elapsed().as_secs_f64()*1000.0/count as f64;
+        let start=std::time::Instant::now();
+        for _ in 0..count {mesh.refit_vertices(&vertices).unwrap();std::hint::black_box(&mesh);}
+        let refit_ms=start.elapsed().as_secs_f64()*1000.0/count as f64;
+        eprintln!("heightfield 33x33: rebuild_ms={rebuild_ms:.6} refit_ms={refit_ms:.6} speedup={:.3}",rebuild_ms/refit_ms);
     }
     #[test]
     fn sweep_hit_reports_surface_normal() {

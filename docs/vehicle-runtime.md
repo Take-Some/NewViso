@@ -92,7 +92,7 @@ The live presentation pass currently drives:
 - glass/breakable visibility after damage;
 - head lights, brake lights, reverse lights, indicators/hazard and siren lights;
 - looping engine, tyre-skid and siren audio;
-- YPT exhaust and tyre particle effects at imported part pivots;
+- YPT exhaust effects at imported pivots and tyre particles at contact patches;
 - seat/occupant presentation attachment.
 
 Impact damage is projected from physics contact points into vehicle-local space
@@ -111,7 +111,10 @@ Per-wheel traction multiplies the tyre curve by the selected surface profile.
 The profile blends dry_grip toward wet_grip using accumulated scene wetness
 (and immediate authored rain), then toward snow_grip using active snow/snow
 mist. The resulting surface id, semantic class and grip multiplier are exposed
-in wheel telemetry.
+in wheel telemetry. Handling `traction_loss_mult` controls sensitivity to
+material grip loss; it does not directly multiply dry-road friction. Driven-wheel
+launch compensation and handbrake recovery are documented in
+[vehicle-contact-physics.md](vehicle-contact-physics.md).
 
 A project or Shared policy can configure the mapping without putting
 source-format material knowledge into engine.physics:
@@ -223,6 +226,12 @@ The script frame state and full runtime diagnostics contain:
           normal_force
           longitudinal_slip
           lateral_slip_angle
+          longitudinal_force
+          lateral_force
+          friction_utilization
+          wheel_locked
+          sliding_speed_mps
+          tire_temperature
           angular_velocity
           rotation_angle
           steer_angle
@@ -230,6 +239,10 @@ The script frame state and full runtime diagnostics contain:
 
 This state is intended for wheel-bone presentation, dashboards, audio,
 particles, debugging, ABS/traction-control layers and AI driving.
+`tire_temperature` is measured in reference heat units (0..59), not Celsius.
+Ordinary acceleration, braking and lateral skids do not cause automatic tyre
+punctures. Thermal damage requires an active, supported, brake-held burnout;
+actual wheel hits retain their damage transitions.
 
 ## Physics ownership
 
@@ -275,7 +288,8 @@ The presentation layer adds:
 
 Persistent vehicle audio currently uses the canonical audio voice API, which
 provides gain/pitch/loop control but no per-voice 3D position. Exhaust and tyre
-particles are spatial and use imported fragment pivots. Occupant attachment is
+particles are spatial. Exhaust uses imported pivots; tyre effects use the actual
+wheel contact positions. Occupant attachment is
 presentation ownership; higher-level enter/exit gameplay must coordinate an
 occupant's independent physics body.
 
@@ -300,3 +314,18 @@ The remaining fidelity boundaries are narrower:
 These layers can extend the stable newviso.vehicle.runtime.v1 and
 northstar.model.fragment.v1 contracts without coupling the engine to a source
 game's runtime types.
+
+## Reference logic and script events
+
+See [vehicle-reference-port.md](vehicle-reference-port.md) for the current
+reference mapping, 64 event topics, common damage routing, complete core repair,
+script API, verification results and remaining parity work.
+
+See [vehicle-specifications.md](vehicle-specifications.md) for native model
+capabilities, the Shared XML catalog, electric/fuel trailer semantics and
+powertrain/driveability telemetry. Short upserts preserve prior handling and
+specification unless the caller explicitly replaces them.
+
+See [vehicle-contact-physics.md](vehicle-contact-physics.md) for combined tyre
+contact, locked-wheel braking, handbrake/launch rules, thermal puncture and
+renderable persistent fragment handoff, including native road verification.

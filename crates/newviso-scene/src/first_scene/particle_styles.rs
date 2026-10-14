@@ -263,6 +263,18 @@ impl Scene3dRuntime {
         Ok(())
     }
 
+    pub(super) fn warmup_particle_textures_gpu(&mut self) -> Result<(), String> {
+        if self.gpu.is_none() { return Ok(()); }
+        let render = RenderClient::new();
+        for (reference, source) in &self.particle_textures {
+            if !self.particle_gpu_textures.contains_key(reference) {
+                let handle = upload_sky_texture(&render, &format!("newviso.particle.{}", source.name), source)?;
+                self.particle_gpu_textures.insert(reference.clone(), handle);
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn sync_particle_material_gpu(&mut self) -> Result<(), String> {
         let Some(gpu) = self.gpu else { return Ok(()) };
         let render = RenderClient::new();

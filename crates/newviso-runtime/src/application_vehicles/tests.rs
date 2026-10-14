@@ -64,6 +64,7 @@ fn legacy_combined_wheel_meshes_recover_separate_tyre_and_rim_geometry() {
             .collect::<Vec<_>>();
         newviso_model::MeshResource {
             name: name.to_owned(),
+            render_passes: Default::default(),
             vertex_streams: vec![newviso_model::VertexStream {
                 semantic: newviso_model::VertexSemantic::Position,
                 format: newviso_model::VertexFormat::Float32x3,
@@ -139,6 +140,9 @@ fn glass_inherits_parent_door_articulation() {
         door_motion: Some(VehicleDoorMotionState::default()),
         role: ModelFragmentPartRole::Door,
         parent_part_index: None,
+        physics: None,
+        wheel_release_motion: None,
+        wheel_release_condition: None,
         mesh_names: Vec::new(),
         pivot: [-0.85, 0.7, 0.15],
         wheel_slot: None,
@@ -172,6 +176,9 @@ fn rear_glass_inherits_boot_articulation_and_damage() {
         door_motion: Some(VehicleDoorMotionState::default()),
         role: ModelFragmentPartRole::Boot,
         parent_part_index: None,
+        physics: None,
+        wheel_release_motion: None,
+        wheel_release_condition: None,
         mesh_names: Vec::new(),
         pivot: [0.0, 0.75, 1.8],
         wheel_slot: None,

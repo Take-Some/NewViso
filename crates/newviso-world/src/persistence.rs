@@ -151,8 +151,12 @@ fn validate_world(w: &LivingWorldRuntime) -> Result<(), String> {
             .collect::<Vec<_>>();
         let actor_missing = !w.actors.contains_key(id);
         let direct = travel.target_position.is_some();
-        if travel.target_position.is_some_and(|p| p.iter().any(|n| !n.is_finite()))
-            || !travel.arrival_radius.is_finite() || !(0.01..=1000.0).contains(&travel.arrival_radius) {
+        if travel
+            .target_position
+            .is_some_and(|p| p.iter().any(|n| !n.is_finite()))
+            || !travel.arrival_radius.is_finite()
+            || !(0.01..=1000.0).contains(&travel.arrival_radius)
+        {
             return Err("invalid checkpoint coordinate travel".into());
         }
         let route_empty = !direct && travel.route.is_empty();

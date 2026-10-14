@@ -1,6 +1,9 @@
 use super::*;
 
 impl PhysicsRuntime {
+    pub(crate) fn fixed_clock(&self) -> (u64, f32) {
+        (self.fixed_tick, self.settings.fixed_dt())
+    }
     pub(crate) fn scene_activity_updates(&self) -> Vec<PhysicsBodyActivityUpdate> {
         self.last_output
             .activity_updates
@@ -50,9 +53,39 @@ impl PhysicsRuntime {
             .map(|body| body.convex_hulls.clone())
     }
 
+    pub(crate) fn body_local_bounds(&self, entity: u64) -> Option<([f32; 3], [f32; 3])> {
+        let body = self.bodies.get(&entity)?;
+        if body.convex_hulls.is_empty() {
+            return Some(shape_bounds(body.shape, [0.0; 3]));
+        }
+        let mut min = [f32::INFINITY; 3];
+        let mut max = [f32::NEG_INFINITY; 3];
+        for vertex in body.convex_hulls.iter().flatten() {
+            for i in 0..3 {
+                min[i] = min[i].min(vertex[i]);
+                max[i] = max[i].max(vertex[i]);
+            }
+        }
+        Some((min, max))
+    }
+
+    pub(crate) fn body_local_point(&self, entity: u64, point: [f32; 3]) -> Option<[f32; 3]> {
+        let body = self.bodies.get(&entity)?;
+        Some(inverse_rotate_camera_vector(
+            std::array::from_fn(|i| point[i] - body.position[i]),
+            body.rotation,
+        ))
+    }
+
     pub(crate) fn restore_body_collision_hulls(&mut self, entity: u64, hulls: Vec<Vec<[f32; 3]>>) {
         if let Some(body) = self.bodies.get_mut(&entity) {
             body.convex_hulls = hulls;
+            if let Some((original, live)) = self.body_hull_components.get_mut(&entity) {
+                if original.len() == body.convex_hulls.len() {
+                    *live = original.clone();
+                }
+            }
+            refresh_bounds(body);
         }
     }
 
@@ -96,6 +129,46 @@ impl PhysicsRuntime {
     }
 
     pub(crate) fn runtime_state(&self) -> Value {
+        self.state_with_events(&self.last_output.events, "fixed_steps")
+    }
+
+    pub(crate) fn script_frame_state(&self, native_particles: &BTreeSet<u64>) -> Value {
+        // Native particle simulation already consumes its fixed-step contacts.
+        // Scripts receive lifecycle edges and interactions with gameplay bodies,
+        // but do not need every continuing shard/terrain or shard/shard manifold.
+        let sampled = self
+            .last_output
+            .events
+            .iter()
+            .copied()
+            .filter(|event| {
+                let PhysicsEvent::ContactPersist(contact) = event else {
+                    return true;
+                };
+                if self.damage_sources.contains_key(&contact.a)
+                    || self.damage_sources.contains_key(&contact.b)
+                {
+                    return true;
+                }
+                let incidental = |particle, other| {
+                    native_particles.contains(&particle)
+                        && (native_particles.contains(&other)
+                            || self
+                                .bodies
+                                .get(&other)
+                                .is_none_or(|body| body.kind == PhysicsBodyKind::Static))
+                };
+                !incidental(contact.a, contact.b) && !incidental(contact.b, contact.a)
+            })
+            .collect::<Vec<_>>();
+        let events = super::frame_events::compact_frame_events(&sampled);
+        let mut state = self.state_with_events(&events, "frame_peaks");
+        state["particle_persist_sampling"] = json!("gameplay_pairs");
+        state["particle_persist_suppressed"] = json!(self.last_output.events.len() - sampled.len());
+        state
+    }
+
+    fn state_with_events(&self, contact_events: &[PhysicsEvent], contact_sampling: &str) -> Value {
         // Physics remains authoritative on a fixed timestep, while presentation
         // is sampled at the platform frame rate. Predict only across the residual
         // accumulator so high-refresh rendering does not repeat fixed snapshots.
@@ -121,6 +194,7 @@ impl PhysicsRuntime {
                 };
                 json!({
                     "entity": body.entity,
+                    "entity_key": body.entity.to_string(),
                     "kind": match body.kind {
                         PhysicsBodyKind::Static => "static",
                         PhysicsBodyKind::Dynamic => "dynamic",
@@ -131,17 +205,32 @@ impl PhysicsRuntime {
                     "rotation": body.rotation,
                     "linear_velocity": body.linear_velocity,
                     "angular_velocity": body.angular_velocity,
+                    "bounds_min": body.bounds_min,
+                    "bounds_max": body.bounds_max,
+                    "mass_properties":body.mass_properties,
+                    "convex_hull_count":body.convex_hulls.len(),
+                    "participates_in_queries":body.flags.participates_in_queries,
+                    "casts_contacts":body.flags.casts_contacts,
                 })
             })
             .collect::<Vec<_>>();
 
         let damage_contacts = self
-            .damage_contacts()
+            .damage_contacts_from_events(contact_events)
             .into_iter()
+            // Collision impulses are already represented by events in script
+            // frames. Full diagnostics keep the complete derived contact list.
+            .filter(|contact| {
+                contact_sampling == "fixed_steps"
+                    || contact.direct_damage > 0.0
+                    || contact.damage_kind != PhysicsDamageKind::Collision
+            })
             .map(|contact| {
                 json!({
                     "source": contact.source,
                     "target": contact.target,
+                    "source_key": contact.source.to_string(),
+                    "target_key": contact.target.to_string(),
                     "damage_kind": contact.damage_kind.as_str(),
                     "direct_damage": contact.direct_damage,
                     "contact_impulse": contact.contact_impulse,
@@ -157,12 +246,33 @@ impl PhysicsRuntime {
                 json!({
                     "source": impact.source,
                     "target": impact.target,
+                    "source_key": impact.source.to_string(),
+                    "target_key": impact.target.to_string(),
                     "point": impact.point,
                     "normal": impact.normal,
                     "distance": impact.distance,
                     "surface_entity": impact.surface_entity,
                     "surface_id": impact.surface_id,
                 })
+            })
+            .collect::<Vec<_>>();
+
+        let events = contact_events
+            .iter()
+            .map(|event| {
+                let mut value = serde_json::to_value(event).expect("physics event must serialize");
+                if let PhysicsEvent::ContactBegin(contact) | PhysicsEvent::ContactPersist(contact) =
+                    event
+                {
+                    let key = if matches!(event, PhysicsEvent::ContactBegin(_)) {
+                        "ContactBegin"
+                    } else {
+                        "ContactPersist"
+                    };
+                    value[key]["a_key"] = json!(contact.a.to_string());
+                    value[key]["b_key"] = json!(contact.b.to_string());
+                }
+                value
             })
             .collect::<Vec<_>>();
 
@@ -183,7 +293,13 @@ impl PhysicsRuntime {
                 .count(),
             "pending_streamed_mesh_colliders": self.pending_streamed_colliders.len(),
             "bodies": bodies,
-            "events": self.last_output.events,
+            "collision_pair_filtering":self.supports_collision_filters,
+            "disabled_collision_pairs":self.separation_pairs.iter().map(|[a,b]|[a.to_string(),b.to_string()]).collect::<Vec<_>>(),
+            "collision_components":self.body_hull_components.iter().map(|(id,(_,ids))|json!({"entity_key":id.to_string(),"components":ids})).collect::<Vec<_>>(),
+            "events": events,
+            "contact_sampling": contact_sampling,
+            "damage_contact_sampling": if contact_sampling == "fixed_steps" { "all_contacts" } else { "direct_sources" },
+            "fixed_step_event_count": self.last_output.events.len(),
             "damage_contacts": damage_contacts,
             "ballistic_impacts": ballistic_impacts,
             "report": self.last_output.report,

@@ -127,7 +127,8 @@ pub(super) fn append_surface_mark_vertices(
         normal.y * tangent.z - normal.z * tangent.y,
         normal.z * tangent.x - normal.x * tangent.z,
         normal.x * tangent.y - normal.y * tangent.x,
-    ).normalized();
+    )
+    .normalized();
     let center = Vec3::new(
         position.x + normal.x * 0.0025,
         position.y + normal.y * 0.0025,
@@ -204,7 +205,7 @@ pub(super) fn instance_model_matrix(
     ]
 }
 
-fn append_world_vertex(out: &mut Vec<f32>, position: Vec3, normal: Vec3, color: [f32; 4]) {
+pub(super) fn append_world_vertex(out: &mut Vec<f32>, position: Vec3, normal: Vec3, color: [f32; 4]) {
     append_world_vertex_uv_tangent(
         out,
         position,

@@ -12,12 +12,13 @@ impl EngineApplication {
                 .map(|actor| {
                     let enabled = actor.enabled && !self.peds.is_dead(&actor.id);
                     AgentActorView {
-                    id: actor.id,
-                    position: actor.position,
-                    enabled,
-                    simulation_tier: actor.simulation_tier.to_owned(),
-                    travel_destination: actor.travel_destination,
-                }})
+                        id: actor.id,
+                        position: actor.position,
+                        enabled,
+                        simulation_tier: actor.simulation_tier.to_owned(),
+                        travel_destination: actor.travel_destination,
+                    }
+                })
                 .collect(),
             stimuli: self
                 .living_world
@@ -40,17 +41,27 @@ impl EngineApplication {
         self.peds.tick(&snapshot, &mut self.agents)?;
         let commands = self.agents.tick(dt, &snapshot);
         for command in commands {
-            if let AgentCommand::Attack { actor_id, target_actor, damage, range } = command {
+            if let AgentCommand::Attack {
+                actor_id,
+                target_actor,
+                damage,
+                range,
+            } = command
+            {
                 self.ped_attack(&actor_id, &target_actor, damage, range)?;
             } else {
                 let actor_id = match &command {
-                    AgentCommand::StartTravel { actor_id, .. } | AgentCommand::CancelTravel { actor_id }
+                    AgentCommand::StartTravel { actor_id, .. }
+                    | AgentCommand::CancelTravel { actor_id }
                     | AgentCommand::MoveToPosition { actor_id, .. } => actor_id.clone(),
                     AgentCommand::Attack { .. } => unreachable!(),
                 };
-                if let Err(error) = apply_agent_commands(&mut self.living_world, vec![command]) {
+                if let Err(error) = apply_agent_command(&mut self.living_world, command) {
                     self.agents.fail_active(&actor_id);
-                    host::warn("newviso.agents", format!("actor '{actor_id}' task failed: {error}"));
+                    host::warn(
+                        "newviso.agents",
+                        format!("actor '{actor_id}' task failed: {error}"),
+                    );
                 }
             }
         }
@@ -58,7 +69,10 @@ impl EngineApplication {
             host::publish_event_json("agent.task.lifecycle", "newviso.agents", event.clone())?;
         }
         for event in self.peds.drain_events() {
-            let kind = event.get("kind").and_then(Value::as_str).unwrap_or("ped.event");
+            let kind = event
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or("ped.event");
             host::publish_event_json(kind, "newviso.peds", event.clone())?;
         }
         Ok(())
@@ -70,6 +84,14 @@ pub(super) fn apply_agent_commands(
     commands: Vec<AgentCommand>,
 ) -> Result<(), String> {
     for command in commands {
+        apply_agent_command(world, command)?;
+    }
+    Ok(())
+}
+
+// Single-command path avoids allocating a one-element Vec for every AI task.
+// The batch API delegates to the same implementation to preserve semantics.
+fn apply_agent_command(world: &mut LivingWorldRuntime, command: AgentCommand) -> Result<(), String> {
         match command {
             AgentCommand::StartTravel {
                 actor_id,
@@ -88,15 +110,26 @@ pub(super) fn apply_agent_commands(
                     payload,
                 })?;
             }
-            AgentCommand::MoveToPosition { actor_id, request_id, position, speed, stop_distance } => {
-                world.start_travel_to_position(&actor_id, &request_id, position, speed, stop_distance)?;
+            AgentCommand::MoveToPosition {
+                actor_id,
+                request_id,
+                position,
+                speed,
+                stop_distance,
+            } => {
+                world.start_travel_to_position(
+                    &actor_id,
+                    &request_id,
+                    position,
+                    speed,
+                    stop_distance,
+                )?;
             }
             AgentCommand::Attack { .. } => {}
             AgentCommand::CancelTravel { actor_id } => {
                 world.cancel_travel(&actor_id);
             }
         }
-    }
     Ok(())
 }
 

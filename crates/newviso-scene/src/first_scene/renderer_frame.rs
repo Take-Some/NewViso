@@ -1,5 +1,10 @@
 use super::*;
 
+fn all_frame_perf_logging_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("NEWVISO_PERF_LOG_EVERY_FRAME").as_deref() == Ok("1"))
+}
+
 impl Scene3dRuntime {
     pub fn update_native_input_from_snapshot(
         &mut self,
@@ -23,6 +28,15 @@ impl Scene3dRuntime {
         // SceneWorld owns process cadence. Advance it before process consumers
         // (animation, scripting, movers) inspect the current frame's tickets.
         self.update_scene_world(dt)?;
+        self.update_water_tuning();
+        if !self.water_simulation.driven_by_physics {
+            self.water_simulation.advance(dt);
+        }
+        let eye = self.camera.position;
+        self.water_simulation.update_camera([eye.x, eye.y, eye.z]);
+        self.shadow_focus = Some(track_shadow_focus(
+            self.shadow_focus, self.camera.position, dt,
+        ));
 
         if dt.is_finite() && dt > 0.0 {
             let cycle_delta_seconds = dt * self.sky_time_scale;
@@ -88,13 +102,33 @@ impl Scene3dRuntime {
             fov_y_radians: self.camera.fov_y_degrees.to_radians(),
             aspect,
         };
+        let reflected_plan = if self.water_simulation.enabled && !self.water_render_slots.is_empty() {
+            let reflected = renderer_water::reflect_camera(self.camera.clone(),self.water_simulation.surface.level);
+            let reflected_view = SceneView {position:reflected.position,
+                forward:reflected.target.sub(reflected.position).normalized(),up:reflected.up,
+                near:reflected.near,far:reflected.far,fov_y_radians:reflected.fov_y_degrees.to_radians(),aspect};
+            let candidates=self.world.visibility_candidates(reflected_view);
+            Some(self.world.scan_visibility_candidates(reflected_view,candidates))
+        }else{None};
         let mut visibility_candidates = self.world.visibility_candidates(view);
         if let Some(graph) = self.portal_visibility.as_mut() {
             graph.filter_candidates(&self.camera, aspect, &mut visibility_candidates);
         }
-        self.frame_plan = self
-            .world
-            .scan_visibility_candidates(view, visibility_candidates);
+        self.frame_plan = self.world.scan_visibility_candidates(view,visibility_candidates);
+        if let Some(plan)=reflected_plan {
+            self.frame_plan.visible_entities.extend(plan.visible_entities);
+            self.frame_plan.visible_entities.sort_unstable();self.frame_plan.visible_entities.dedup();
+            self.frame_plan.visible_render_slots.extend(plan.visible_render_slots);
+            self.frame_plan.requested_entities.extend(plan.requested_entities);
+            self.frame_plan.requested_entities.sort_unstable();self.frame_plan.requested_entities.dedup();
+            self.frame_plan.streaming_entities.extend(plan.streaming_entities);
+            self.frame_plan.streaming_entities.sort_unstable();self.frame_plan.streaming_entities.dedup();
+        }
+        if self.water_simulation.enabled {
+            self.frame_plan.visible_render_slots.extend(self.water_render_slots.iter().copied());
+        }
+        self.frame_plan.visible_render_slots.sort_unstable();self.frame_plan.visible_render_slots.dedup();
+        self.frame_plan.visible_count=self.frame_plan.visible_entities.len();
         aspect
     }
 
@@ -106,7 +140,9 @@ impl Scene3dRuntime {
             return Err("3D scene GPU resources are not initialized".to_owned());
         }
         self.sync_static_asset_gpu()?;
+        self.warmup_gpu_skinning_models()?;
         self.sync_startup_asset_material_gpu()?;
+        self.warmup_particle_textures_gpu()?;
         let required_vertices = self.vertex_count();
         let required_shadow_vertices = self.shadow_vertex_count();
         self.ensure_geometry_buffer_capacity(required_vertices, required_shadow_vertices)
@@ -207,14 +243,19 @@ impl Scene3dRuntime {
         let perf_material_sync_ms = render_perf_mark.elapsed().as_secs_f64() * 1000.0;
         let perf_gpu_sync_ms = perf_geometry_sync_ms + perf_material_sync_ms;
         render_perf_mark = std::time::Instant::now();
+        self.prepare_indexed_terrain()?;
         let required_vertices = self.vertex_count();
         let required_shadow_vertices = self.shadow_vertex_count();
         self.ensure_geometry_buffer_capacity(required_vertices, required_shadow_vertices)?;
         let mut gpu = self
             .gpu
             .ok_or_else(|| "3D scene GPU resources disappeared".to_owned())?;
-        let vertex_data = self.build_cube_vertices(aspect);
-        let shadow_vertex_data = self.build_shadow_vertices();
+        let vertex_data = self.cached_primitive_main_blocks(aspect);
+        let shadow_vertex_data = self.cached_primitive_shadow_blocks();
+        debug_assert_eq!(vertex_data.iter().map(|block| block.len()).sum::<usize>(),
+            required_vertices as usize*FLOATS_PER_VERTEX);
+        debug_assert_eq!(shadow_vertex_data.iter().map(|block| block.len()).sum::<usize>(),
+            required_shadow_vertices as usize*FLOATS_PER_VERTEX);
         let flare_vertex_data = self.build_lens_flare_vertices(aspect);
         let flare_vertex_count =
             u32::try_from(flare_vertex_data.len() / FLARE_FLOATS_PER_VERTEX).unwrap_or(0);
@@ -229,9 +270,13 @@ impl Scene3dRuntime {
         self.sync_mass_instance_gpu(&render, aspect)?;
         self.sync_atmospheric_cloud_gpu_residency(&render)?;
         self.ensure_volumetric_cloud_targets(&render, width, height)?;
+        self.ensure_water_targets(&render, width, height)?;
 
+        let perf_pre_acquire_ms = render_perf_mark.elapsed().as_secs_f64() * 1000.0;
+        let acquire_mark = std::time::Instant::now();
         let frame_index = self.frame_index;
         let frame_state = render.begin_frame_acquire(self.clear_color, frame_index)?;
+        let perf_acquire_ms = acquire_mark.elapsed().as_secs_f64() * 1000.0;
         if frame_state.frames_in_flight != SCENE_FRAME_SLOTS {
             if frame_state.active {
                 render.abort_frame();
@@ -271,22 +316,21 @@ impl Scene3dRuntime {
         let renderer_local_lights = self.renderer_local_lights();
         render.set_frame_lighting(renderer_lighting)?;
         render.set_frame_lights(&renderer_local_lights)?;
+        let skin_mark = std::time::Instant::now();
         gpu = self.sync_skinned_vertex_gpu(&render, frame_slot)?;
+        let perf_skin_upload_ms = skin_mark.elapsed().as_secs_f64() * 1000.0;
         self.sync_gpu_instance_table(&render, gpu, frame_slot)?;
 
         let perf_residency_sync_ms = render_perf_mark.elapsed().as_secs_f64() * 1000.0;
         render_perf_mark = std::time::Instant::now();
 
-        if !vertex_data.is_empty() {
-            render.write_buffer_f32(gpu.vertex_buffers[frame_slot], 0, &vertex_data)?;
-        }
-        if !shadow_vertex_data.is_empty() {
-            render.write_buffer_f32(
-                gpu.shadow_vertex_buffers[frame_slot],
-                0,
-                &shadow_vertex_data,
-            )?;
-        }
+        let terrain_upload_bytes=self.sync_indexed_terrain(&render,frame_slot)?;
+        let perf_primitive_upload_bytes = terrain_upload_bytes as usize + self.geometry_upload.sync_blocks(
+            &render, frame_slot, gpu.vertex_buffers[frame_slot], &vertex_data,
+        )? + self.shadow_geometry_upload.sync_blocks(
+            &render, frame_slot, gpu.shadow_vertex_buffers[frame_slot], &shadow_vertex_data,
+        )?;
+        let perf_primitive_upload_ms = render_perf_mark.elapsed().as_secs_f64() * 1000.0;
         if flare_vertex_count > 0 {
             render.write_buffer_f32(gpu.flare_vertex_buffers[frame_slot], 0, &flare_vertex_data)?;
         }
@@ -299,6 +343,9 @@ impl Scene3dRuntime {
         }
         render.write_buffer_f32(gpu.frame_uniforms[frame_slot], 0, &frame_uniform)?;
         self.upload_weather_uniforms(&render, frame_slot, aspect)?;
+        let water_upload_mark = std::time::Instant::now();
+        self.upload_water_uniforms(&render, frame_slot, aspect)?;
+        let perf_water_upload_ms = water_upload_mark.elapsed().as_secs_f64() * 1000.0;
         if let Some(gpu_sky) = self.gpu_sky {
             let sky_frame = self.sky_frame_uniform(width as f32 / height as f32);
             render.write_buffer_f32(gpu_sky.camera_uniforms[frame_slot], 0, &sky_frame)?;
@@ -348,8 +395,8 @@ impl Scene3dRuntime {
             .last_render_camera
             .as_ref()
             .is_some_and(|previous| previous_hiz_camera_compatible(previous, &self.camera));
-        self.render_frame_inner(
-            &render,
+        render.record_ordered_commands(|record| self.render_frame_inner(
+            record,
             gpu,
             width,
             height,
@@ -360,16 +407,21 @@ impl Scene3dRuntime {
             &particle_batches,
             previous_hiz_camera_compatible,
             overlay,
-        )?;
+        ))?;
         recording.finish();
+        if all_frame_perf_logging_enabled() && frame_index % 60 == 0 {
+            if let Ok(inspector) = render.renderer_inspector() {
+                host_runtime::info("newviso.perf.gpu", inspector.to_string());
+            }
+        }
 
         let perf_inner_ms = render_perf_mark.elapsed().as_secs_f64() * 1000.0;
         let perf_total_ms = render_perf_start.elapsed().as_secs_f64() * 1000.0;
-        if perf_total_ms >= 25.0 || frame_index % 60 == 0 {
+        if perf_total_ms >= 25.0 || frame_index % 60 == 0 || all_frame_perf_logging_enabled() {
             host_runtime::info(
                 "newviso.perf.render",
                 format!(
-                    "frame={} total_ms={:.2} visibility_ms={:.2} gpu_sync_ms={:.2} geometry_sync_ms={:.2} material_sync_ms={:.2} geometry_ms={:.2} residency_sync_ms={:.2} uploads_ms={:.2} inner_ms={:.2} visible={} resident={} spatial_candidates={} instance_batches={} instances={} hiz_draws={} opaque_groups={} direct_opaque={} alpha_draws={} mass_draws={} mass_instances={} mass_chunks={} graph_passes={} graph_skipped={} graph_cpu_ms={:.3}",
+                    "frame={} total_ms={:.2} visibility_ms={:.2} gpu_sync_ms={:.2} geometry_sync_ms={:.2} material_sync_ms={:.2} geometry_ms={:.2} residency_sync_ms={:.2} pre_acquire_ms={:.2} acquire_ms={:.2} skin_upload_ms={:.2} primitive_upload_ms={:.2} primitive_upload_bytes={} water_upload_ms={:.2} uploads_ms={:.2} inner_ms={:.2} visible={} resident={} spatial_candidates={} instance_batches={} instances={} hiz_draws={} opaque_groups={} direct_opaque={} alpha_draws={} mass_draws={} mass_instances={} mass_chunks={} terrain_patches={} terrain_vertices={} terrain_indices={} graph_passes={} graph_skipped={} graph_cpu_ms={:.3}",
                     frame_index,
                     perf_total_ms,
                     perf_visibility_ms,
@@ -378,6 +430,12 @@ impl Scene3dRuntime {
                     perf_material_sync_ms,
                     perf_geometry_ms,
                     perf_residency_sync_ms,
+                    perf_pre_acquire_ms,
+                    perf_acquire_ms,
+                    perf_skin_upload_ms,
+                    perf_primitive_upload_ms,
+                    perf_primitive_upload_bytes,
+                    perf_water_upload_ms,
                     perf_uploads_ms,
                     perf_inner_ms,
                     self.frame_plan.visible_count,
@@ -392,6 +450,9 @@ impl Scene3dRuntime {
                     self.last_submission_stats.mass_draws,
                     self.last_submission_stats.mass_instances,
                     self.mass_instance_chunk_count(),
+                    self.indexed_terrain.stats()[0],
+                    self.indexed_terrain.stats()[1],
+                    self.indexed_terrain.stats()[2],
                     self.last_submission_stats.graph_executed_passes,
                     self.last_submission_stats.graph_skipped_passes,
                     self.last_submission_stats.graph_cpu_record_ms

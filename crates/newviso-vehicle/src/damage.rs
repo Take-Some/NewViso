@@ -19,6 +19,7 @@ pub const PETROL_TANK_FINISHED: f32 = -1000.0;
 pub const TYRE_HEALTH_MAX: f32 = 1000.0;
 pub const TYRE_HEALTH_FLAT: f32 = 350.0;
 pub const TYRE_HEALTH_FLAT_ADD: f32 = 0.0001;
+pub const TYRE_HEAT_BURST_THRESHOLD: f32 = 59.0;
 pub const SUSPENSION_HEALTH_MAX: f32 = 1000.0;
 pub const SUSPENSION_HEALTH_LIMIT_1: f32 = 500.0;
 pub const SUSPENSION_HEALTH_SPRING_MULT_1: f32 = 0.7;
@@ -124,6 +125,9 @@ pub struct WheelDamageState {
     pub suspension_health: f32,
     pub friction_damage: f32,
     pub burst_check_timer: f32,
+    /// Reference heat units above ambient, not degrees Celsius.
+    #[serde(default)]
+    pub tyre_temperature: f32,
     /// 1.0 = full tyre carcass around the rim; 0.0 = bare rim. Kept separate
     /// from pressure/health so a punctured tyre can remain visibly present.
     #[serde(default = "default_tyre_rubber_remaining")]
@@ -142,6 +146,7 @@ impl Default for WheelDamageState {
             suspension_health: SUSPENSION_HEALTH_MAX,
             friction_damage: 0.0,
             burst_check_timer: 0.0,
+            tyre_temperature: 0.0,
             tyre_rubber_remaining: 1.0,
             tyre_condition: TireCondition::Intact,
         }
@@ -930,6 +935,34 @@ pub fn process_damage_frame_sampled(
     )
 }
 
+/// Heat is telemetry until the contact solver confirms an active burnout.
+/// Persisted temperature alone cannot damage a parked or ordinarily driven tyre.
+pub(crate) fn apply_tyre_heat_damage(
+    wheel: &mut WheelDamageState,
+    specification: &VehicleSpecification,
+    index: usize,
+    burnout_active: bool,
+) -> Option<VehicleDamageSignal> {
+    let features = &specification.damage;
+    if !burnout_active
+        || !features.tyres_can_burst
+        || features.indestructible
+        || wheel.tyre_condition != TireCondition::Intact
+        || !wheel.tyre_temperature.is_finite()
+        || wheel.tyre_temperature < TYRE_HEAT_BURST_THRESHOLD
+    {
+        return None;
+    }
+    wheel.tyre_condition = TireCondition::Punctured;
+    wheel.tyre_health = TYRE_HEALTH_FLAT + TYRE_HEALTH_FLAT_ADD;
+    wheel.tyre_rubber_remaining = 1.0;
+    Some(VehicleDamageSignal::wheel(
+        VehicleEventKind::TyrePunctured,
+        index,
+        wheel.tyre_temperature,
+    ))
+}
+
 pub fn process_damage_frame_with_specification(
     state: &mut VehicleDamageState,
     class: VehicleClass,
@@ -986,9 +1019,7 @@ pub fn process_damage_frame_with_specification(
             let distance = speed * dt;
             let speed_factor = (0.8 + speed / 40.0).clamp(0.8, 2.25);
             let friction_factor = (1.0 + wheel.friction_damage * 1.5).clamp(1.0, 3.5);
-            let wear = distance / TYRE_FLAT_RUBBER_WEAR_DISTANCE_M
-                * speed_factor
-                * friction_factor;
+            let wear = distance / TYRE_FLAT_RUBBER_WEAR_DISTANCE_M * speed_factor * friction_factor;
             wheel.tyre_rubber_remaining = (wheel.tyre_rubber_remaining - wear).max(0.0);
             wheel.burst_check_timer = 0.0;
 
@@ -1787,5 +1818,98 @@ mod glass_damage_tests {
             None
         );
         assert_eq!(glass.damage, 0.0);
+    }
+}
+
+#[cfg(test)]
+mod tyre_thermal_tests {
+    use super::*;
+
+    #[test]
+    fn stored_temperature_without_active_burnout_never_punctures() {
+        let mut state = VehicleDamageState::new(4);
+        for wheel in &mut state.wheels {
+            wheel.tyre_temperature = 59.0;
+        }
+        for index in 0..state.wheels.len() {
+            assert!(apply_tyre_heat_damage(
+                &mut state.wheels[index],
+                &VehicleSpecification::default(),
+                index,
+                false,
+            )
+            .is_none());
+        }
+        for _ in 0..600 {
+            let signals = process_damage_frame_with_specification(
+                &mut state,
+                VehicleClass::Automobile,
+                &VehicleSpecification::default(),
+                1.0 / 60.0,
+                |_| 20.0,
+                |_| true,
+                |_| 0.0,
+            );
+            assert!(signals.is_empty());
+        }
+        assert!(state.wheels.iter().all(|w| {
+            w.tyre_condition == TireCondition::Intact && w.tyre_health == TYRE_HEALTH_MAX
+        }));
+    }
+
+    #[test]
+    fn indestructibility_and_invalid_temperature_block_heat_damage() {
+        let mut wheel = WheelDamageState::default();
+        wheel.tyre_temperature = 59.0;
+        let mut specification = VehicleSpecification::default();
+        specification.damage.indestructible = true;
+        assert!(apply_tyre_heat_damage(&mut wheel, &specification, 0, true).is_none());
+        specification.damage.indestructible = false;
+        for temperature in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            wheel.tyre_temperature = temperature;
+            assert!(apply_tyre_heat_damage(&mut wheel, &specification, 0, true).is_none());
+        }
+        assert_eq!(wheel.tyre_condition, TireCondition::Intact);
+    }
+
+    #[test]
+    fn overheating_punctures_once_and_keeps_wheel_and_rubber() {
+        let mut state = VehicleDamageState::new(4);
+        state.wheels[2].tyre_temperature = 59.0;
+        let signal = apply_tyre_heat_damage(
+            &mut state.wheels[2],
+            &VehicleSpecification::default(),
+            2,
+            true,
+        );
+        assert_eq!(signal.unwrap().kind, VehicleEventKind::TyrePunctured);
+        assert_eq!(state.wheels[2].tyre_condition, TireCondition::Punctured);
+        assert_eq!(state.wheels[2].tyre_rubber_remaining, 1.0);
+        assert_eq!(state.wheels[2].suspension_health, SUSPENSION_HEALTH_MAX);
+        let signal = apply_tyre_heat_damage(
+            &mut state.wheels[2],
+            &VehicleSpecification::default(),
+            2,
+            true,
+        );
+        assert!(signal.is_none());
+        state.repair();
+        assert_eq!(state.wheels[2].tyre_temperature, 0.0);
+        assert_eq!(state.wheels[2].tyre_condition, TireCondition::Intact);
+    }
+
+    #[test]
+    fn model_protection_blocks_heat_puncture_and_older_damage_state_decodes() {
+        let mut state = VehicleDamageState::new(4);
+        state.wheels[0].tyre_temperature = 59.0;
+        let mut specification = VehicleSpecification::default();
+        specification.damage.tyres_can_burst = false;
+        let signal = apply_tyre_heat_damage(&mut state.wheels[0], &specification, 0, true);
+        assert!(signal.is_none());
+        assert_eq!(state.wheels[0].tyre_condition, TireCondition::Intact);
+        let mut old = serde_json::to_value(WheelDamageState::default()).unwrap();
+        old.as_object_mut().unwrap().remove("tyre_temperature");
+        let decoded: WheelDamageState = serde_json::from_value(old).unwrap();
+        assert_eq!(decoded.tyre_temperature, 0.0);
     }
 }

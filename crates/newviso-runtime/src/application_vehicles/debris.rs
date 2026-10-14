@@ -15,6 +15,11 @@ pub(crate) struct VehicleDebrisState {
     pub next_fx_seconds: f64,
     pub emitted: u64,
     effect: Option<String>,
+    pub assembly_parts: Vec<String>,
+    pub source_components: Vec<u32>,
+    pub authored_physics: bool,
+    pub mass: f32,
+    pub center_of_mass: [f32; 3],
 }
 
 impl VehicleDebrisState {
@@ -22,6 +27,9 @@ impl VehicleDebrisState {
         json!({
             "entity": self.entity, "entity_key": self.entity.to_string(),
             "source_entity": self.source_entity, "part": self.part,
+            "assembly_parts":self.assembly_parts,"source_components":self.source_components,
+            "authored_physics":self.authored_physics,"mass":self.mass,"center_of_mass":self.center_of_mass,
+            "source_entity_key":self.source_entity.to_string(),
             "scene_key": self.key, "created_seconds": self.created_seconds,
             "persistent": true, "expires_seconds": null,
             "fire_until_seconds": self.fire_until_seconds,
@@ -50,7 +58,7 @@ impl EngineApplication {
                 .values()
                 .map(|debris| {
                     let mut state = debris.runtime_state();
-                    state["rendered"] = json!(self.scene.entity_model_installed(debris.entity));
+                    state["rendered"] = json!(self.scene.entity_model_renderable(debris.entity));
                     state
                 })
                 .collect(),
@@ -159,6 +167,11 @@ impl EngineApplication {
                 next_fx_seconds: elapsed,
                 emitted: 0,
                 effect,
+                assembly_parts: vec![part.name.clone()],
+                source_components: Vec::new(),
+                authored_physics: false,
+                mass: 0.0,
+                center_of_mass: [0.0; 3],
             },
         );
     }

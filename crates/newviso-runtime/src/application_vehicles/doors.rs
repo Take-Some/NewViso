@@ -182,9 +182,10 @@ impl EngineApplication {
                     motion.break_stress = (motion.break_stress
                         + (over_limit_deg / 45.0).max(0.0) * dt)
                         .clamp(0.0, 2.0);
-                    if over_limit_deg > 45.0
-                        || motion.over_limit_seconds > 1.0
-                        || (part.damage >= 0.90 && motion.break_stress >= 1.0)
+                    if part.physics.as_ref().is_none_or(|p| p.strength >= 0.0)
+                        && (over_limit_deg > 45.0
+                            || motion.over_limit_seconds > 1.0
+                            || (part.damage >= 0.90 && motion.break_stress >= 1.0))
                     {
                         part.damage = 1.0;
                         part.loose = false;
@@ -219,7 +220,7 @@ impl EngineApplication {
             {
                 let local_velocity = inverse_rotate_euler_xyz(linear_velocity, rotation_degrees);
                 let forward_speed = (-local_velocity[2]).max(0.0);
-                if forward_speed > 20.0 {
+                if forward_speed > 20.0 && part.physics.as_ref().is_none_or(|p| p.strength >= 0.0) {
                     part.damage = 1.0;
                     part.loose = false;
                 }

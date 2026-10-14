@@ -11,7 +11,11 @@ pub(super) struct RenderPolicy {
     pub lens_flare_capacity: usize,
     pub flare_element_capacity: usize,
     pub shadow_resolution: u32,
+    #[serde(default = "default_shadow_softness")]
+    pub shadow_softness: f32,
 }
+
+fn default_shadow_softness() -> f32 { 1.0 }
 
 impl Default for RenderPolicy {
     fn default() -> Self {
@@ -25,6 +29,7 @@ impl Default for RenderPolicy {
             lens_flare_capacity: 0,
             flare_element_capacity: 0,
             shadow_resolution: 0,
+            shadow_softness: 1.0,
         }
     }
 }
@@ -58,8 +63,11 @@ impl RenderPolicy {
         if total == 0 || total > u32::MAX as usize || flares > u32::MAX as usize {
             return Err(invalid());
         }
-        if self.shadow_resolution == 0 {
-            return Err("shadow_resolution must be greater than zero".into());
+        if self.shadow_resolution == 0 || self.shadow_resolution > 16384 {
+            return Err("shadow_resolution must be within 1..=16384".into());
+        }
+        if !self.shadow_softness.is_finite() || !(0.25..=4.0).contains(&self.shadow_softness) {
+            return Err("shadow_softness must be finite and within 0.25..=4.0".into());
         }
         Ok(())
     }
@@ -122,6 +130,7 @@ mod tests {
             lens_flare_capacity: 16,
             flare_element_capacity: 16,
             shadow_resolution: 2048,
+            shadow_softness: 1.0,
         };
         let next = policy
             .patched(
@@ -134,6 +143,9 @@ mod tests {
         assert_eq!(next.overlay_quad_capacity, policy.overlay_quad_capacity);
         for patch in [
             json!({"shadow_resolution": 0}),
+            json!({"shadow_resolution": 32768}),
+            json!({"shadow_softness": 0.0}),
+            json!({"shadow_softness": 9.0}),
             json!({"unknown": 4}),
             json!({"runtime_cube_capacity": u64::MAX}),
             json!({"flare_element_capacity": u64::MAX}),

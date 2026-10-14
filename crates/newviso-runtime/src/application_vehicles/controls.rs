@@ -84,6 +84,7 @@ impl EngineApplication {
             .get("entity")
             .and_then(Value::as_u64)
             .ok_or_else(|| format!("script command[{index}] vehicle.tire.set requires entity"))?;
+        self.capture_vehicle_wheel_motion(entity);
         let definition = self
             .vehicles
             .definition(entity)
@@ -192,6 +193,7 @@ impl EngineApplication {
             .ok_or_else(|| {
                 format!("script command[{index}] vehicle.part.set requires resolved entity")
             })?;
+        self.capture_vehicle_wheel_motion(entity);
         let part_name = command
             .get("part")
             .and_then(Value::as_str)

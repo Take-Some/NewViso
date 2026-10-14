@@ -16,9 +16,13 @@ use std::{
     sync::{Arc, Mutex, Weak},
 };
 
+mod snapshot_delta;
+use snapshot_delta::SnapshotDelta;
+
 #[derive(Clone, Debug)]
 pub struct ScriptModuleSpec {
     pub asset: String,
+    pub runtime_delta: bool,
     pub on_start: Option<String>,
     pub on_frame: Option<String>,
     pub on_event: Option<String>,
@@ -40,6 +44,7 @@ pub struct ScriptControl {
 #[derive(Debug)]
 struct LoadedModule {
     spec: ScriptModuleSpec,
+    snapshot_revision: Option<u64>,
 }
 
 #[derive(Default)]
@@ -88,6 +93,7 @@ impl EventSinkV1 for ScriptEventSink {
 pub struct ScriptRuntime {
     modules: Vec<LoadedModule>,
     request_counter: u64,
+    snapshot_delta: SnapshotDelta,
     event_queue: Arc<Mutex<ScriptEventQueue>>,
 }
 
@@ -114,7 +120,7 @@ impl ScriptRuntime {
                     ("logical_path".to_owned(), spec.asset.clone()),
                 ]),
             })?;
-            loaded.push(LoadedModule { spec });
+            loaded.push(LoadedModule { spec, snapshot_revision: None });
         }
 
         let event_queue = Arc::new(Mutex::new(ScriptEventQueue {
@@ -132,6 +138,7 @@ impl ScriptRuntime {
         Ok(Self {
             modules: loaded,
             request_counter: 0,
+            snapshot_delta: SnapshotDelta::default(),
             event_queue,
         })
     }
@@ -160,7 +167,9 @@ impl ScriptRuntime {
         let assets = AssetClient::new();
         let scripting = ScriptClient::new();
 
-        for module in &self.modules {
+        for module in &mut self.modules {
+            // A failed later reload also leaves earlier modules needing a full base.
+            module.snapshot_revision = None;
             let spec = &module.spec;
             let module_bytes = assets.raw_bytes(&spec.asset)?;
             scripting.load_module(&ScriptModuleLoad {
@@ -196,10 +205,9 @@ impl ScriptRuntime {
 
         let payload = json!({
             "event": "start",
-            "project": project_context,
-            "runtime": runtime_state
+            "project": project_context
         });
-        let start_control = self.invoke_lifecycle("start", &payload, false)?;
+        let start_control = self.invoke_lifecycle("start", &payload, false, Some(runtime_state.clone()))?;
         absorb_control(&mut control, start_control);
         Ok(control)
     }
@@ -213,7 +221,7 @@ impl ScriptRuntime {
         delta_seconds: f32,
         elapsed_seconds: f64,
         project_context: &Value,
-        runtime_state: &Value,
+        runtime_state: Value,
         frame_context: &Value,
     ) -> Result<ScriptControl, String> {
         let events = self.drain_events();
@@ -229,12 +237,11 @@ impl ScriptRuntime {
             "delta_seconds": delta_seconds,
             "elapsed_seconds": elapsed_seconds,
             "project": project_context,
-            "runtime": runtime_state,
             "frame": frame_context,
             "events": events
         });
 
-        let frame_control = self.invoke_lifecycle("frame", &payload, true)?;
+        let frame_control = self.invoke_lifecycle("frame", &payload, true, Some(runtime_state))?;
         absorb_control(&mut control, frame_control);
         Ok(control)
     }
@@ -250,7 +257,7 @@ impl ScriptRuntime {
             "event": "shutdown",
             "project": project_context
         });
-        let shutdown_control = self.invoke_lifecycle("shutdown", &payload, false)?;
+        let shutdown_control = self.invoke_lifecycle("shutdown", &payload, false, None)?;
         absorb_control(&mut control, shutdown_control);
         Ok(control)
     }
@@ -344,9 +351,16 @@ impl ScriptRuntime {
         phase: &str,
         payload: &Value,
         frame: bool,
+        runtime: Option<Value>,
     ) -> Result<ScriptControl, String> {
         let client = ScriptClient::new();
         let mut control = ScriptControl::default();
+        let use_delta = runtime.is_some() && self.modules.iter().any(|m| m.spec.runtime_delta);
+        let revision = self.snapshot_delta.next_revision();
+        let delta = use_delta.then(|| self.snapshot_delta.encode(runtime.as_ref().unwrap()));
+        let mut full_payload = None;
+        let mut delta_payload = None;
+        let mut reset_payload = None;
 
         for module_index in 0..self.modules.len() {
             let operation = {
@@ -366,13 +380,37 @@ impl ScriptRuntime {
 
             self.request_counter = self.request_counter.wrapping_add(1);
             let request_id = format!("newviso-{phase}-{}", self.request_counter);
-            let spec = &self.modules[module_index].spec;
+            let module = &self.modules[module_index];
+            let spec = &module.spec;
+            let request_payload = if spec.runtime_delta && use_delta {
+                if module.snapshot_revision == self.snapshot_delta.revision() {
+                    delta_payload.get_or_insert_with(|| {
+                        let mut value = payload.clone();
+                        value["__runtime_snapshot"] = delta.as_ref().unwrap().clone();
+                        value
+                    })
+                } else {
+                    reset_payload.get_or_insert_with(|| {
+                        let mut value = payload.clone();
+                        value["__runtime_snapshot"] = SnapshotDelta::full(runtime.as_ref().unwrap(), revision);
+                        value
+                    })
+                }
+            } else {
+                full_payload.get_or_insert_with(|| {
+                    let mut value = payload.clone();
+                    if let Some(runtime) = runtime.as_ref() {
+                        value["runtime"] = runtime.clone();
+                    }
+                    value
+                })
+            };
 
             let request = ScriptInvocation {
                 request_id: &request_id,
                 script_ref: &spec.asset,
                 operation: &operation,
-                payload,
+                payload: request_payload,
                 context_bytes: &[],
                 permissions: &spec.permissions,
                 metadata: BTreeMap::from([
@@ -407,6 +445,12 @@ impl ScriptRuntime {
             if let Some(value) = response.payload_json()? {
                 merge_control(&mut control, &value);
             }
+            if spec.runtime_delta && use_delta {
+                self.modules[module_index].snapshot_revision = Some(revision);
+            }
+        }
+        if use_delta {
+            self.snapshot_delta.commit(runtime.unwrap());
         }
 
         Ok(control)

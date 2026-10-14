@@ -137,10 +137,8 @@ impl SceneWorld {
         let tan_y = cull_half_fov.tan().max(0.0001);
         let tan_x = (tan_y * view.aspect.max(0.0001)).max(0.0001);
 
-        let hierarchy_visible = candidate_ids
-            .iter()
-            .map(|id| (*id, self.hierarchy_allows(*id)))
-            .collect::<BTreeMap<_, _>>();
+        // Each hierarchy result is consumed exactly once. Avoid a per-frame
+        // BTreeMap allocation and an O(n log n) insertion pass.
         let mut plan = SceneFramePlan {
             frame: self.frame,
             spatial_candidate_count: candidate_ids.len(),
@@ -151,15 +149,16 @@ impl SceneWorld {
         let mut streaming_by_priority = Vec::<(SceneEntityId, f32)>::new();
 
         for id in candidate_ids {
+            // Must precede the mutable entity borrow. Hierarchy/lifecycle are
+            // unchanged by the visibility pass, preserving the original gate.
+            let hierarchy_allows = self.hierarchy_allows(id);
             let Some(index) = self.by_id.get(&id).copied() else {
                 continue;
             };
             let Some(entity) = self.entities.get_mut(index) else {
                 continue;
             };
-            if entity.lifecycle != SceneLifecycle::Active
-                || !hierarchy_visible.get(&id).copied().unwrap_or(false)
-            {
+            if entity.lifecycle != SceneLifecycle::Active || !hierarchy_allows {
                 plan.culled_count += 1;
                 continue;
             }
@@ -239,7 +238,8 @@ impl SceneWorld {
         }
 
         plan.visible_render_slots.sort_unstable();
-        plan.visible_entities.sort_by_key(|entity_id| entity_id.0);
+        // candidate_ids is a BTreeSet, so visible_entities was appended in
+        // ascending stable-id order already. A second sort is redundant.
         requested_by_priority.sort_by(|a, b| {
             b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
@@ -295,13 +295,16 @@ impl SceneWorld {
         self.entity(id).map(entity_collision_bounds)
     }
 
-    pub(crate) fn solid_bounds(&self) -> impl Iterator<Item = SceneBounds> + '_ {
-        self.entities.iter().filter_map(|entity| {
-            (entity.solid
+    pub(crate) fn solid_entities(&self) -> impl Iterator<Item = &SceneEntity> + '_ {
+        self.entities.iter().filter(|entity| {
+            entity.solid
                 && entity.lifecycle == SceneLifecycle::Active
-                && entity.residency == SceneResidency::Resident)
-                .then(|| entity_collision_bounds(entity))
+                && entity.residency == SceneResidency::Resident
         })
+    }
+
+    pub(crate) fn solid_bounds(&self) -> impl Iterator<Item = SceneBounds> + '_ {
+        self.solid_entities().map(entity_collision_bounds)
     }
     pub(crate) fn static_solid_colliders_near(
         &self,

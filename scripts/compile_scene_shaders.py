@@ -11,6 +11,7 @@ import subprocess
 root = Path(__file__).resolve().parents[1]
 northstar_root = root.parent
 assets = root / "crates/newviso-scene/src/assets"
+shared_shader_includes = root / "crates/newviso-render-api/shaders"
 
 glslc = shutil.which("glslc")
 spirv_val = shutil.which("spirv-val")
@@ -51,7 +52,18 @@ shader_sources = [
            "weather_lens",
        )
        for stage in ("vert", "frag") ),
+    ("skinning", "comp"),
     ("scene_gbuffer", "frag"),
+    ("scene_instanced", "vert"),
+    ("shadow_instanced", "vert"),
+    ("water", "vert"),
+    ("water", "frag"),
+    ("water_bump", "vert"),
+    ("water_bump", "frag"),
+    ("water_depth", "frag"),
+    ("water_shore", "frag"),
+    ("water_underwater", "vert"),
+    ("water_underwater", "frag"),
 ]
 
 for stem, stage in shader_sources:
@@ -60,7 +72,7 @@ for stem, stage in shader_sources:
 
     if backend == "vulkan-sdk":
         subprocess.run(
-            [glslc, "--target-env=vulkan1.0", "-O", str(source), "-o", str(output)],
+            [glslc, "--target-env=vulkan1.0", "-O", f"-I{assets}", f"-I{shared_shader_includes}", str(source), "-o", str(output)],
             check=True,
         )
         subprocess.run(
@@ -73,6 +85,8 @@ for stem, stage in shader_sources:
                 str(bundled_glslang),
                 "--target-env",
                 "vulkan1.0",
+                f"-I{assets}",
+                f"-I{shared_shader_includes}",
                 str(source),
                 "-o",
                 str(output),

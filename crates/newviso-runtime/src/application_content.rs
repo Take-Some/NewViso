@@ -6,8 +6,11 @@ impl EngineApplication {
             return Ok(());
         };
 
+        let revision=manager.surface_revision();
+        if self.last_content_surface_revision==Some(revision){return Ok(());}
         let surfaces = manager.surfaces();
         if self.last_content_surfaces == surfaces {
+            self.last_content_surface_revision=Some(revision);
             return Ok(());
         }
 
@@ -25,6 +28,7 @@ impl EngineApplication {
             ),
         );
         self.last_content_surfaces = surfaces;
+        self.last_content_surface_revision=Some(revision);
         Ok(())
     }
     pub(super) fn apply_content_dispatch(&mut self, dispatch: &Value) -> Result<(), String> {

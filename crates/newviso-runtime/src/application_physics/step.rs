@@ -1,12 +1,23 @@
 use super::*;
 
 impl PhysicsRuntime {
+    #[cfg(test)]
     pub(crate) fn step(
+        &mut self, dt: f32, scene_solids: &[(u64,[f32;3],[f32;3])], vehicles: &mut VehicleRuntime,
+    ) -> Result<(), String> {
+        self.step_with_water(dt,scene_solids,vehicles,None)
+    }
+
+    pub(crate) fn step_with_water(
         &mut self,
         dt: f32,
         scene_solids: &[(u64, [f32; 3], [f32; 3])],
         vehicles: &mut VehicleRuntime,
+        mut water_simulation: Option<&mut newviso_scene::water::WaterSimulation>,
     ) -> Result<(), String> {
+        if let Some(simulation) = water_simulation.as_deref_mut() {
+            simulation.driven_by_physics = self.water.is_some();
+        }
         if !dt.is_finite() || dt <= 0.0 {
             return Ok(());
         }
@@ -65,6 +76,14 @@ impl PhysicsRuntime {
             } else {
                 Vec::new()
             };
+            // Ocean impulses use the same Bullet fixed-step timeline as
+            // vehicle suspension, avoiding frame-rate dependent buoyancy.
+            if self.water.is_some() {
+                if let Some(simulation) = water_simulation.as_deref_mut() {
+                    simulation.advance(fixed_dt);
+                }
+            }
+            self.push_water_forces_using(fixed_dt, &mut commands, water_simulation.as_deref());
             for impulse in vehicle_plan.impulses {
                 let seq = self.next_command_seq;
                 self.next_command_seq = self.next_command_seq.wrapping_add(1).max(1);
@@ -124,13 +143,16 @@ impl PhysicsRuntime {
                         .then_some(query.seq)
                 })
                 .collect::<BTreeSet<_>>();
+            self.refresh_separation_pairs();
             let input = PhysicsFrameInput {
+                disabled_collision_pairs: self.separation_pairs.iter().copied().collect(),
                 frame_index: self.frame_index,
                 fixed_tick: self.fixed_tick,
                 dt: fixed_dt,
                 gravity: self.settings.gravity,
                 contact_skin: self.settings.contact_skin,
                 bodies,
+                joints: self.joints.values().copied().collect(),
                 colliders,
                 commands,
                 queries,

@@ -1,6 +1,95 @@
 use super::*;
 
 impl PhysicsRuntime {
+    /// Immediate upward rain probe against the resident collision BVHs. It uses
+    /// both triangle sides and never treats a terrain's global AABB as a roof.
+    /// Actor bodies are omitted so the camera's own head cannot shelter it.
+    pub(crate) fn weather_camera_is_sheltered(&self, eye: [f32; 3]) -> bool {
+        let origin = [eye[0], eye[1] + 0.02, eye[2]];
+        let delta = [0.0, 10_000.0, 0.0];
+        self.camera_collision_meshes.iter().any(|(id, mesh)| {
+            let Some(collider) = self.streamed_colliders.get(id) else {
+                return false;
+            };
+            if collider.flags.is_trigger || !collider.flags.participates_in_queries {
+                return false;
+            }
+            let local_origin = std::array::from_fn(|i| origin[i] - collider.position[i]);
+            mesh.sweep(local_origin, delta, 0.01).is_some()
+        })
+    }
+
+
+    /// Highest resident triangle surface, ignoring actors and trigger volumes.
+    pub(crate) fn weather_surface_height(&self, x: f32, z: f32, top: f32) -> Option<f32> {
+        let origin = [x, top, z];
+        let delta = [0.0, -512.0, 0.0];
+        self.camera_collision_meshes.iter().filter_map(|(id, mesh)| {
+            let collider = self.streamed_colliders.get(id)?;
+            if collider.flags.is_trigger || !collider.flags.participates_in_queries
+                || x < collider.bounds_min[0] || x > collider.bounds_max[0]
+                || z < collider.bounds_min[2] || z > collider.bounds_max[2] {
+                return None;
+            }
+            let local = std::array::from_fn(|i| origin[i] - collider.position[i]);
+            mesh.sweep(local, delta, 0.001)
+                .map(|fraction| top - 512.0 * fraction - 0.001)
+        }).max_by(f32::total_cmp)
+    }
+
+    pub(crate) fn character_ground_contact_height(&self, entity: u64) -> Option<f32> {
+        self.last_output
+            .events
+            .iter()
+            .filter_map(|event| {
+                let contact = match event {
+                    PhysicsEvent::ContactBegin(c) | PhysicsEvent::ContactPersist(c) => c,
+                    _ => return None,
+                };
+                let supported = (contact.a == entity && contact.normal[1] > 0.45)
+                    || (contact.b == entity && contact.normal[1] < -0.45);
+                supported.then_some(contact.point[1])
+            })
+            .max_by(f32::total_cmp)
+    }
+
+    pub(crate) fn contact_closing_speed(&self, source: u64, target: u64) -> f32 {
+        self.last_output
+            .events
+            .iter()
+            .filter_map(|event| {
+                let contact = match event {
+                    newviso_physics_client::PhysicsEvent::ContactBegin(c)
+                    | newviso_physics_client::PhysicsEvent::ContactPersist(c) => c,
+                    _ => return None,
+                };
+                if !((contact.a == source && contact.b == target)
+                    || (contact.b == source && contact.a == target))
+                {
+                    return None;
+                }
+                contact.relative_velocity.map(|velocity| {
+                    (0..3)
+                        .map(|i| velocity[i] * contact.normal[i])
+                        .sum::<f32>()
+                        .abs()
+                })
+            })
+            .fold(0.0, f32::max)
+    }
+
+    pub(crate) fn is_ballistic_damage_contact(&self, contact: &PhysicsDamageContact) -> bool {
+        self.ballistic_damage_contacts.iter().any(|hit| {
+            hit.source == contact.source
+                && hit.target == contact.target
+                && hit.point == contact.point
+        })
+    }
+
+    pub(crate) fn scene_collision_queries_enabled(&self) -> bool {
+        self.settings.scene_colliders_enabled && self.settings.scene_participates_in_queries
+    }
+
     /// Resolve against this frame's resident physical geometry before camera submission.
     /// No extra physics step, delayed query result, or render-geometry approximation.
     pub(crate) fn constrain_camera(
@@ -251,5 +340,40 @@ impl PhysicsRuntime {
         }
 
         Ok(None)
+    }
+}
+
+
+#[cfg(test)]
+mod weather_shelter_tests {
+    use super::*;
+    #[test]
+    fn weather_shelter_uses_roof_triangles_and_collision_flags() {
+        let mut runtime = PhysicsRuntime::empty_for_tests();
+        let roof = CollisionMeshResource {
+            id: newviso_resource_runtime::AssetId(91),
+            name: "weather.roof".into(),
+            bounds: newviso_collision::CollisionBounds {
+                min: [-2.0,6.0,-2.0], max: [2.0,6.0,2.0],
+            },
+            vertices: vec![[-2.0,6.0,-2.0],[2.0,6.0,-2.0],
+                [-2.0,6.0,2.0],[2.0,6.0,2.0]],
+            triangles: vec![[0,2,1],[1,2,3]],
+            material_indices: vec![0,0],
+        };
+        runtime.install_streamed_collision(42, &roof, [10.0,0.0,0.0],
+            [0.0;3], [1.0;3]).unwrap();
+        assert!(runtime.weather_camera_is_sheltered([10.0,3.0,0.0]));
+        assert!((runtime.weather_surface_height(10.0, 0.0, 100.0).unwrap() - 6.0).abs() < 0.01);
+        assert!(runtime.weather_surface_height(13.0, 0.0, 100.0).is_none());
+        assert!(!runtime.weather_camera_is_sheltered([13.0,3.0,0.0]));
+        assert!(!runtime.weather_camera_is_sheltered([10.0,7.0,0.0]));
+        runtime.streamed_colliders.get_mut(&42).unwrap().flags.is_trigger = true;
+        assert!(runtime.weather_surface_height(10.0, 0.0, 100.0).is_none());
+        assert!(!runtime.weather_camera_is_sheltered([10.0,3.0,0.0]));
+        let collider = runtime.streamed_colliders.get_mut(&42).unwrap();
+        collider.flags.is_trigger = false;
+        collider.flags.participates_in_queries = false;
+        assert!(!runtime.weather_camera_is_sheltered([10.0,3.0,0.0]));
     }
 }

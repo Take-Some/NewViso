@@ -78,6 +78,9 @@ pub struct ProjectScriptEntrypoint {
     pub enabled: bool,
     pub provider: String,
     pub entrypoint: String,
+    /// Opt in to Shared's immutable runtime snapshot decoder.
+    #[serde(default)]
+    pub runtime_delta: bool,
     #[serde(default)]
     pub lifecycle: ProjectScriptLifecycle,
     #[serde(default)]
@@ -112,6 +115,7 @@ impl ProjectScriptEntrypoint {
             provider: self.provider.clone(),
             modules: vec![ProjectScriptModule {
                 asset: self.entrypoint.clone(),
+                runtime_delta: self.runtime_delta,
                 on_start: self.lifecycle.start.clone(),
                 on_frame: self.lifecycle.frame.clone(),
                 on_event: self.lifecycle.event.clone(),
@@ -915,6 +919,8 @@ impl ProjectScripts {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProjectScriptModule {
     pub asset: String,
+    #[serde(default)]
+    pub runtime_delta: bool,
     #[serde(default)]
     pub on_start: Option<String>,
     #[serde(default)]

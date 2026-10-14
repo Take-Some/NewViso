@@ -384,6 +384,7 @@ impl Scene3dRuntime {
             .or_else(|| self.world.entity_id_by_name(key))
             .ok_or_else(|| format!("runtime entity '{}' does not exist", key))?;
         self.world.request_remove(id)?;
+        self.clear_surface_marks_for_entity(id.0);
         self.sky_visuals.remove(key);
         self.lens_flares.retain(|_, flare| flare.source != key);
         self.asset_binding_contexts.remove(&id.0);
@@ -431,6 +432,7 @@ impl Scene3dRuntime {
         self.joint_attachments
             .retain(|_, attachment| attachment.parent_stable_id != stable_id);
         self.world.request_remove(SceneEntityId(stable_id))?;
+        self.clear_surface_marks_for_entity(stable_id);
         self.main_view_mesh_visibility.remove(stable_id);
         Ok(())
     }

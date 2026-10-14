@@ -192,7 +192,7 @@ impl Scene3dRuntime {
                     &format!("newviso.scene.skinned_vertices.grown.slot.{slot}"),
                     next as u64 * VERTEX_STRIDE,
                     "Vertex",
-                    "CpuToGpu",
+                    if renderer_skinning::gpu_skinning_enabled() { "GpuOnly" } else { "CpuToGpu" },
                 )?;
             }
             for old_buffer in gpu.skinned_vertex_buffers {
@@ -208,6 +208,11 @@ impl Scene3dRuntime {
                 }
             }
             self.gpu = Some(gpu);
+        }
+
+        if renderer_skinning::gpu_skinning_enabled() {
+            self.dispatch_gpu_skinning(render, frame_slot, gpu)?;
+            return Ok(gpu);
         }
 
         if self.skinned_dirty_ranges[frame_slot].is_empty() {

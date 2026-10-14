@@ -3,6 +3,8 @@ use super::*;
 impl Scene3dRuntime {
     pub fn shutdown_renderer(&mut self) {
         let render = RenderClient::new();
+        self.shutdown_indexed_terrain(&render);
+        self.shutdown_gpu_skinning(&render);
         self.shutdown_mass_instance_gpu(&render);
         self.shutdown_weather_gpu_fx_renderer(&render);
         self.shutdown_volumetric_cloud_renderer(&render);
@@ -64,6 +66,9 @@ impl Scene3dRuntime {
             render.destroy_buffer(sky.vertex_buffer);
         }
 
+        self.shutdown_terrain_gpu_material(&render);
+        self.shutdown_water_renderer(&render);
+        self.shutdown_water_gpu_material(&render);
         let Some(gpu) = self.gpu.take() else {
             return;
         };

@@ -139,6 +139,14 @@ Implemented task types:
 idle
 wait
 travel_to_node
+go_to_position
+follow_actor
+flee
+wander
+look_at
+play_animation
+sequence
+combat
 ```
 
 A higher-priority task can preempt a running travel task. The old physical/coarse travel intent is cancelled rather than continuing invisibly, and the lower-priority task may resume later.
@@ -163,6 +171,8 @@ Implemented capabilities:
 
 Navigation residency follows collision residency. When a streamed collision mesh materializes, the runtime derives a navigation tile from the same transformed geometry. When it leaves residency, the navigation tile is removed and affected local paths are invalidated.
 
+Authored static solid cubes also contribute their exact transformed triangles near active characters. Unchanged primitive tiles retain their navigation revision and paths; retired primitives release their tiles. Imported model bounding boxes do not become walkable surfaces.
+
 The local navmesh does not replace the LivingWorld route graph. A physical actor refines the current coarse route segment against resident local geometry.
 
 ## Character locomotion
@@ -179,11 +189,33 @@ The current controller provides:
 - step-up / step-down;
 - moving-support linear velocity inheritance;
 - collision-safe velocity application;
-- persistent physical character state.
+- persistent physical character state;
+- engine-level jump impulse for any bound physical world actor;
+- airborne state transitions `grounded → jump → fall → land`;
+- generic `character.jump`, `character.fall`, `character.land` and locomotion events;
+- presentation slots for `jump_clip`, `fall_clip` and `land_clip`.
 
 The runtime uses the same resident collision BVHs and physics-body geometry used by camera/physics queries. It does not maintain a second unrelated collision world.
 
 A full-tier bound actor remains physically controlled even while idle, so grounding and moving-platform behavior do not disappear merely because the agent has no travel task.
+
+Registered full-tier peds additionally own native dynamic capsule bodies. Steering
+provides walking intent while native physics owns actual position, gravity and
+contacts with players, vehicles and projectiles. Strong vehicle hits and death
+release the upright body and suspend locomotion. Ram and runover are separate
+responses, with suspension-wheel loads contributing physical force and crushing
+damage; living peds recover only after a grounded, unobstructed recovery delay.
+An optional Shared reaction catalog binds original skeletal knockdown,
+airborne/landing and get-up clips. The engine holds the fallen pose, suspends
+AI movement through recovery, and raises/orients the native collision capsule
+with the get-up animation. New impacts and death interrupt recovery. Surviving wounds layer the original directional additive clips onto the
+current pose. Death with a compatible rig and joint provider transfers 15 native
+bodies and 14 sockets to physics, preserving the current skeletal pose and
+motion. Physical bone transforms drive skinning; corpse limbs remain collidable
+and receive later projectile impulses. Reset/removal retire the rig and restore
+normal skeletal ownership. Providers without joints retain the capsule fallback.
+See [Pedestrian behavior port](ped-reference-port.md#original-skeletal-reactions)
+for the source correspondence, asset cooker and verified transitions.
 
 ## Local steering
 
@@ -252,7 +284,11 @@ project scripts
 scene update / rendering
 ```
 
-The script frame snapshot exposes `agents` and `physical_characters` runtime state.
+The script frame snapshot exposes `agents`, `peds` and `physical_characters` runtime state.
+The native pedestrian layer supplies profiles, health/armour/death, relationships,
+hearing and damage reactions through the common task lanes. See
+[Pedestrian behavior port](ped-reference-port.md) for commands, source correspondence,
+Shared usage, tested behavior and the remaining original-game features.
 
 ## Script API
 
@@ -263,10 +299,17 @@ agent.upsert
 agent.remove
 agent.task.set
 agent.task.clear
+agent.tasks.clear
 agent.blackboard.set
 agent.blackboard.remove
 
+ped.upsert
+ped.remove
+ped.damage
+ped.relationship.set
+
 character.world_actor.bind
+character.world_actor.jump
 character.world_actor.unbind
 
 navigation.configure
@@ -281,6 +324,7 @@ Typed Shared APIs are available at:
 ```text
 Shared/Content/scripts/newviso/world/agents.ysc
 Shared/Content/scripts/newviso/world/characters.ysc
+Shared/Content/scripts/newviso/world/peds.ysc
 Shared/Content/scripts/newviso/world/navigation.ysc
 ```
 
@@ -315,6 +359,11 @@ return [
     steeringTimeHorizon: 1.5,
   }),
 
+  // Any physically bound actor can use the same jump contract.
+  // Presentation automatically selects jump/fall/land clips from its
+  // WorldActorLocomotion binding while physics owns the airborne state.
+  character.jump(5.4),
+
   worker.setTask({
     id: "go.to.lobby",
     lane: "movement",
@@ -326,7 +375,7 @@ return [
 ];
 ```
 
-The world actor and coarse navigation graph must exist before a travel task starts. Physical navigation becomes active when the actor is in the full simulation tier and relevant collision/navigation tiles are resident.
+The world actor must exist before a travel task starts. Graph travel also requires the coarse navigation graph; coordinate tasks store their target directly. Physical navigation becomes active when the actor is in the full simulation tier and relevant collision/navigation tiles are resident.
 
 ## Remaining production NPC work
 
@@ -370,7 +419,8 @@ The three critical physical layers now have working foundations. Remaining work 
    - look-at/head/torso IK;
    - foot placement and slope correction;
    - hand targets;
-   - ragdoll transition and recovery.
+   - anatomical hinge limits and pose-matched recovery from simulated poses
+     beyond the existing death rig and authored live recovery clips.
 
 7. **Population execution**
    - spawn/despawn realization from population channels;
@@ -382,12 +432,12 @@ The three critical physical layers now have working foundations. Remaining work 
 8. **Higher-level project behavior**
    - ambient schedules/scenarios;
    - group coordination;
-   - combat/flee/cover;
+   - advanced combat, cover and weapon action graphs;
    - vehicle AI;
    - dialogue/social behavior.
 
 ## Non-goals
 
-The engine layers must not become a hard-coded GTA pedestrian system. They do not contain fixed factions, police logic, combat rules, traffic laws, weapon choices, or named gameplay archetypes.
+The engine layers must not become a hard-coded GTA pedestrian system. Ped profiles and generic reaction/combat descriptors are reusable; factions, police logic, traffic laws, weapon choices and named gameplay archetypes remain project policy.
 
 Those policies belong to project scripts or reusable project-level behavior modules.

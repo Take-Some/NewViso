@@ -25,6 +25,8 @@ pub struct RenderLight {
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct RenderLightingEnvironment {
+    #[serde(default)]
+    pub environment: crate::EnvironmentRenderParams,
     pub ambient_color: [f32; 3],
     pub ambient_intensity: f32,
     pub directional_color: [f32; 3],
@@ -38,6 +40,7 @@ pub struct RenderLightingEnvironment {
 impl Default for RenderLightingEnvironment {
     fn default() -> Self {
         Self {
+            environment: crate::EnvironmentRenderParams::default(),
             ambient_color: [0.0; 3],
             ambient_intensity: 0.0,
             directional_color: [0.0; 3],

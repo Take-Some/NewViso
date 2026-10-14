@@ -992,6 +992,7 @@ impl EngineApplication {
         }
 
         self.apply_scene_streaming_residency(&report)?;
+        self.pump_scene_animation_preloads()?;
 
         if !report.loaded.is_empty()
             || !report.became_resident.is_empty()

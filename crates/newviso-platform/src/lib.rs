@@ -231,7 +231,30 @@ extern "C" fn on_close_requested(user_data: usize) -> RResult<(), RString> {
     RResult::ROk(())
 }
 
+// No Rust panic may cross the platform provider's extern-C callback boundary.
+// Convert a failed application frame to the normal platform shutdown protocol.
+// This preserves the original panic diagnostic instead of a secondary
+// "panic in a function that cannot unwind" process abort.
 extern "C" fn step(user_data: usize, dt: f32) -> RResult<PlatformStepResultV1, RString> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| step_inner(user_data, dt))) {
+        Ok(result) => result,
+        Err(payload) => {
+            let cause = payload.downcast_ref::<String>().map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("unknown panic payload");
+            let message = format!("platform step caught Rust panic: {cause}");
+            host::error("newviso.platform", &message);
+            let state = unsafe { &mut *(user_data as *mut PlatformState) };
+            state.fail(message);
+            RResult::ROk(PlatformStepResultV1 {
+                exit_requested: true,
+                loading_overlay: PlatformLoadingOverlayV1::default(),
+            })
+        }
+    }
+}
+
+fn step_inner(user_data: usize, dt: f32) -> RResult<PlatformStepResultV1, RString> {
     let state = unsafe { &mut *(user_data as *mut PlatformState) };
     state.frames = state.frames.saturating_add(1);
 

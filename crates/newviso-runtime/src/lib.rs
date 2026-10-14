@@ -25,7 +25,8 @@ use newviso_physics_client::{
     CollisionShape, MeshCollider, PhysicsBodyActivityUpdate, PhysicsBodyFlags, PhysicsBodyKind,
     PhysicsBodyPoseUpdate, PhysicsBodySnapshot, PhysicsClient, PhysicsCollider, PhysicsCommand,
     PhysicsCommandKind, PhysicsEvent, PhysicsFeature, PhysicsFrameColliderSnapshot,
-    PhysicsFrameInput, PhysicsFrameOutput, PhysicsMaterial, PhysicsQuery, PhysicsQueryKind,
+    PhysicsFrameInput, PhysicsFrameOutput, PhysicsJointSnapshot, PhysicsMaterial, PhysicsQuery,
+    PhysicsQueryKind,
 };
 use newviso_platform::{run_platform, PlatformApplication, PlatformRunConfig, PlatformRunReport};
 use newviso_project::{
@@ -92,18 +93,22 @@ mod ui_bindings;
 use ui_bindings::*;
 
 mod application_agents;
-mod application_peds;
 mod application_animation;
 mod application_characters;
+mod application_character_audio;
 mod application_content;
 mod application_events;
 mod application_particle_debris;
 mod application_particle_effects;
+mod application_peds;
 mod application_physics;
 mod application_settings;
 mod application_startup_loading;
 use application_physics::PhysicsRuntime;
+mod application_climate;
+mod application_cold;
 mod application_platform;
+mod application_startup_intro;
 mod application_script_commands;
 mod application_streaming;
 mod application_vehicle_tracks;
@@ -241,6 +246,10 @@ struct WorldActorLocomotionBinding {
     fall_clip: Option<String>,
     #[serde(default)]
     land_clip: Option<String>,
+    #[serde(default)]
+    reactions: Option<application_peds::physics::animation::PedReactionClips>,
+    #[serde(default)]
+    ragdoll: Option<application_peds::physics::ragdoll::RagdollDefinition>,
     #[serde(default = "default_npc_walk_threshold")]
     walk_speed_threshold: f32,
     #[serde(default = "default_npc_run_threshold")]
@@ -275,6 +284,7 @@ struct WorldActorPresentationBinding {
 #[derive(Clone, Debug)]
 struct SceneAnimationBinding {
     clip_ref: String,
+    planar_root_lock: bool,
     playback_rate: f32,
     restart_if_same: bool,
     /// Authored local clip time to start from. Cutscene playback uses this to
@@ -298,10 +308,17 @@ struct EngineApplication {
     renderer: Option<RunningProvider>,
     scene: Scene3dRuntime,
     settings: ProjectRuntimeSettings,
+    climate: Option<application_climate::ClimateRuntime>,
+    cold: application_cold::ColdRuntime,
     living_world: LivingWorldRuntime,
     agents: AgentRuntime,
     peds: newviso_agent::peds::PedRuntime,
+    ped_physics: application_peds::physics::PedPhysicsRuntime,
     physical_characters: application_characters::PhysicalCharacterRuntime,
+    character_audio: application_character_audio::CharacterAudioRuntime,
+    character_motion_samples: BTreeMap<String, application_character_audio::CharacterMotionSample>,
+    character_audio_preloaded: BTreeSet<String>,
+    script_audio_loops: BTreeMap<String, (String, u64)>,
     vehicles: VehicleRuntime,
     vehicle_tracks: application_vehicle_tracks::VehicleTracks,
     vehicle_presentations: BTreeMap<u64, application_vehicles::VehiclePresentationBinding>,
@@ -337,8 +354,10 @@ struct EngineApplication {
     scene_prepared_collisions:
         BTreeMap<(u64, u64), Result<application_physics::PreparedStreamedCollision, String>>,
     scene_animation_bindings: BTreeMap<u64, SceneAnimationBinding>,
-    animation_clip_cache: BTreeMap<(u64, String), Arc<ModelAnimationClip>>,
+    scene_animation_preloads: BTreeMap<u64, BTreeSet<(String, bool)>>,
+    animation_clip_cache: BTreeMap<(u64, String, bool), Arc<ModelAnimationClip>>,
     last_content_surfaces: Vec<Value>,
+    last_content_surface_revision: Option<u64>,
     ui_frame_index: u64,
     next_script_world_snapshot_seconds: f64,
     elapsed_seconds: f64,
@@ -369,11 +388,50 @@ impl EngineApplication {
         world_startup: WorldStartup,
     ) -> Result<Self, String> {
         settings.validate().map_err(|error| error.to_string())?;
+        // Register the *exact* scene terrain triangles before the physics
+        // provider's first fixed update, not a flat AABB support plane.
+        let mut physics = physics;
+        if let Some(runtime) = physics.as_mut() {
+            for (entity, vertices, triangles) in scene.heightfield_collision_meshes() {
+                let mut min=[f32::INFINITY;3]; let mut max=[f32::NEG_INFINITY;3];
+                for xyz in &vertices {
+                    for axis in 0..3 {
+                        min[axis]=min[axis].min(xyz[axis]);
+                        max[axis]=max[axis].max(xyz[axis]);
+                    }
+                }
+                let collision = newviso_collision::CollisionMeshResource {
+                    id: newviso_resource_runtime::AssetId(entity | (1_u64<<61)),
+                    name: format!("heightfield.scene.{entity}"),
+                    bounds: newviso_collision::CollisionBounds{min,max},
+                    material_indices:vec![scene.heightfield_surface_id(entity).unwrap_or(0);triangles.len()], vertices, triangles,
+                };
+                let prepared = PhysicsRuntime::prepare_streamed_collision(
+                    entity, &collision, [0.0;3],[0.0;3],[1.0;3]
+                )?;
+                runtime.install_prepared_streamed_collision(prepared)?;
+                host::info("newviso.terrain",format!(
+                    "installed triangle terrain collider entity={} vertices={} triangles={}",
+                    entity,collision.vertices.len(),collision.triangles.len(),
+                ));
+            }
+        }
         scene.enable_physical_particle_debris(physics.is_some());
+        let mut climate = application_climate::ClimateRuntime::load(
+            &settings,
+            &mut scene,
+            &world_startup.climate,
+        )?;
+        if let Some(climate) = climate.as_mut() {
+            climate.present(&mut scene, 0.0)?;
+        }
         let streaming_policy = streaming_policy_from_project(&settings.streaming);
         let scene_prepare_pool =
             application_streaming::ScenePreparePool::new(settings.streaming.parallel_loads)?;
-        Ok(Self {
+        let cold = application_cold::ColdRuntime::restore(&world_startup.cold)?;
+        let mut app = Self {
+            cold,
+            climate,
             settings,
             renderer_path,
             renderer: None,
@@ -381,7 +439,12 @@ impl EngineApplication {
             living_world: world_startup.world,
             agents: AgentRuntime::default(),
             peds: newviso_agent::peds::PedRuntime::default(),
+            ped_physics: Default::default(),
             physical_characters: application_characters::PhysicalCharacterRuntime::default(),
+            character_audio: Default::default(),
+            character_motion_samples: BTreeMap::new(),
+            character_audio_preloaded: BTreeSet::new(),
+            script_audio_loops: BTreeMap::new(),
             vehicles: VehicleRuntime::new(),
             vehicle_tracks: Default::default(),
             vehicle_presentations: BTreeMap::new(),
@@ -415,8 +478,10 @@ impl EngineApplication {
             scene_collision_prepare_in_flight: BTreeSet::new(),
             scene_prepared_collisions: BTreeMap::new(),
             scene_animation_bindings: BTreeMap::new(),
+            scene_animation_preloads: BTreeMap::new(),
             animation_clip_cache: BTreeMap::new(),
             last_content_surfaces: Vec::new(),
+            last_content_surface_revision:None,
             ui_frame_index: 0,
             next_script_world_snapshot_seconds: 0.0,
             elapsed_seconds: 0.0,
@@ -432,7 +497,9 @@ impl EngineApplication {
             exit_requested: false,
             cursor_captured: false,
             window_focused: true,
-        })
+        };
+        app.tick_cold(0.0)?;
+        Ok(app)
     }
 }
 

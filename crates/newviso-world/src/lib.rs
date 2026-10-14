@@ -1,6 +1,6 @@
+mod clock;
 #[cfg(test)]
 mod coordinate_tests;
-mod clock;
 mod data;
 mod navigation;
 mod persistence;

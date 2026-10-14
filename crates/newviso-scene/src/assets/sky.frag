@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 layout(set = 0, binding = 0, std140) uniform SkyFrame {
     vec4 right;
@@ -66,7 +67,31 @@ layout(set = 0, binding = 0, std140) uniform SkyFrame {
     vec4 cloud_layer_speeds;
     // x = dome scale, y = fixed horizon level, z = camera world height.
     vec4 dome_geometry;
+    vec4 key_east;
+    vec4 key_west;
+    vec4 key_transition;
+    vec4 key_zenith;
+    vec4 key_zenith_transition;
+    vec4 key_zenith_params;
+    // x = azimuth position, y = HDR scale, z = enabled, w = lunar phase.
+    vec4 key_misc;
+    vec4 key_mie;
+    vec4 key_sun_color;
+    vec4 camera_position;
+    vec4 environment_reference[64];
+    vec4 key_cloud_generation;
+    vec4 key_cloud_density;
+    vec4 key_cloud_lighting;
+    vec4 key_cloud_detail;
+    vec4 key_cloud_small;
+    vec4 key_cloud_small_color;
+    vec4 key_cloud_base;
+    vec4 key_cloud_mid;
+    vec4 key_cloud_shadow;
 } sky;
+
+#define ENV_LANE(i) sky.environment_reference[i]
+#include "environment.glsl"
 
 layout(set = 0, binding = 1) uniform texture2D t_base_noise;
 layout(set = 0, binding = 2) uniform texture2D t_starfield;
@@ -332,6 +357,81 @@ float cloud_mask(vec3 direction) {
     return mask * horizon_visibility;
 }
 
+// Procedural skydome clouds follow the original three-channel Perlin pass.
+// The pass is evaluated here from the preserved source DDS, without another
+// render target; no synthetic coverage threshold replaces the TC parameters.
+vec3 reference_perlin(vec2 uv) {
+    vec4 generation = sky.key_cloud_generation;
+    vec2 p = ((uv - 0.5) * generation.y + 0.5) / 128.0 + sky.cloud_phase.xy;
+    float value = (texture(sampler2D(t_base_noise, s_sky), p).r - 0.5) * 2.0;
+    p *= generation.x;
+    value += (texture(sampler2D(t_base_noise, s_sky), p).g - 0.5);
+    p *= generation.x;
+    value += (texture(sampler2D(t_base_noise, s_sky), p).b - 0.5) * 0.5;
+    float noise = value / 1.75 * 0.5 + 0.5;
+    float softness = max(generation.w, 1.0e-5);
+    vec2 bounds = vec2(generation.z - softness, generation.z + softness);
+    return vec3(
+        smoothstep(bounds.x, bounds.y, noise),
+        smoothstep(bounds.x + sky.key_cloud_small_color.w,
+            bounds.y + sky.key_cloud_small_color.w, noise),
+        noise
+    );
+}
+
+void reference_clouds(vec3 direction, vec3 sun_direction,
+    out vec3 large_color, out vec2 alpha) {
+    // The packaged high dome exposes an angular UV with a pole singularity.
+    // Reconstruct a continuous hemisphere disk from the view ray instead.
+    // The original solar warp and independent detail phases operate on this disk.
+    float radius = max(sky.dome_geometry.x, 100.0);
+    float center_y = sky.dome_geometry.y - sky.camera_position.y;
+    float along_ray = direction.y * center_y;
+    float distance_to_dome = max(along_ray + sqrt(max(radius * radius
+        - center_y * center_y + along_ray * along_ray, 0.0)), 1.0);
+    vec3 dome_direction = normalize(direction * distance_to_dome
+        - vec3(0.0, center_y, 0.0));
+    vec2 uv = vec2(dome_direction.x, -dome_direction.z)
+        * (0.5 / (1.0 + max(dome_direction.y, 0.0))) + 0.5;
+    vec2 solar_offset = sky.key_cloud_lighting.y / 10.0
+        * vec2(sun_direction.x - direction.x, -sun_direction.z + direction.z);
+    vec2 centered = uv * 2.0 - 1.0;
+    vec2 shifted_uv = uv - solar_offset * (1.0 - dot(centered, centered));
+    vec3 perlin = reference_perlin(uv);
+    vec3 shifted = reference_perlin(shifted_uv);
+
+    float small_phase = phase_from_cycle(sky.cloud_layer_speeds.x, sky.cloud_phase.z);
+    float overall_phase = phase_from_cycle(sky.cloud_layer_speeds.y, sky.cloud_phase.z);
+    float edge_phase = phase_from_cycle(sky.cloud_layer_speeds.z, sky.cloud_phase.z);
+    float overall = texture(sampler2D(t_detail_noise, s_sky),
+        (uv.yx - 0.5 + overall_phase) * sky.key_cloud_detail.w).r - 0.5;
+    float edge = texture(sampler2D(t_detail_noise, s_sky),
+        (uv - 0.5 + edge_phase) * sky.key_cloud_detail.y).r - 0.5;
+    float small_edge = texture(sampler2D(t_detail_noise, s_sky),
+        (uv - 0.5 + small_phase) * sky.key_cloud_small.x).r - 0.5;
+
+    float base = (shifted.x + overall * sky.key_cloud_lighting.z
+        * sky.key_cloud_detail.z) * sky.key_cloud_density.x * perlin.x;
+    vec2 detail = vec2(overall, 1.0 - perlin.z)
+        * vec2(sky.key_cloud_detail.z, sky.key_cloud_small.y);
+    detail += vec2(edge, small_edge)
+        * vec2(sky.key_cloud_detail.x, sky.key_cloud_small.y)
+        * clamp(1.0 - base * 2.0, 0.0, 1.0) * perlin.z;
+    vec2 density = clamp(
+        vec2(sky.key_cloud_density.y, sky.key_cloud_small.z)
+            * (vec2(perlin.x, 0.0) + detail)
+        - vec2(sky.key_cloud_density.z, sky.key_cloud_small.w),
+        0.0, 1.0
+    );
+    alpha = density * density
+        * clamp(direction.y * 5.0 - sky.key_cloud_density.w, 0.0, 1.0);
+    vec3 shadow_minus_base = (sky.key_cloud_shadow.rgb - sky.key_cloud_base.rgb)
+        * sky.key_cloud_lighting.x;
+    large_color = (base * ((shifted.y + detail.x) * shadow_minus_base
+        + sky.key_cloud_base.rgb - sky.key_cloud_mid.rgb) + sky.key_cloud_mid.rgb)
+        * sky.key_cloud_lighting.w;
+}
+
 void main() {
     vec3 direction = reconstruct_world_view_ray();
     int visual_count = clamp(int(sky.visual_globals.x + 0.5), 0, 4);
@@ -427,9 +527,38 @@ void main() {
         * warm_twilight;
     color += sunset_tint * sky.atmosphere_sunset.a;
 
-    // World-anchored cloud field.  No mesh UVs are used here: that is the
-    // critical difference from the old stretched skydome path.
-    float cloud = cloud_mask(direction);
+    if (sky.key_misc.z > 0.5) {
+        float azimuth = sqrt(clamp(-direction.x * 0.5 + 0.5, 0.0, 1.0));
+        float az_pos = clamp(sky.key_misc.x, 0.0001, 0.9999);
+        vec3 az_color = azimuth < az_pos
+            ? mix(sky.key_east.rgb, sky.key_transition.rgb, azimuth / az_pos)
+            : mix(sky.key_transition.rgb, sky.key_west.rgb, (azimuth - az_pos) / (1.0 - az_pos));
+        float z_pos = clamp(sky.key_zenith_params.x, 0.0001, 0.9999);
+        float z_blend = abs(direction.y);
+        vec3 z_transition = mix(az_color, sky.key_zenith_transition.rgb,
+            mix(sky.key_zenith_params.y, sky.key_zenith_params.z, azimuth));
+        color = (z_blend < z_pos ? mix(az_color, z_transition, z_blend / z_pos)
+            : mix(z_transition, sky.key_zenith.rgb, clamp((z_blend-z_pos)/(1.0-z_pos)
+                / max(sky.key_zenith_params.w, 0.0001), 0.0, 1.0))) * max(sky.key_misc.y, 0.0);
+        float cos_theta = dot(direction, sun_direction);
+        float mie = sky.key_mie.z * (1.0 + cos_theta * cos_theta)
+            / pow(max(sky.key_mie.y + sky.key_mie.x * cos_theta, 0.0001), 1.5);
+        color += sky.key_sun_color.rgb * clamp(mie, 0.0, 1.0) * sky.key_mie.w;
+    }
+
+    float cloud = 0.0;
+    if (sky.key_misc.z > 0.5 && sky.dome_geometry.w > 0.5) {
+        if (sky.visual_globals.w > 0.5) {
+            vec3 large_color;
+            vec2 amount;
+            reference_clouds(direction, sun_direction, large_color, amount);
+            color = mix(color, sky.key_cloud_small_color.rgb, amount.y);
+            color = mix(color, large_color, amount.x);
+            cloud = amount.x + amount.y * (1.0 - amount.x);
+        }
+    } else {
+    // Generic morphology remains available for independently authored skies.
+    cloud = cloud_mask(direction);
     if (cloud > 0.0001) {
         float cycle_days = sky.cloud_phase.z;
         vec2 wind_vector = sky.cloud_motion.xy;
@@ -530,6 +659,7 @@ void main() {
         );
         color = mix(color, cloud_color, cloud_alpha);
     }
+    }
 
     // Star field also uses world direction instead of imported skydome UVs.
     vec2 star_uv = spherical_uv(direction);
@@ -593,7 +723,14 @@ void main() {
                 dot(billboard_sample.rgb, vec3(0.299, 0.587, 0.114))
             );
             vec3 textured_surface = billboard_sample.rgb * visual_color;
-            float textured_disc = disc * texture_alpha * mix(0.68, 1.0, limb);
+            float phase_light = 1.0;
+            if (sky.key_misc.z > 0.5) {
+                float phase_angle = TAU * sky.key_misc.w;
+                // Full moon at phase 0.5, matching the original 27-day phase.
+                vec3 moon_light = vec3(sin(phase_angle), 0.0, -cos(phase_angle));
+                phase_light = smoothstep(-0.02, 0.05, dot(vec3(local, limb), moon_light));
+            }
+            float textured_disc = disc * texture_alpha * mix(0.68, 1.0, limb) * phase_light;
             color += textured_surface
                 * intensity
                 * textured_disc
@@ -606,6 +743,20 @@ void main() {
         }
     }
 
+    if (environment_enabled()) {
+        // Integrate no-haze fog along the same reconstructed ray as the sky;
+        // sparse dome triangles must not change atmospheric extinction.
+        float radius = max(sky.dome_geometry.x, 100.0);
+        float center_y = sky.dome_geometry.y - sky.camera_position.y;
+        float along_ray = direction.y * center_y;
+        float dome_distance = max(along_ray + sqrt(max(
+            radius * radius - center_y * center_y + along_ray * along_ray, 0.0)), 1.0);
+        vec4 fog=environment_fog(sky.camera_position.xyz,
+            sky.camera_position.xyz+direction*dome_distance,0.0);
+        color=mix(color,fog.rgb,fog.a);
+        out_color=vec4(max(color,vec3(0.0)),1.0);
+        return;
+    }
     // Mild filmic shoulder keeps the sun emissive without flattening cloud
     // contrast or turning the whole sky white.
     color = color / (
@@ -613,3 +764,4 @@ void main() {
     );
     out_color = vec4(max(color, vec3(0.0)), 1.0);
 }
+

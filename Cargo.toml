@@ -28,6 +28,7 @@ members = [
     "crates/newviso-content-manager",
     "crates/newviso-core",
     "crates/newviso-events",
+    "crates/newviso-environment",
     "crates/newviso-host",
     "crates/newviso-input-client",
     "crates/newviso-items",
@@ -81,6 +82,7 @@ newviso-collision = { path = "crates/newviso-collision" }
 newviso-content-manager = { path = "crates/newviso-content-manager" }
 newviso-core = { path = "crates/newviso-core" }
 newviso-events = { path = "crates/newviso-events" }
+newviso-environment = { path = "crates/newviso-environment" }
 newviso-host = { path = "crates/newviso-host" }
 newviso-input-client = { path = "crates/newviso-input-client" }
 newviso-items = { path = "crates/newviso-items" }

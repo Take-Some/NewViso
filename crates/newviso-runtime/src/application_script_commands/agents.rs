@@ -169,7 +169,9 @@ impl EngineApplication {
                 self.agents.set_task(agent_id, task)?;
             }
             "agent.tasks.clear" => {
-                let agent_id = command.get("agent_id").and_then(Value::as_str)
+                let agent_id = command
+                    .get("agent_id")
+                    .and_then(Value::as_str)
                     .ok_or_else(|| "agent.tasks.clear requires agent_id".to_owned())?;
                 if let Some(cancel) = self.agents.clear_tasks(agent_id)? {
                     application_agents::apply_agent_commands(&mut self.living_world, vec![cancel])?;

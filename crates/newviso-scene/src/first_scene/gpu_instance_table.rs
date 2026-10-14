@@ -106,13 +106,9 @@ impl Scene3dRuntime {
                         .ok_or_else(|| format!("static asset entity {} disappeared", stable_id))?;
                     let slot = u32::try_from(table.instance_data.len() / INSTANCE_FLOATS)
                         .map_err(|_| "static asset instance index exceeds u32".to_owned())?;
-                    table
-                        .instance_data
-                        .extend_from_slice(&geometry::instance_model_matrix(
-                            entity.transform.position,
-                            entity.transform.rotation_degrees,
-                            entity.transform.scale,
-                        ));
+                    table.instance_data.extend_from_slice(
+                        &self.asset_instance_model_matrix(*stable_id, entity.transform),
+                    );
                     table.entity_slots.insert(*stable_id, slot);
                     table.entity_batches.insert(*stable_id, key);
                 }

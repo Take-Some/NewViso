@@ -20,14 +20,17 @@ impl ContentManager {
             editor_text: String::new(),
             saved_text: String::new(),
             status: "Ready".to_owned(),
+            surface_revision:0,
         };
         manager.refresh()?;
         Ok(manager)
     }
     pub fn set_project_workspace(&mut self, project: ProjectWorkspaceView) {
         self.project = Some(project);
+        self.invalidate_surfaces();
     }
     pub fn refresh(&mut self) -> Result<(), String> {
+        self.invalidate_surfaces();
         let mut entries = Vec::new();
         collect_files(&self.root, &self.root, &mut entries)?;
         entries.sort_by(|a, b| a.path.cmp(&b.path));
@@ -42,7 +45,8 @@ impl ContentManager {
         Ok(())
     }
     pub fn report_status(&mut self, message: impl Into<String>) {
-        self.status = message.into();
+        let message=message.into();
+        if self.status!=message{self.status=message;self.invalidate_surfaces();}
     }
     pub fn is_dirty(&self) -> bool {
         self.selected.is_some() && self.editor_text != self.saved_text

@@ -78,6 +78,11 @@ impl EngineApplication {
                 }
                 self.scene.upsert_runtime_light(id, desc)?;
             }
+            "scene.weather.lens.set" => {
+                let enabled = command.get("enabled").and_then(Value::as_bool)
+                    .ok_or_else(|| format!("script command[{index}] weather lens requires boolean 'enabled'"))?;
+                self.scene.set_weather_lens_enabled(enabled);
+            }
             "scene.cloudhat.keyframe.set" => {
                 let current = self.scene.cloudhat_keyframe();
                 let enabled = command
@@ -98,6 +103,11 @@ impl EngineApplication {
                         "cloud_light_color",
                         current.cloud_light_color,
                     )?,
+                    light_direction: if command.get("light_direction").is_some() {
+                        Some(command_vec3(command, "light_direction", index)?)
+                    } else {
+                        current.light_direction
+                    },
                     cloud_ambient_color: optional_vec4(
                         "cloud_ambient_color",
                         current.cloud_ambient_color,

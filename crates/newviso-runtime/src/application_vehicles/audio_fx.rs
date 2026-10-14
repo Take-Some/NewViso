@@ -589,7 +589,13 @@ impl EngineApplication {
             .filter(|wheel| wheel.contact && wheel.tire_condition == TireCondition::Rim)
             .map(|wheel| wheel.slip_intensity)
             .fold(0.0f32, f32::max);
-        let tyre_active = telemetry.speed_mps > 2.0 && rubber_contact_wheels > 0 && max_slip > 0.82;
+        let max_scrub_speed = telemetry
+            .wheels
+            .iter()
+            .filter(rubber_contact)
+            .map(|wheel| wheel.sliding_speed_mps)
+            .fold(0.0f32, f32::max);
+        let tyre_active = rubber_contact_wheels > 0 && max_scrub_speed > 1.0 && max_slip > 0.82;
         let rubber_road_active = telemetry.speed_mps > 1.0 && rubber_contact_wheels > 0;
         // Controlled cornering gets its own rubber side scrub. Bare rims are a
         // different material/contact path and never feed tyre scrub/skid audio.
@@ -1027,6 +1033,7 @@ impl EngineApplication {
                             TireCondition::Rim | TireCondition::Missing
                         )
                         || wheel_slip <= 0.82
+                        || wheel.sliding_speed_mps <= 1.0
                     {
                         continue;
                     }
@@ -1035,7 +1042,9 @@ impl EngineApplication {
                         part.pivot[1] - wheel.compression,
                         part.pivot[2],
                     ];
-                    let world = vehicle_local_point(position, rotation_degrees, scale, local);
+                    let world = wheel.contact_position.unwrap_or_else(|| {
+                        vehicle_local_point(position, rotation_degrees, scale, local)
+                    });
                     let mut request = json!({
                         "asset_ref": controls.tyre_effect.as_deref().unwrap_or_default(),
                         "position": world,

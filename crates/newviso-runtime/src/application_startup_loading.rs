@@ -137,13 +137,16 @@ impl EngineApplication {
         let no_failures = streaming_failed == 0 && uploads.failed_jobs == 0;
         let gpu_idle = uploads.remaining_jobs == 0;
         let gpu_assets_ready = gpu_warmup.fully_ready();
+        let animation_preloads_ready = interests.iter().all(|request|
+            !self.scene_animation_preloads.contains_key(&request.stable_id));
         let ready_candidate = all_claimed
             && all_resident
             && all_materialized
             && cpu_idle
             && no_failures
             && gpu_idle
-            && gpu_assets_ready;
+            && gpu_assets_ready
+            && animation_preloads_ready;
 
         self.startup_map_ready_streak = if ready_candidate {
             self.startup_map_ready_streak.saturating_add(1)

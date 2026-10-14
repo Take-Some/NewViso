@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+mod joints;
+pub use joints::PhysicsJointSnapshot;
 
 pub const ENGINE_PHYSICS_SERVICE_ID: &str = "engine.physics";
 pub const PHYSICS_SERVICE_ID: &str = "physics.api";
@@ -255,6 +257,10 @@ pub struct PhysicsQuery {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PhysicsFrameInput {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_collision_pairs: Vec<[PhysicsEntityKey; 2]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub joints: Vec<PhysicsJointSnapshot>,
     pub frame_index: u64,
     pub fixed_tick: u64,
     pub dt: f32,
@@ -282,6 +288,8 @@ impl PhysicsFrameInput {
             colliders: Vec::new(),
             commands: Vec::new(),
             queries: Vec::new(),
+            joints: Vec::new(),
+            disabled_collision_pairs: Vec::new(),
         }
     }
 }
@@ -412,6 +420,8 @@ impl Default for PhysicsApiVersion {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PhysicsFeature {
+    JointConstraints,
+    CollisionPairFiltering,
     StaticColliders,
     DynamicBodies,
     KinematicBodies,
@@ -559,6 +569,25 @@ pub fn decode_json<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Stri
 }
 
 pub fn validate_frame(input: &PhysicsFrameInput) -> Result<(), String> {
+    joints::validate_joints(input)?;
+    let entities = input
+        .bodies
+        .iter()
+        .map(|b| b.entity)
+        .chain(input.colliders.iter().map(|b| b.entity))
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut pairs = std::collections::BTreeSet::new();
+    for [a, b] in &input.disabled_collision_pairs {
+        if a == b
+            || !entities.contains(a)
+            || !entities.contains(b)
+            || !pairs.insert(if a < b { [*a, *b] } else { [*b, *a] })
+        {
+            return Err(
+                "physics collision filter references missing/same bodies or repeats a pair".into(),
+            );
+        }
+    }
     if !input.dt.is_finite() || input.dt <= 0.0 || input.dt > 0.25 {
         return Err(format!("physics frame dt out of range: {}", input.dt));
     }
@@ -699,6 +728,8 @@ mod tests {
             colliders: Vec::new(),
             commands: Vec::new(),
             queries: Vec::new(),
+            joints: Vec::new(),
+            disabled_collision_pairs: Vec::new(),
         };
         validate_frame(&input).unwrap();
         let encoded = encode_json(&PhysicsServiceRequest::StepFrame(input)).unwrap();

@@ -11,11 +11,11 @@ impl ContentManager {
                         let path = change.get("path").and_then(Value::as_str).unwrap_or("");
                         if path == "content.editor.value" {
                             if let Some(value) = change.get("value").and_then(Value::as_str) {
-                                self.editor_text = value.to_owned();
+                                if self.editor_text!=value{self.editor_text=value.to_owned();self.invalidate_surfaces();}
                             }
                         } else if path == "content.vfs.search" {
                             if let Some(value) = change.get("value").and_then(Value::as_str) {
-                                self.vfs_search = value.to_owned();
+                                if self.vfs_search!=value{self.vfs_search=value.to_owned();self.invalidate_surfaces();}
                             }
                         }
                     }
@@ -25,11 +25,10 @@ impl ContentManager {
 
         if let Some(actions) = dispatch.get("actions").and_then(Value::as_array) {
             for action in actions {
-                match action
-                    .get("action_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                {
+                let id=action.get("action_id").and_then(Value::as_str).unwrap_or("");
+                if matches!(id,"content.select"|"content.vfs.select"|"content.vfs.open_dir"|
+                    "content.vfs.up"|"content.refresh"|"content.save"){self.invalidate_surfaces();}
+                match id {
                     "content.select" => {
                         let path = action
                             .get("payload")

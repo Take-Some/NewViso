@@ -1,0 +1,48 @@
+#version 450
+// Shared scene deformation: identical 17-float output for every graphics pass.
+// Bind inputs are immutable; only the presented bone palette crosses the CPU ABI.
+layout(local_size_x = 128) in;
+layout(set=0,binding=0,std140) uniform SkinFrame { uvec4 dimensions; } frame;
+layout(set=0,binding=1,std430) readonly buffer BindVertices { float bind_data[]; };
+layout(set=0,binding=2,std430) readonly buffer BonePalette { mat4 bones[]; };
+layout(set=0,binding=3,std430) writeonly buffer SkinnedVertices { float output_data[]; };
+vec3 safe_normalize(vec3 value) {
+    float length_squared = dot(value,value);
+    return length_squared > 1.4210854715202004e-14 ? value * inversesqrt(length_squared) : vec3(0);
+}
+void main() {
+    uint vertex = gl_GlobalInvocationID.x;
+    if (vertex >= frame.dimensions.x) return;
+    uint src = vertex * 36u;
+    vec3 position = vec3(bind_data[src],bind_data[src+1],bind_data[src+2]);
+    vec3 normal = vec3(bind_data[src+4],bind_data[src+5],bind_data[src+6]);
+    vec3 tangent = vec3(bind_data[src+13],bind_data[src+14],bind_data[src+15]);
+    uint count = uint(bind_data[src+33]);
+    if (count != 0u) {
+        mat4 blended=mat4(0);
+        for (uint lane=0u;lane<count;++lane) {
+            uint joint=uint(bind_data[src+17+lane]);
+            float weight=bind_data[src+25+lane];
+            blended += bones[joint]*weight;
+        }
+        position=(blended*vec4(position,1)).xyz;
+        normal=safe_normalize((blended*vec4(normal,0)).xyz);
+        vec3 transformed_tangent=(blended*vec4(tangent,0)).xyz;
+        tangent=safe_normalize(transformed_tangent-normal*dot(transformed_tangent,normal));
+    }
+    bool linear=frame.dimensions.w!=0u;
+    uint scatter_begin=linear?0u:floatBitsToUint(bind_data[src+34]);
+    uint scatter_count=linear?1u:floatBitsToUint(bind_data[src+35]);
+    for (uint corner=0u;corner<scatter_count;++corner) {
+        uint expanded=linear?vertex:floatBitsToUint(bind_data[scatter_begin+corner]);
+        uint dst=(frame.dimensions.y+expanded)*17u;
+        // Write every final channel once; avoid copying then overwriting the
+        // nine deformed position/normal/tangent components.
+        output_data[dst]=position.x; output_data[dst+1]=position.y; output_data[dst+2]=position.z;
+        output_data[dst+3]=bind_data[src+3];
+        for (uint lane=7u;lane<=12u;++lane) output_data[dst+lane]=bind_data[src+lane];
+        output_data[dst+16]=bind_data[src+16];
+        output_data[dst+4]=normal.x; output_data[dst+5]=normal.y; output_data[dst+6]=normal.z;
+        output_data[dst+13]=tangent.x; output_data[dst+14]=tangent.y; output_data[dst+15]=tangent.z;
+    }
+}

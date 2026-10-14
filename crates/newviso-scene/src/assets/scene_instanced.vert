@@ -40,6 +40,8 @@ layout(location = 6) out vec4 v_tangent;
 
 void main() {
     mat4 model = mat4(instance_col0, instance_col1, instance_col2, instance_col3);
+    // The homogeneous sign is per-instance reflection metadata, not a transform.
+    model[3].w = 1.0;
     mat3 linear = mat3(model);
     mat3 normal_matrix = transpose(inverse(linear));
 
@@ -49,7 +51,7 @@ void main() {
     float orientation = determinant(linear) < 0.0 ? -1.0 : 1.0;
 
     v_color = in_color;
-    v_overlay = 0.0;
+    v_overlay = instance_col3.w < 0.0 ? -1.0 : 0.0;
     v_uv = in_uv;
     v_tangent = vec4(world_tangent, in_tangent.w * orientation);
     v_normal = world_normal;

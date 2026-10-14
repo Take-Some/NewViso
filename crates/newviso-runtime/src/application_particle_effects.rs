@@ -49,32 +49,66 @@ pub(super) struct ParticleEffectSpawnReport {
     pub textures: Vec<String>,
 }
 
-pub(super) fn spawn_particle_effect(
-    scene: &mut Scene3dRuntime,
-    command: &Value,
-    command_index: usize,
-) -> Result<ParticleEffectSpawnReport, String> {
+/// Resolve and cache the dictionary without emitting particles.
+pub(super) fn preload_particle_effect(command: &Value, command_index: usize) -> Result<(), String> {
     let asset_ref = required_string(command, "asset_ref", command_index)?;
     let (logical_path, effect_name) = split_asset_ref(asset_ref)?;
-    let position = vec3(command, "position", command_index)?;
-    let direction = optional_vec3(command, "direction", command_index)?.unwrap_or([0.0, 0.0, -1.0]);
-    let basis = basis_from_forward(direction)?;
-    let inherited_velocity =
-        optional_vec3(command, "inherited_velocity", command_index)?.unwrap_or([0.0; 3]);
-    let scale = optional_number(command, "scale", command_index)?
-        .unwrap_or(1.0)
-        .clamp(0.001, 1000.0);
-    let count_scale = optional_number(command, "count_scale", command_index)?
-        .unwrap_or(1.0)
-        .clamp(0.0, 32.0);
-    let command_tint = optional_vec4(command, "tint", command_index)?.unwrap_or([1.0; 4]);
-    let seed = command
-        .get("seed")
-        .and_then(Value::as_u64)
-        .map(|value| value as u32)
-        .unwrap_or_else(|| joaat(effect_name) ^ joaat(logical_path));
-    let mut rng = Rng(seed);
+    let (dictionary, source) = load_particle_dictionary(command, logical_path, effect_name, command_index)?;
+    if find_named(dictionary.get("effects"), effect_name).is_none() {
+        return Err(format!("script command[{command_index}] particle effect '{effect_name}' is absent from '{source}'"));
+    }
+    Ok(())
+}
 
+pub(super) fn preload_particle_effect_resources(
+    scene: &mut Scene3dRuntime, command: &Value, command_index: usize,
+) -> Result<(), String> {
+    preload_particle_effect(command, command_index)?;
+    let (path, effect) = split_asset_ref(required_string(command, "asset_ref", command_index)?)?;
+    let (dictionary, _) = load_particle_dictionary(command, path, effect, command_index)?;
+    let assets = AssetClient::new();
+    for reference in effect_texture_references(&dictionary, effect)? {
+        if !scene.particle_texture_registered(&reference) {
+            scene.register_particle_texture(&reference, super::load_sky_texture(&assets, &reference, true)?)?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_texture_references(value: &Value, references: &mut std::collections::BTreeSet<String>) {
+    match value {
+        Value::Object(fields) => for (key, value) in fields {
+            if key == "texture_ref" {
+                if let Some(reference) = value.as_str() { references.insert(reference.to_owned()); }
+            } else { collect_texture_references(value, references); }
+        },
+        Value::Array(values) => for value in values { collect_texture_references(value, references); },
+        _ => {},
+    }
+}
+
+fn effect_texture_references(dictionary: &Value, name: &str) -> Result<std::collections::BTreeSet<String>, String> {
+    let effect = find_named(dictionary.get("effects"), name)
+        .ok_or_else(|| format!("particle effect '{name}' is absent"))?;
+    let events = effect.get("events").and_then(Value::as_array)
+        .ok_or_else(|| format!("particle effect '{name}' has no event list"))?;
+    let mut references = std::collections::BTreeSet::new();
+    for event in events {
+        if event.get("event_type").and_then(Value::as_u64).unwrap_or(0) != 0 { continue; }
+        let name = event.get("particle_rule").and_then(Value::as_str).unwrap_or("");
+        let particle = find_named(dictionary.get("particles"), name)
+            .ok_or_else(|| format!("particle effect references missing particle '{name}'"))?;
+        collect_texture_references(particle, &mut references);
+    }
+    Ok(references)
+}
+
+fn load_particle_dictionary(
+    command: &Value,
+    logical_path: &str,
+    effect_name: &str,
+    command_index: usize,
+) -> Result<(Arc<Value>, String), String> {
     let assets = AssetClient::new();
     let cache_key = format!(
         "{}|{}",
@@ -186,6 +220,37 @@ pub(super) fn spawn_particle_effect(
         });
         (dictionary, format!("{source}@{effect_name}"))
     };
+    Ok((dictionary, source))
+}
+
+pub(super) fn spawn_particle_effect(
+    scene: &mut Scene3dRuntime,
+    command: &Value,
+    command_index: usize,
+) -> Result<ParticleEffectSpawnReport, String> {
+    let asset_ref = required_string(command, "asset_ref", command_index)?;
+    let (logical_path, effect_name) = split_asset_ref(asset_ref)?;
+    let position = vec3(command, "position", command_index)?;
+    let direction = optional_vec3(command, "direction", command_index)?.unwrap_or([0.0, 0.0, -1.0]);
+    let basis = basis_from_forward(direction)?;
+    let inherited_velocity =
+        optional_vec3(command, "inherited_velocity", command_index)?.unwrap_or([0.0; 3]);
+    let scale = optional_number(command, "scale", command_index)?
+        .unwrap_or(1.0)
+        .clamp(0.001, 1000.0);
+    let count_scale = optional_number(command, "count_scale", command_index)?
+        .unwrap_or(1.0)
+        .clamp(0.0, 32.0);
+    let command_tint = optional_vec4(command, "tint", command_index)?.unwrap_or([1.0; 4]);
+    let seed = command
+        .get("seed")
+        .and_then(Value::as_u64)
+        .map(|value| value as u32)
+        .unwrap_or_else(|| joaat(effect_name) ^ joaat(logical_path));
+    let mut rng = Rng(seed);
+
+    let assets = AssetClient::new();
+    let (dictionary, source) = load_particle_dictionary(command, logical_path, effect_name, command_index)?;
 
     let effect = find_named(dictionary.get("effects"), effect_name).ok_or_else(|| {
         format!(
@@ -1155,6 +1220,38 @@ mod physical_debris_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preload_closure_includes_sprite_and_model_textures_without_unrelated_particles() {
+        let dictionary = json!({
+            "effects":[{"name":"water","events":[{"event_type":0,"particle_rule":"splash"},
+                {"event_type":0,"particle_rule":"mesh"},{"event_type":0,"particle_rule":"splash"}]}],
+            "particles":[{"name":"splash","texture_ref":"textures@splash"},
+                {"name":"mesh","meshes":[{"texture_ref":"textures@mesh"}]},
+                {"name":"unrelated","texture_ref":"textures@unused"}]
+        });
+        assert_eq!(effect_texture_references(&dictionary,"water").unwrap().into_iter().collect::<Vec<_>>(),
+            vec!["textures@mesh","textures@splash"]);
+        assert!(effect_texture_references(&dictionary,"missing").is_err());
+    }
+
+    #[test]
+    fn preload_reuses_the_dictionary_and_validates_the_requested_effect() {
+        let key = "tests/preloaded.ypt|".to_owned();
+        let dictionary = Arc::new(json!({"effects":[{"name":"water_splash_generic"}]}));
+        DICTIONARIES.with(|cache| {
+            cache.borrow_mut().insert(key.clone(), (dictionary.clone(), "tests/preloaded.ypt".into()));
+        });
+        let command = json!({"asset_ref":"tests/preloaded.ypt@water_splash_generic"});
+        preload_particle_effect(&command, 0).unwrap();
+        preload_particle_effect(&command, 0).unwrap();
+        DICTIONARIES.with(|cache| {
+            assert!(Arc::ptr_eq(&dictionary, &cache.borrow()[&key].0));
+        });
+        let missing = json!({"asset_ref":"tests/preloaded.ypt@missing_effect"});
+        assert!(preload_particle_effect(&missing, 0).unwrap_err().contains("is absent"));
+        DICTIONARIES.with(|cache| { cache.borrow_mut().remove(&key); });
+    }
 
     #[test]
     fn nvpt_wire_parser_rejects_wrong_magic() {

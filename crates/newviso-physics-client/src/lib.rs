@@ -99,6 +99,7 @@ mod tests {
     #[test]
     fn step_frame_wire_shape_matches_replaceable_physics_contract() {
         let request = PhysicsServiceRequest::StepFrame(PhysicsFrameInput {
+            disabled_collision_pairs: Vec::new(),
             frame_index: 1,
             fixed_tick: 2,
             dt: 1.0 / 60.0,
@@ -136,6 +137,7 @@ mod tests {
             colliders: Vec::new(),
             commands: Vec::new(),
             queries: Vec::new(),
+            joints: Vec::new(),
         });
         let PhysicsServiceRequest::StepFrame(input) = &request else {
             unreachable!()

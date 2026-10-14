@@ -2,13 +2,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
+mod behavior;
 #[cfg(test)]
 mod ped_tests;
-mod tasks;
-mod behavior;
+pub mod ped_types;
 pub mod peds;
-pub use tasks::AgentTaskKind;
+mod tasks;
 pub use behavior::AgentPresentationIntent;
+pub use tasks::AgentTaskKind;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AgentPerceptionPolicy {
@@ -214,9 +215,22 @@ pub enum AgentCommand {
         mode: String,
         payload: Value,
     },
-    CancelTravel { actor_id: String },
-    MoveToPosition { actor_id: String, request_id: String, position: [f32; 3], speed: f32, stop_distance: f32 },
-    Attack { actor_id: String, target_actor: String, damage: f32, range: f32 },
+    CancelTravel {
+        actor_id: String,
+    },
+    MoveToPosition {
+        actor_id: String,
+        request_id: String,
+        position: [f32; 3],
+        speed: f32,
+        stop_distance: f32,
+    },
+    Attack {
+        actor_id: String,
+        target_actor: String,
+        damage: f32,
+        range: f32,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -225,6 +239,7 @@ struct RuntimeTask {
     status: AgentTaskStatus,
     elapsed_seconds: f32,
     goal: Option<[f32; 3]>,
+    facing_target: Option<[f32; 3]>,
     origin: Option<[f32; 3]>,
     next_action_seconds: f32,
     iteration: u64,
@@ -299,7 +314,9 @@ impl AgentRuntime {
             .get_mut(agent_id.trim())
             .ok_or_else(|| format!("agent '{agent_id}' does not exist"))?;
         if record.active_task.as_deref() == Some(desc.id.as_str()) {
-            if let Some(cancel) = suspend_active_travel(record) { self.pending_commands.push(cancel); }
+            if let Some(cancel) = suspend_active_travel(record) {
+                self.pending_commands.push(cancel);
+            }
         }
         record.tasks.insert(desc.id.clone(), RuntimeTask::new(desc));
         record.next_think_world_seconds = 0.0;
@@ -373,15 +390,21 @@ impl AgentRuntime {
 
         for record in self.agents.values_mut() {
             if !record.desc.enabled {
-                if let Some(cancel) = suspend_active_travel(record) { self.frame_commands.push(cancel); }
+                if let Some(cancel) = suspend_active_travel(record) {
+                    self.frame_commands.push(cancel);
+                }
                 continue;
             }
             let Some(actor) = actors.get(record.desc.actor_id.as_str()).copied() else {
-                if let Some(cancel) = suspend_active_travel(record) { self.frame_commands.push(cancel); }
+                if let Some(cancel) = suspend_active_travel(record) {
+                    self.frame_commands.push(cancel);
+                }
                 continue;
             };
             if !actor.enabled {
-                if let Some(cancel) = suspend_active_travel(record) { self.frame_commands.push(cancel); }
+                if let Some(cancel) = suspend_active_travel(record) {
+                    self.frame_commands.push(cancel);
+                }
                 continue;
             }
 
@@ -425,7 +448,8 @@ impl AgentRuntime {
             let old_status = task.status;
             behavior::advance_task(task, actor, &actors, elapsed, &mut self.frame_commands);
             if task.status != old_status {
-                self.frame_events.push(json!({"actor_id": actor.id, "agent_id": record.desc.id,
+                self.frame_events
+                    .push(json!({"actor_id": actor.id, "agent_id": record.desc.id,
                     "task_id": task.desc.id, "status": task.status}));
             }
         }
@@ -434,33 +458,51 @@ impl AgentRuntime {
     }
 
     pub fn is_bound(&self, agent_id: &str, actor_id: &str) -> bool {
-        self.agents.get(agent_id).is_some_and(|r| r.desc.actor_id == actor_id)
+        self.agents
+            .get(agent_id)
+            .is_some_and(|r| r.desc.actor_id == actor_id)
     }
 
     pub fn clear_tasks(&mut self, agent_id: &str) -> Result<Option<AgentCommand>, String> {
-        let record = self.agents.get_mut(agent_id)
+        let record = self
+            .agents
+            .get_mut(agent_id)
             .ok_or_else(|| format!("agent '{agent_id}' does not exist"))?;
         let cancel = suspend_active_travel(record);
-        record.tasks.clear(); record.next_think_world_seconds = 0.0;
+        record.tasks.clear();
+        record.next_think_world_seconds = 0.0;
         record.last_think_world_seconds = None;
         Ok(cancel)
     }
 
     pub fn presentation(&self, actor_id: &str, position: [f32; 3]) -> AgentPresentationIntent {
-        self.agents.values().find(|r| r.desc.actor_id == actor_id && r.desc.enabled)
+        self.agents
+            .values()
+            .find(|r| r.desc.actor_id == actor_id && r.desc.enabled)
             .and_then(|r| r.active_task.as_ref().and_then(|id| r.tasks.get(id)))
-            .map(|task| task.presentation(position)).unwrap_or_default()
+            .map(|task| task.presentation(position))
+            .unwrap_or_default()
     }
 
     pub fn fail_active(&mut self, actor_id: &str) {
-        for record in self.agents.values_mut().filter(|r| r.desc.actor_id == actor_id) {
-            if let Some(task) = record.active_task.as_ref().and_then(|id| record.tasks.get_mut(id)) {
+        for record in self
+            .agents
+            .values_mut()
+            .filter(|r| r.desc.actor_id == actor_id)
+        {
+            if let Some(task) = record
+                .active_task
+                .as_ref()
+                .and_then(|id| record.tasks.get_mut(id))
+            {
                 task.status = AgentTaskStatus::Failed;
             }
         }
     }
 
-    pub fn frame_events(&self) -> &[Value] { &self.frame_events }
+    pub fn frame_events(&self) -> &[Value] {
+        &self.frame_events
+    }
 
     pub fn runtime_state(&self) -> Value {
         let agents = self
@@ -519,10 +561,7 @@ fn suspend_active_travel(record: &mut AgentRecord) -> Option<AgentCommand> {
 fn task_travel_cancel(actor_id: &str, task: &RuntimeTask) -> Option<AgentCommand> {
     matches!(
         (&task.desc.task, task.status),
-        (
-            _,
-            AgentTaskStatus::Pending | AgentTaskStatus::Running
-        )
+        (_, AgentTaskStatus::Pending | AgentTaskStatus::Running)
     )
     .then_some(())
     .filter(|_| task.desc.task.owns_movement())

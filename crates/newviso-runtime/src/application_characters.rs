@@ -69,7 +69,7 @@ impl PhysicalCharacterBinding {
         self.controller.validate()
     }
 
-    fn center_offset_y(&self) -> f32 {
+    pub(super) fn center_offset_y(&self) -> f32 {
         self.body_center_offset_y
             .unwrap_or(self.controller.radius + self.controller.half_height)
     }
@@ -115,9 +115,23 @@ enum CharacterAirPhase {
     Fall,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(super) struct NativeCharacterBody {
+    pub entity: u64,
+    pub controlled: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct NativeCharacterDrive {
+    entity: u64,
+    velocity: [f32; 3],
+    step_y: Option<f32>,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct PhysicalCharacterRuntime {
     navigation: NavigationRuntime,
+    primitive_navigation: BTreeMap<String, NavTileSource>,
     characters: CharacterRuntime,
     bindings: BTreeMap<String, PhysicalCharacterBinding>,
     paths: BTreeMap<String, PhysicalPathState>,
@@ -125,17 +139,26 @@ pub(super) struct PhysicalCharacterRuntime {
     active: BTreeSet<String>,
     air_phases: BTreeMap<String, CharacterAirPhase>,
     motion_events: Vec<(String, Value)>,
+    native_bodies: BTreeMap<String, NativeCharacterBody>,
+    native_drives: Vec<NativeCharacterDrive>,
+    native_jumps: BTreeMap<String, f32>,
 }
 
 struct RuntimeCollisionWorld<'a> {
     physics: &'a PhysicsRuntime,
+    ignore_entity: Option<u64>,
     scene_solids: &'a [([f32; 3], [f32; 3])],
 }
 
 impl CharacterCollisionWorld for RuntimeCollisionWorld<'_> {
     fn sweep_sphere(&self, origin: [f32; 3], delta: [f32; 3], radius: f32) -> Option<SweepHit> {
-        self.physics
-            .character_sweep_sphere(origin, delta, radius, None, self.scene_solids)
+        self.physics.character_sweep_sphere(
+            origin,
+            delta,
+            radius,
+            self.ignore_entity,
+            self.scene_solids,
+        )
     }
 
     fn support_velocity(&self, entity: u64) -> [f32; 3] {
@@ -144,6 +167,22 @@ impl CharacterCollisionWorld for RuntimeCollisionWorld<'_> {
 }
 
 impl PhysicalCharacterRuntime {
+    pub(super) fn binding(&self, actor_id: &str) -> Option<&PhysicalCharacterBinding> {
+        self.bindings.get(actor_id)
+    }
+
+    pub(super) fn set_native_bodies(&mut self, bodies: BTreeMap<String, NativeCharacterBody>) {
+        self.native_jumps.retain(|id, _| bodies.contains_key(id));
+        self.native_bodies = bodies;
+    }
+
+    fn apply_native_drives(&mut self, physics: &mut PhysicsRuntime) -> Result<(), String> {
+        for drive in self.native_drives.drain(..) {
+            physics.drive_character_body(drive.entity, drive.velocity, drive.step_y)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn bind(&mut self, binding: PhysicalCharacterBinding) -> Result<(), String> {
         binding.validate()?;
         let actor_id = binding.actor_id.trim().to_owned();
@@ -155,6 +194,8 @@ impl PhysicalCharacterRuntime {
     pub(super) fn unbind(&mut self, actor_id: &str) -> bool {
         let actor_id = actor_id.trim();
         self.characters.remove(actor_id);
+        self.native_bodies.remove(actor_id);
+        self.native_jumps.remove(actor_id);
         self.paths.remove(actor_id);
         self.facing_headings.remove(actor_id);
         self.air_phases.remove(actor_id);
@@ -189,6 +230,12 @@ impl PhysicalCharacterRuntime {
             return Ok(false);
         }
 
+        if let Some(body) = self.native_bodies.get(actor_id) {
+            if !body.controlled {
+                return Ok(false);
+            }
+            self.native_jumps.insert(actor_id.to_owned(), jump_speed);
+        }
         let support_entity = state.support_entity;
         state.velocity[1] = jump_speed;
         state.grounded = false;
@@ -249,6 +296,30 @@ impl PhysicalCharacterRuntime {
             self.invalidate_paths();
         }
         removed
+    }
+
+    fn sync_primitive_navigation(&mut self, sources: Vec<NavTileSource>) -> Result<(), String> {
+        let next: BTreeMap<_, _> = sources
+            .into_iter()
+            .map(|source| (source.id.clone(), source))
+            .collect();
+        let retired: Vec<_> = self
+            .primitive_navigation
+            .keys()
+            .filter(|id| !next.contains_key(*id))
+            .cloned()
+            .collect();
+        for id in retired {
+            self.remove_navigation_tile(&id);
+            self.primitive_navigation.remove(&id);
+        }
+        for (id, source) in next {
+            if self.primitive_navigation.get(&id) != Some(&source) {
+                self.upsert_navigation_tile(source.clone())?;
+                self.primitive_navigation.insert(id, source);
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn upsert_obstacle(&mut self, obstacle: DynamicObstacle) -> Result<(), String> {
@@ -330,6 +401,7 @@ impl PhysicalCharacterRuntime {
             );
         }
 
+        self.native_drives.clear();
         self.navigation.pump(NAV_REQUESTS_PER_FRAME);
         let views = world.actor_runtime_views();
         let view_map = views
@@ -364,11 +436,6 @@ impl PhysicalCharacterRuntime {
             })
             .collect::<Vec<_>>();
         let actor_ids = self.bindings.keys().cloned().collect::<Vec<_>>();
-        let collision_world = RuntimeCollisionWorld {
-            physics,
-            scene_solids,
-        };
-
         for actor_id in actor_ids {
             let binding = self
                 .bindings
@@ -414,6 +481,37 @@ impl PhysicalCharacterRuntime {
                 }
             }
 
+            let native = self.native_bodies.get(&actor_id).copied().and_then(|body| {
+                physics
+                    .vehicle_body_state(body.entity)
+                    .map(|state| (body, state))
+            });
+            let jump_speed = self.native_jumps.remove(&actor_id);
+            if let Some((body, pose)) = native {
+                let mut state = self
+                    .characters
+                    .state(&actor_id)
+                    .expect("active character exists");
+                state.position = pose.position;
+                state.velocity = pose.linear_velocity;
+                if let Some(speed) = jump_speed {
+                    state.velocity[1] = speed;
+                }
+                self.characters.set_state(&actor_id, state)?;
+                if !body.controlled {
+                    world.set_actor_external_motion(
+                        &actor_id,
+                        binding.center_to_actor(pose.position),
+                        pose.linear_velocity,
+                    )?;
+                    continue;
+                }
+            }
+            let collision_world = RuntimeCollisionWorld {
+                physics,
+                scene_solids,
+                ignore_entity: native.map(|(body, _)| body.entity),
+            };
             let travel = actor.travel_target_position.zip(actor.travel_speed);
             let path = self.paths.entry(actor_id.clone()).or_default();
 
@@ -535,7 +633,7 @@ impl PhysicalCharacterRuntime {
             } else {
                 state.velocity[1] - binding.gravity * dt
             };
-            let result = self.characters.step(
+            let mut result = self.characters.step(
                 &actor_id,
                 &collision_world,
                 CharacterMoveInput {
@@ -551,6 +649,22 @@ impl PhysicalCharacterRuntime {
                 },
             )?;
 
+            if let Some((body, pose)) = native {
+                // Steering chooses horizontal intent. Bullet resolves native body
+                // contacts; a sweep depenetration must not become backwards intent.
+                self.native_drives.push(NativeCharacterDrive {
+                    entity: body.entity,
+                    velocity: [
+                        steering.velocity[0],
+                        jump_speed.unwrap_or(pose.linear_velocity[1]),
+                        steering.velocity[1],
+                    ],
+                    step_y: result.stepped.then_some(result.state.position[1]),
+                });
+                result.state.position = pose.position;
+                result.state.velocity = pose.linear_velocity;
+                self.characters.set_state(&actor_id, result.state)?;
+            }
             let actor_position = binding.center_to_actor(result.state.position);
             let next_phase = if result.state.grounded {
                 CharacterAirPhase::Grounded
@@ -855,6 +969,7 @@ impl EngineApplication {
     }
 
     pub(super) fn tick_physical_characters(&mut self, dt: f32) -> Result<(), String> {
+        self.sync_ped_physics_bodies(dt)?;
         let interests = self.physical_characters.interest_bounds(&self.living_world);
         let scene_solids = if interests.is_empty() {
             Vec::new()
@@ -868,9 +983,29 @@ impl EngineApplication {
             return Ok(());
         };
 
+        let primitive_geometry = if physics.scene_collision_queries_enabled() {
+            self.scene
+                .physics_static_primitive_navigation_near(&interests)
+        } else {
+            Vec::new()
+        };
+        let primitive_tiles = primitive_geometry
+            .into_iter()
+            .map(|geometry| NavTileSource {
+                id: format!("scene.primitive.{}", geometry.entity),
+                vertices: geometry.vertices,
+                triangles: geometry.triangles,
+            })
+            .collect();
+        self.physical_characters
+            .sync_primitive_navigation(primitive_tiles)?;
+
         self.physical_characters
             .tick(dt, &mut self.living_world, physics, &scene_solids)?;
 
+        if let Some(physics) = self.physics.as_mut() {
+            self.physical_characters.apply_native_drives(physics)?;
+        }
         for (topic, payload) in self.physical_characters.drain_motion_events() {
             host::publish_event_json(&topic, "newviso.character", payload)?;
         }
@@ -924,6 +1059,182 @@ fn normalize_xz(v: [f32; 3]) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_ped_keeps_collision_position_and_momentum_without_double_integration() {
+        let mut physics = PhysicsRuntime::empty_for_tests();
+        physics
+            .upsert_body_from_script(
+                &json!({"entity": 12, "position": [3, 0.9, 4],
+            "shape": {"kind": "capsule", "radius": 0.32, "half_height": 0.58},
+            "linear_velocity": [6, 0.2, -2]}),
+                0,
+            )
+            .unwrap();
+        let mut physical = PhysicalCharacterRuntime::default();
+        physical
+            .bind(serde_json::from_value(json!({"actor_id": "hit.ped"})).unwrap())
+            .unwrap();
+        physical.set_native_bodies(BTreeMap::from([(
+            "hit.ped".into(),
+            NativeCharacterBody {
+                entity: 12,
+                controlled: false,
+            },
+        )]));
+        let mut world = LivingWorldRuntime::default();
+        world
+            .upsert_actor(WorldActorDesc {
+                id: "hit.ped".into(),
+                kind: "ped".into(),
+                position: [0.0; 3],
+                enabled: true,
+                group: None,
+                channel: None,
+                tags: Vec::new(),
+                parameters: BTreeMap::new(),
+                state: Value::Null,
+            })
+            .unwrap();
+        world.tick_frame(0.05, &[[0.0; 3]]);
+        physical.tick(0.05, &mut world, &physics, &[]).unwrap();
+        let actor = world
+            .actor_runtime_views()
+            .into_iter()
+            .find(|a| a.id == "hit.ped")
+            .unwrap();
+        assert_eq!(actor.position, [3.0, 0.0, 4.0]);
+        assert_eq!(actor.velocity, [6.0, 0.2, -2.0]);
+        assert!(actor.external_motion_authority);
+        assert!(
+            physical.native_drives.is_empty(),
+            "AI must not cancel incoming impact motion"
+        );
+        physical.set_native_bodies(BTreeMap::from([(
+            "hit.ped".into(),
+            NativeCharacterBody {
+                entity: 12,
+                controlled: true,
+            },
+        )]));
+        physical.tick(0.05, &mut world, &physics, &[]).unwrap();
+        let actor = world
+            .actor_runtime_views()
+            .into_iter()
+            .find(|a| a.id == "hit.ped")
+            .unwrap();
+        assert_eq!(
+            actor.position,
+            [3.0, 0.0, 4.0],
+            "controller prediction must not move the native body twice"
+        );
+        assert_eq!(physical.native_drives.len(), 1);
+        assert_eq!(
+            physical.native_drives[0].velocity[1], 0.2,
+            "Bullet applies gravity once"
+        );
+    }
+
+    #[test]
+    fn native_character_sweep_ignores_its_own_capsule_and_still_hits_other_bodies() {
+        let mut physics = PhysicsRuntime::empty_for_tests();
+        for (entity, x) in [(12, 0.0), (13, 3.0)] {
+            physics
+                .upsert_body_from_script(
+                    &json!({"entity": entity, "position": [x, 0.9, 0],
+                "shape": {"kind": "capsule", "radius": 0.32, "half_height": 0.58}}),
+                    0,
+                )
+                .unwrap();
+        }
+        let collision = RuntimeCollisionWorld {
+            physics: &physics,
+            scene_solids: &[],
+            ignore_entity: Some(12),
+        };
+        assert!(collision
+            .sweep_sphere([0.0, 0.9, 0.0], [1.0, 0.0, 0.0], 0.32)
+            .is_none());
+        assert_eq!(
+            collision
+                .sweep_sphere([0.0, 0.9, 0.0], [4.0, 0.0, 0.0], 0.32)
+                .unwrap()
+                .entity,
+            Some(13)
+        );
+    }
+
+    #[test]
+    fn primitive_floor_navigation_completes_coordinate_task_without_rebuilding_every_frame() {
+        let mut physics = PhysicsRuntime::empty_for_tests();
+        physics
+            .configure_from_script(&json!({"scene_colliders": {"enabled": true}}), 0)
+            .unwrap();
+        let mut physical = PhysicalCharacterRuntime::default();
+        let tile = NavTileSource {
+            id: "scene.primitive.floor".to_owned(),
+            vertices: vec![
+                [-10.0, 0.0, -10.0],
+                [-10.0, 0.0, 10.0],
+                [10.0, 0.0, 10.0],
+                [10.0, 0.0, -10.0],
+            ],
+            triangles: vec![[0, 1, 2], [0, 2, 3]],
+        };
+        physical
+            .sync_primitive_navigation(vec![tile.clone()])
+            .unwrap();
+        let revision = physical.navigation.runtime_state()["revision"].clone();
+        physical
+            .bind(PhysicalCharacterBinding {
+                actor_id: "walker".to_owned(),
+                enabled: true,
+                controller: CharacterConfig::default(),
+                body_center_offset_y: None,
+                arrival_radius: 0.18,
+                steering_time_horizon: 1.5,
+                separation_weight: 2.0,
+                gravity: 9.81,
+            })
+            .unwrap();
+        let mut world = LivingWorldRuntime::default();
+        world
+            .upsert_actor(WorldActorDesc {
+                id: "walker".to_owned(),
+                kind: "ped".to_owned(),
+                position: [0.0; 3],
+                group: None,
+                channel: None,
+                enabled: true,
+                tags: Vec::new(),
+                parameters: BTreeMap::new(),
+                state: Value::Null,
+            })
+            .unwrap();
+        world
+            .start_travel_to_position("walker", "walk", [3.0, 0.0, 0.0], 1.5, 0.18)
+            .unwrap();
+        let solids = vec![([-10.0, -1.0, -10.0], [10.0, 0.0, 10.0])];
+        for _ in 0..80 {
+            world.tick_frame(0.05, &[[0.0; 3]]);
+            physical
+                .sync_primitive_navigation(vec![tile.clone()])
+                .unwrap();
+            physical.tick(0.05, &mut world, &physics, &solids).unwrap();
+        }
+        world.tick_frame(0.05, &[[3.0, 0.0, 0.0]]);
+        let actor = world
+            .actor_runtime_views()
+            .into_iter()
+            .find(|v| v.id == "walker")
+            .unwrap();
+        assert!((actor.position[0] - 3.0).abs() < 0.25, "{actor:?}");
+        assert!(actor.travel_destination.is_none(), "{actor:?}");
+        assert_eq!(physical.navigation.runtime_state()["revision"], revision);
+        physical.sync_primitive_navigation(Vec::new()).unwrap();
+        assert_eq!(physical.navigation.runtime_state()["tiles"], 0);
+        assert!(physical.primitive_navigation.is_empty());
+    }
     use newviso_world::{
         WorldActorDesc, WorldNavEdgeDesc, WorldNavNodeDesc, WorldTravelRequestDesc,
     };

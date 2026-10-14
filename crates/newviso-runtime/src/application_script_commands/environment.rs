@@ -99,12 +99,21 @@ impl EngineApplication {
                 self.scene.set_sky_dome(load_environment_sky(config)?)?;
             }
             "scene.sky.time.set" => {
-                self.scene
-                    .set_sky_time_seconds(command_number(command, "seconds", index)?)?;
+                let seconds = command_number(command, "seconds", index)?;
+                if let Some(climate) = self.climate.as_mut() {
+                    climate.clock.set_time(f64::from(seconds))?;
+                }
+                self.scene.set_sky_time_seconds(seconds)?;
             }
             "scene.sky.time_scale.set" => {
-                self.scene
-                    .set_sky_time_scale(command_number(command, "scale", index)?)?;
+                let scale = command_number(command, "scale", index)?;
+                if let Some(climate) = self.climate.as_mut() {
+                    let mut clock = climate.clock.clone();
+                    clock.time_scale = f64::from(scale);
+                    clock.validate()?;
+                    climate.clock = clock;
+                }
+                self.scene.set_sky_time_scale(scale)?;
             }
             "scene.timecycle.state.set" => {
                 let cycle_seconds = command_number(command, "cycle_seconds", index)?;
@@ -113,6 +122,15 @@ impl EngineApplication {
                 let duration_seconds = command_number(command, "duration_seconds", index)?;
                 self.scene
                     .set_timecycle_backend(cycle_seconds, phase, rate, duration_seconds)?;
+                if let Some(climate) = self.climate.as_mut() {
+                    let mut clock = climate.clock.clone();
+                    clock.set_time(f64::from(phase) * 86_400.0)?;
+                    clock.time_scale = f64::from(rate) * 86_400.0 / f64::from(duration_seconds)
+                        * clock.milliseconds_per_game_minute
+                        / 60_000.0;
+                    clock.validate()?;
+                    climate.clock = clock;
+                }
             }
             "scene.weather.state.set" => {
                 let current = command
@@ -145,6 +163,11 @@ impl EngineApplication {
                     effects.next_cloud_variant = value.to_owned();
                 }
 
+                if let Some(climate) = self.climate.as_mut() {
+                    climate.validate_weather(current)?;
+                    climate.validate_weather(next)?;
+                    climate.weather.set(current, next, blend)?;
+                }
                 self.scene.set_weather_backend(current, next, blend)?;
                 self.scene.set_weather_effects(effects)?;
             }

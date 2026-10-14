@@ -9,24 +9,25 @@ layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec4 v_color;
 layout(location = 2) in float v_life;
 layout(location = 3) in float v_distance_fade;
+layout(location = 4) in float v_alpha_fade;
+layout(location = 5) in vec4 v_uv_bounds;
+layout(location = 6) in float v_snow;
 layout(location = 0) out vec4 out_color;
 
 void main() {
-    vec2 distortion = texture(sampler2D(t_distortion, s_weather), v_uv).rg * 2.0 - 1.0;
-    vec2 uv = v_uv + distortion * 0.006;
-    vec4 diffuse = texture(sampler2D(t_diffuse, s_weather), uv);
-    vec4 splash = texture(sampler2D(t_splash, s_weather), uv);
-
-    // Source GPU FX sometimes use a dedicated splash sheet and sometimes
-    // point it at the same texture. Preserve both without requiring a shader
-    // permutation for every original WeatherGpuFx entry.
-    vec4 texel = max(diffuse, splash * 0.35);
-    float life_fade = smoothstep(0.0, 0.06, v_life)
-        * (1.0 - smoothstep(0.82, 1.0, v_life));
-    float alpha = texel.a * v_color.a * v_distance_fade * life_fade;
-    if (alpha <= 0.001) {
-        discard;
+    // Keep filtering within this frame of the source sprite sheet.
+    vec2 texel_size = 1.0 / vec2(textureSize(sampler2D(t_diffuse,s_weather),0));
+    vec2 uv = clamp(v_uv, v_uv_bounds.xy+texel_size*0.5, v_uv_bounds.zw-texel_size*0.5);
+    vec4 texel = texture(sampler2D(t_diffuse,s_weather),uv);
+    float alpha = texel.a*v_color.a*v_distance_fade*v_alpha_fade;
+    vec3 colour=texel.rgb*v_color.rgb;
+    if (v_snow > 0.5) {
+        // Imported mist RGB describes density. Treat it as coverage for
+        // scattering white ice crystals, rather than rendering dark smoke.
+        float density=max(texel.r,max(texel.g,texel.b));
+        alpha*=density;
+        colour=mix(vec3(0.90,0.94,1.0),vec3(1.0),density)*v_color.rgb;
     }
-
-    out_color = vec4(texel.rgb * v_color.rgb, alpha);
+    if (alpha <= 0.001) discard;
+    out_color = vec4(colour,alpha);
 }

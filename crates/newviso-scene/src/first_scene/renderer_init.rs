@@ -3,7 +3,13 @@ use super::*;
 impl Scene3dRuntime {
     pub fn initialize_renderer(&mut self) -> Result<(), String> {
         self.validate_render_policy()?;
+        // A recreated provider may reuse numeric buffer handles.
+        self.geometry_upload = geometry_upload::GeometryUploadCache::default();
+        self.shadow_geometry_upload = geometry_upload::GeometryUploadCache::default();
         let render = RenderClient::new();
+        if let Ok(info) = render.backend_info() {
+            host_runtime::info("newviso.render.device", info.to_string());
+        }
         // One authoritative renderer-owned residency scheduler. Deferred
         // texture work is queued by scene streaming and admitted here, at
         // BeginFrame, under one bounded budget instead of multiple pumps.
@@ -318,6 +324,10 @@ impl Scene3dRuntime {
                 SCENE_FRAME_SLOTS],
             particle_additive_pipeline,
         });
+        self.initialize_gpu_skinning(&render)?;
+        self.initialize_terrain_gpu_material(&render)?;
+        self.initialize_water_gpu_material(&render)?;
+        self.initialize_water_renderer(&render)?;
         self.invalidate_gpu_instance_upload();
 
         // Cloud depth pipelines share the scene material layout for alpha coverage.

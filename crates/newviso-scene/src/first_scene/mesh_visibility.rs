@@ -46,6 +46,11 @@ impl MainViewMeshVisibility {
         self.policies.contains_key(&id)
     }
 
+    /// Camera-local geometry must never become a reflected surface or a trace hit.
+    pub(super) fn reflections_visible(&self, id: u64, main_view_only: bool) -> bool {
+        !main_view_only && !self.has_override(id)
+    }
+
     pub(super) fn visible(&self, id: u64, mesh: &str, lineage: &[String]) -> bool {
         !self.policies.get(&id).is_some_and(|policy| {
             policy
@@ -61,6 +66,25 @@ impl MainViewMeshVisibility {
 }
 
 impl Scene3dRuntime {
+    pub(super) fn asset_reflections_visible(&self, id: u64) -> bool {
+        self.asset_meshes.get(&id).is_some_and(|mesh| {
+            self.main_view_mesh_visibility.reflections_visible(id, mesh.main_view_only)
+        })
+    }
+
+    pub(super) fn asset_instance_model_matrix(&self, id: u64, transform: SceneTransform) -> [f32; 16] {
+        let mut matrix = geometry::instance_model_matrix(
+            transform.position, transform.rotation_degrees, transform.scale,
+        );
+        // Instance transforms are affine. The sign of the otherwise constant
+        // homogeneous lane carries the reflection policy; vertex shaders restore
+        // +1 before any transform, including the full world shadow pass.
+        if !self.asset_reflections_visible(id) {
+            matrix[15] = -1.0;
+        }
+        matrix
+    }
+
     pub(super) fn main_view_geometry_state(&self) -> Value {
         let instances = self
             .asset_meshes
@@ -88,6 +112,7 @@ impl Scene3dRuntime {
                     .map(|(name, _)| name.as_str())
                     .unwrap_or("");
                 json!({"id":name,"entity":id,"main_view_only":mesh.main_view_only,
+                    "reflections_visible":self.asset_reflections_visible(*id),
                     "vertices":mesh.vertex_count,"hidden_vertices":hidden,
                     "visible_vertices":mesh.vertex_count as u64-hidden,
                     "in_frame":self.frame_plan.visible_entities.contains(&SceneEntityId(*id)),
@@ -116,8 +141,15 @@ impl Scene3dRuntime {
         if self.world.entity(SceneEntityId(stable_id)).is_none() {
             return Err(format!("mesh visibility target {stable_id} does not exist"));
         }
-        self.main_view_mesh_visibility
-            .set(stable_id, prefixes, roots)
+        let reflected_before = self.main_view_mesh_visibility.has_override(stable_id);
+        self.main_view_mesh_visibility.set(stable_id, prefixes, roots)?;
+        if reflected_before != self.main_view_mesh_visibility.has_override(stable_id)
+            && self.world.entity(SceneEntityId(stable_id))
+                .is_some_and(|entity| entity.mobility == SceneMobility::Static)
+        {
+            self.static_asset_instance_epoch = self.static_asset_instance_epoch.wrapping_add(1);
+        }
+        Ok(())
     }
 }
 
@@ -145,6 +177,20 @@ mod tests {
         policy.set(1, vec![], vec![]).unwrap();
         assert!(policy.visible(1, "shared_skin", &head));
         assert!(!policy.has_override(1));
+    }
+
+    #[test]
+    fn first_person_reflection_filter_is_instance_local_and_reversible() {
+        let mut policy = MainViewMeshVisibility::default();
+        policy.set(11, vec![], vec!["SKEL_Neck_1".into()]).unwrap();
+        let world_instances = [10, 11, 12, 13];
+        let reflected = world_instances.into_iter()
+            .filter(|id| policy.reflections_visible(*id, *id == 13)).collect::<Vec<_>>();
+        assert_eq!(reflected, vec![10, 12]);
+        assert!(policy.visible(11, "arms", &["SKEL_L_Hand".into()]));
+        policy.set(11, vec![], vec![]).unwrap();
+        assert!(policy.reflections_visible(11, false));
+        assert!(!policy.reflections_visible(13, true));
     }
 
     #[test]

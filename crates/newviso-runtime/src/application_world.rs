@@ -3,12 +3,13 @@ use super::*;
 #[derive(Default)]
 pub(super) struct PresentationState {
     materialized: bool,
-    position: [f32; 3],
-    rotation_degrees: [f32; 3],
+    pub(super) position: [f32; 3],
+    pub(super) rotation_degrees: [f32; 3],
     velocity: [f32; 3],
     speed: f32,
     locomotion_state: String,
     animation_clip: Option<String>,
+    animation_generation: u64,
     entity_id: Option<u64>,
     materializations: u64,
     dematerializations: u64,
@@ -43,6 +44,12 @@ impl WorldActorPresentationBinding {
             );
         }
         if let Some(locomotion) = &self.locomotion {
+            if let Some(reactions) = &locomotion.reactions {
+                reactions.validate()?;
+            }
+            if let Some(ragdoll) = &locomotion.ragdoll {
+                ragdoll.validate()?;
+            }
             if !locomotion.walk_speed_threshold.is_finite()
                 || locomotion.walk_speed_threshold < 0.0
                 || !locomotion.run_speed_threshold.is_finite()
@@ -89,6 +96,38 @@ impl WorldActorPresentationBinding {
 fn heading_degrees_from_velocity(velocity: [f32; 3]) -> Option<f32> {
     let horizontal_speed_sq = velocity[0] * velocity[0] + velocity[2] * velocity[2];
     (horizontal_speed_sq > 1.0e-10).then(|| velocity[0].atan2(velocity[2]).to_degrees())
+}
+
+fn presentation_rotation(
+    binding: &WorldActorPresentationBinding,
+    velocity: [f32; 3],
+    facing_velocity: [f32; 3],
+    previous_heading: Option<f32>,
+    intent_heading: Option<f32>,
+    forward_only: bool,
+) -> [f32; 3] {
+    let speed_sq = velocity[0] * velocity[0] + velocity[2] * velocity[2];
+    let moving_forward = forward_only && speed_sq > 0.05 * 0.05;
+    let mut rotation = binding.rotation_degrees;
+    if forward_only || binding.locomotion.as_ref().is_some_and(|l| l.face_velocity) {
+        if speed_sq > 1.0e-10 {
+            // Ped walking follows actual collision-resolved motion. A previous
+            // smoothed heading or combat look target must not make it walk back.
+            let heading = if moving_forward {
+                heading_degrees_from_velocity(velocity)
+            } else {
+                heading_degrees_from_velocity(facing_velocity)
+                    .or_else(|| heading_degrees_from_velocity(velocity))
+            };
+            rotation[1] += heading.unwrap_or(0.0);
+        } else if let Some(heading) = previous_heading {
+            rotation[1] = heading;
+        }
+    }
+    if let Some(heading) = intent_heading.filter(|_| !moving_forward) {
+        rotation[1] = binding.rotation_degrees[1] + heading;
+    }
+    rotation
 }
 
 fn sample_locomotion(
@@ -172,7 +211,9 @@ impl EngineApplication {
         let mut animation_actions = Vec::<(u64, Option<SceneAnimationBinding>)>::new();
         for (actor_id, binding) in &self.world_actor_presentations {
             let view = actor_views.iter().find(|view| &view.id == actor_id);
-            let physical_state = self.physical_characters.state(actor_id);
+            let physical_state = view
+                .filter(|actor| actor.external_motion_authority)
+                .and_then(|_| self.physical_characters.state(actor_id));
             let active = view.is_some_and(|view| {
                 view.enabled
                     && binding
@@ -180,6 +221,11 @@ impl EngineApplication {
                         .iter()
                         .any(|representation| representation == view.representation)
             });
+            let ped_body_presentation =
+                self.ped_physics_presentation(actor_id, binding.position_offset);
+            let ped_animation = self.ped_reaction_animation(actor_id);
+            let is_ragdoll = self.ped_has_ragdoll(actor_id);
+            let animation_generation = ped_animation.as_ref().map_or(0, |a| a.2);
             let state = self
                 .world_presentation_states
                 .entry(actor_id.clone())
@@ -213,7 +259,8 @@ impl EngineApplication {
             }
 
             let view = view.expect("active presentation has an actor");
-            let position = std::array::from_fn(|i| view.position[i] + binding.position_offset[i]);
+            let mut position =
+                std::array::from_fn(|i| view.position[i] + binding.position_offset[i]);
             let grounded = physical_state.map(|physical| physical.grounded);
             if state.was_grounded == Some(false) && grounded == Some(true) {
                 if binding
@@ -231,37 +278,60 @@ impl EngineApplication {
             let resolved_velocity = physical_state
                 .map(|physical| physical.velocity)
                 .unwrap_or(view.velocity);
-            let (speed, velocity_heading, mut locomotion_state, mut animation_clip) =
+            let (speed, _velocity_heading, mut locomotion_state, mut animation_clip) =
                 sample_locomotion(binding, resolved_velocity, grounded, landing_latched);
             let facing_velocity = self
                 .physical_characters
                 .presentation_facing_velocity(actor_id)
                 .unwrap_or(resolved_velocity);
-            let heading =
-                heading_degrees_from_velocity(facing_velocity).unwrap_or(velocity_heading);
-            let mut rotation_degrees = binding.rotation_degrees;
-            if binding
-                .locomotion
-                .as_ref()
-                .is_some_and(|locomotion| locomotion.face_velocity)
-            {
-                if speed > 1.0e-5 {
-                    rotation_degrees[1] += heading;
-                } else if state.materialized {
-                    rotation_degrees[1] = state.rotation_degrees[1];
-                }
-            }
-
             let intent = self.agents.presentation(actor_id, view.position);
-            if let Some(heading) = intent.heading_degrees {
-                rotation_degrees[1] = binding.rotation_degrees[1] + heading;
+            let mut rotation_degrees = presentation_rotation(
+                binding,
+                resolved_velocity,
+                facing_velocity,
+                state.materialized.then_some(state.rotation_degrees[1]),
+                intent.heading_degrees,
+                self.peds.state(actor_id).is_some(),
+            );
+            if let Some(clip) = intent.clip_ref {
+                animation_clip = Some(clip);
+                locomotion_state = "action";
             }
-            if let Some(clip) = intent.clip_ref { animation_clip = Some(clip); locomotion_state = "action"; }
-            if let Some(ped) = self.peds.state(actor_id).filter(|p| p.dead) {
-                animation_clip = ped.profile.death_clip.clone().or(animation_clip);
+            if is_ragdoll {
+                animation_clip = None;
                 locomotion_state = "dead";
+            } else if let Some((phase, animation, _)) = &ped_animation {
+                animation_clip = Some(animation.clip_ref.clone());
+                locomotion_state = if self.peds.is_dead(actor_id) {
+                    "dead"
+                } else {
+                    phase
+                };
+            } else if let Some(ped) = self.peds.state(actor_id).filter(|p| p.dead) {
+                animation_clip = ped.profile.death_clip.clone().or_else(|| {
+                    binding
+                        .locomotion
+                        .as_ref()
+                        .and_then(|l| l.idle_clip.clone())
+                });
+                locomotion_state = "dead";
+            } else if self
+                .ped_physics
+                .bodies
+                .get(actor_id)
+                .is_some_and(|body| body.recovery_seconds > 0.0)
+            {
+                animation_clip = binding
+                    .locomotion
+                    .as_ref()
+                    .and_then(|l| l.idle_clip.clone());
+                locomotion_state = "hit";
             }
 
+            if let Some((body_position, body_rotation)) = ped_body_presentation {
+                position = body_position;
+                rotation_degrees = body_rotation;
+            }
             let created =
                 state.entity_id.is_none() || !self.scene.runtime_entity_exists(&binding.scene_key);
             if created {
@@ -319,22 +389,27 @@ impl EngineApplication {
                     .set_runtime_entity_materialized(&binding.scene_key, true)?;
                 state.materializations += 1;
             }
-            let animation_changed = state.animation_clip != animation_clip;
+            let animation_changed = state.animation_clip != animation_clip
+                || state.animation_generation != animation_generation;
             if let Some(entity_id) = state.entity_id {
-                if animation_changed || created || !state.materialized {
+                if !is_ragdoll && (animation_changed || created || !state.materialized) {
                     animation_actions.push((
                         entity_id,
-                        animation_clip
-                            .as_ref()
-                            .map(|clip_ref| SceneAnimationBinding {
-                                clip_ref: clip_ref.clone(),
-                                playback_rate: 1.0,
-                                restart_if_same: false,
-                                start_time_seconds: 0.0,
-                                blend_seconds: 0.18,
-                                bound_elapsed_seconds: 0.0,
-                                apply_mover: false,
-                            }),
+                        animation_clip.as_ref().map(|clip_ref| {
+                            ped_animation
+                                .as_ref()
+                                .map(|a| a.1.clone())
+                                .unwrap_or_else(|| SceneAnimationBinding {
+                                    clip_ref: clip_ref.clone(),
+                                    planar_root_lock: false,
+                                    playback_rate: 1.0,
+                                    restart_if_same: false,
+                                    start_time_seconds: 0.0,
+                                    blend_seconds: 0.18,
+                                    bound_elapsed_seconds: 0.0,
+                                    apply_mover: false,
+                                })
+                        }),
                     ));
                 }
             }
@@ -344,6 +419,7 @@ impl EngineApplication {
             state.speed = speed;
             state.locomotion_state = locomotion_state.to_owned();
             state.animation_clip = animation_clip;
+            state.animation_generation = animation_generation;
             state.was_grounded = grounded;
             state.materialized = true;
         }
@@ -364,6 +440,7 @@ impl EngineApplication {
                 }
             }
         }
+        self.sync_ped_ragdoll_poses()?;
         Ok(())
     }
 
@@ -479,6 +556,8 @@ mod tests {
                 jump_clip: Some("jump".to_owned()),
                 fall_clip: Some("fall".to_owned()),
                 land_clip: Some("land".to_owned()),
+                reactions: None,
+                ragdoll: None,
                 walk_speed_threshold: 0.15,
                 run_speed_threshold: 3.5,
                 animation_rate_hz: 30.0,
@@ -522,6 +601,80 @@ mod tests {
         let (_, _, state, clip) = sample_locomotion(&binding, [0.0, 0.0, 0.0], Some(true), true);
         assert_eq!(state, "land");
         assert_eq!(clip.as_deref(), Some("land"));
+    }
+
+    #[test]
+    fn walking_ped_faces_actual_motion_even_after_turns_and_combat_look_intents() {
+        let mut binding = locomotion_binding();
+        // Converted GTA pedestrians have local -Z forward.
+        binding.rotation_degrees[1] = 180.0;
+        for velocity in [
+            [0.0, 0.0, 2.0],
+            [0.0, 0.0, -2.0],
+            [2.0, 0.0, 0.0],
+            [-2.0, 0.0, 0.0],
+            [1.0, 0.0, 1.0],
+            [-1.0, 0.0, 1.0],
+            [1.0, 0.0, -1.0],
+            [-1.0, 0.0, -1.0],
+        ] {
+            let old_facing = velocity.map(|v| -v);
+            let rotation = presentation_rotation(
+                &binding,
+                velocity,
+                old_facing,
+                Some(270.0),
+                Some(heading_degrees_from_velocity(old_facing).unwrap()),
+                true,
+            );
+            let yaw = rotation[1].to_radians();
+            let speed = velocity[0].hypot(velocity[2]);
+            let forward_dot = (-yaw.sin() * velocity[0] - yaw.cos() * velocity[2]) / speed;
+            assert!(
+                forward_dot > 0.99999,
+                "rotation={rotation:?}, velocity={velocity:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stopped_ped_preserves_heading_and_can_turn_to_look_at() {
+        let mut binding = locomotion_binding();
+        binding.rotation_degrees[1] = 180.0;
+        assert_eq!(
+            presentation_rotation(
+                &binding,
+                [0.0; 3],
+                [-2.0, 0.0, 0.0],
+                Some(270.0),
+                None,
+                true
+            )[1],
+            270.0
+        );
+        assert_eq!(
+            presentation_rotation(
+                &binding,
+                [0.0; 3],
+                [-2.0, 0.0, 0.0],
+                Some(270.0),
+                Some(0.0),
+                true
+            )[1],
+            180.0
+        );
+        // Unregistered generic actors retain their existing aim/facing policy.
+        assert_eq!(
+            presentation_rotation(
+                &binding,
+                [0.0, 0.0, 2.0],
+                [-2.0, 0.0, 0.0],
+                Some(270.0),
+                Some(90.0),
+                false
+            )[1],
+            270.0
+        );
     }
 
     #[test]

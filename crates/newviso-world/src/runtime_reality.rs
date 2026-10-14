@@ -115,7 +115,9 @@ impl LivingWorldRuntime {
         self.scenario_reservations.remove(id.trim());
     }
 
-    pub fn fact_value(&self, key: &str) -> Option<&Value> { self.facts.get(key).map(|fact| &fact.value) }
+    pub fn fact_value(&self, key: &str) -> Option<&Value> {
+        self.facts.get(key).map(|fact| &fact.value)
+    }
 
     pub fn set_fact(&mut self, key: &str, value: Value) -> Result<(), String> {
         self.set_fact_with_cause(key, value, None)

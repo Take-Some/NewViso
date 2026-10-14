@@ -100,6 +100,13 @@ pub(super) fn load_shared_weather_gpu_fx() -> Result<Option<WeatherGpuFxResource
         layers.insert(
             name.clone(),
             WeatherGpuFxLayerDesc {
+                particle_count: row.get("runtimeParticleCount").and_then(Value::as_u64)
+                    .and_then(|v| u32::try_from(v).ok()).unwrap_or(match system_type {
+                        WeatherGpuFxSystemType::Drop => 1200,
+                        WeatherGpuFxSystemType::Mist => 96,
+                        WeatherGpuFxSystemType::Ground => 320,
+                        WeatherGpuFxSystemType::Other => 128,
+                    }),
                 name,
                 system_type,
                 drive_type,
@@ -280,6 +287,10 @@ pub(super) fn load_shared_weather_gpu_fx() -> Result<Option<WeatherGpuFxResource
 
     Ok(Some(WeatherGpuFxResources {
         layers,
+        collision_cell_metres: catalog.pointer("/rain/runtime/collision_cell_metres")
+            .and_then(Value::as_f64).map(|v| v as f32).unwrap_or(4.0),
+        collision_probes_per_frame: catalog.pointer("/rain/runtime/collision_probes_per_frame")
+            .and_then(Value::as_u64).and_then(|v| usize::try_from(v).ok()).unwrap_or(99),
         textures,
         puddle_layout_texture,
         puddle_normal_textures,
@@ -318,7 +329,7 @@ pub(super) fn resolve_shared_weather_effects(
     resolve_weather_effects_from_catalog(&catalog, current, next, blend, previous)
 }
 
-fn resolve_weather_effects_from_catalog(
+pub(super) fn resolve_weather_effects_from_catalog(
     catalog: &Value,
     current: &str,
     next: &str,

@@ -118,8 +118,15 @@ impl Scene3dRuntime {
                 let tip_result = self.entity_joint_world_position(*id, &c.tip_joint);
                 let tip = tip_result.as_ref().ok().copied();
                 let shoulder = self.entity_joint_world_position(*id, &c.upper_joint).ok();
+                let elbow = self.entity_joint_world_position(*id, &c.lower_joint).ok();
+                let wrist = self.entity_joint_world_position(*id, &c.hand_joint).ok();
+                let reach = shoulder.zip(elbow).zip(wrist).map(|((s,e),w)| {
+                    let distance = |a: [f32;3], b: [f32;3]| ((a[0]-b[0]).powi(2)+(a[1]-b[1]).powi(2)+(a[2]-b[2]).powi(2)).sqrt();
+                    distance(s,e)+distance(e,w)
+                });
+                let rotation = self.entity_joint_world_pose(*id, &c.tip_joint).ok().map(|p| p.1);
                 serde_json::json!({"hand":c.hand_joint,"tip":c.tip_joint,"target":c.target,
-                    "position":tip,"shoulder":shoulder,"weight":c.weight,"hand_pose_weight":c.hand_pose_weight,
+                    "position":tip,"rotation_degrees":rotation,"wrist":wrist,"reach":reach,"shoulder":shoulder,"weight":c.weight,"hand_pose_weight":c.hand_pose_weight,
                     "pose_error":tip_result.err(),
                     "error":tip.map(|p| ((p[0]-c.target[0]).powi(2)+(p[1]-c.target[1]).powi(2)+(p[2]-c.target[2]).powi(2)).sqrt())})
             }).collect::<Vec<_>>()})

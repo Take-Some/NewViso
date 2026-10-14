@@ -23,6 +23,7 @@ ALLOWED: dict[str, set[str]] = {
     "newviso-content-manager": {"newviso-assets-client"},
     "newviso-core": set(),
     "newviso-events": set(),
+    "newviso-environment": set(),
     "newviso-host": {"newviso-compat-abi", "newviso-events"},
     "newviso-input-client": {"newviso-host"},
     "newviso-noise-api": set(),
@@ -42,6 +43,7 @@ ALLOWED: dict[str, set[str]] = {
     "newviso-materials": {"newviso-resource-runtime", "newviso-textures"},
     "newviso-model": {"newviso-materials", "newviso-resource-runtime"},
     "newviso-runtime": {
+        "newviso-environment",
         "newviso-steering",
         "newviso-navigation",
         "newviso-character",

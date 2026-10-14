@@ -200,7 +200,11 @@ impl EngineApplication {
                     // A bare metal rim scrapes even with modest tyre-model slip.
                     // Straight rolling above walking speed still leaves a light
                     // metal contact trace; lateral/longitudinal slip strengthens it.
-                    if was_drawing { 0.08 } else { 0.12 }
+                    if was_drawing {
+                        0.08
+                    } else {
+                        0.12
+                    }
                 } else if was_drawing {
                     slip_release
                 } else {
@@ -272,12 +276,12 @@ impl EngineApplication {
                         let mark_spacing = (base_width * 0.18).clamp(0.018, 0.055);
                         let marks = (length / mark_spacing).ceil().clamp(1.0, 16.0) as usize;
                         let radius = (base_width * 0.10).clamp(0.012, 0.04);
-                        let strength =
-                            ((from.intensity + to.intensity) * 0.5).clamp(0.0, 2.5);
+                        let strength = ((from.intensity + to.intensity) * 0.5).clamp(0.0, 2.5);
                         for mark_index in 0..marks {
                             let t = (mark_index as f32 + 0.5) / marks as f32;
                             let sample = lerp_anchor(from, to, t);
                             self.scene.add_surface_mark(SceneSurfaceMark {
+                                owner: None,
                                 position: std::array::from_fn(|axis| {
                                     sample.point[axis] + sample.normal[axis] * 0.006
                                 }),
@@ -296,13 +300,11 @@ impl EngineApplication {
                         let mark_strength =
                             ((from.intensity + to.intensity) * 0.5).clamp(slip_release, 2.5);
                         let width = base_width
-                            * (0.92
-                                + (mark_strength - slip_release).max(0.0) * 0.07)
+                            * (0.92 + (mark_strength - slip_release).max(0.0) * 0.07)
                                 .clamp(0.9, 1.18);
                         let slot = self.vehicle_tracks.next % capacity;
                         self.vehicle_tracks.next = (slot + 1) % capacity;
-                        self.vehicle_tracks.allocated =
-                            self.vehicle_tracks.allocated.max(slot + 1);
+                        self.vehicle_tracks.allocated = self.vehicle_tracks.allocated.max(slot + 1);
                         self.scene.upsert_runtime_dynamic_entity(
                             &format!("engine.vehicle.track.{slot}"),
                             SceneRuntimeEntityDesc {
@@ -310,11 +312,7 @@ impl EngineApplication {
                                 position,
                                 rotation_degrees: rotation,
                                 scale: [width, 1.0, length + 0.012],
-                                bounds_half_extent: [
-                                    width * 0.5,
-                                    0.02,
-                                    (length + 0.012) * 0.5,
-                                ],
+                                bounds_half_extent: [width * 0.5, 0.02, (length + 0.012) * 0.5],
                                 solid: false,
                                 visible_distance: 220.0,
                                 stream_distance: 260.0,

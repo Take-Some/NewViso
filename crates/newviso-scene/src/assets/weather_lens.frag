@@ -44,7 +44,7 @@ void main() {
     ).rgb * 2.0 - 1.0;
 
     float drop_alpha = max(drop0.a, drop1.a * 0.72) * wetness;
-    float refractive_highlight = clamp(
+    float refractive_highlight = wetness * clamp(
         length(normal0.xy) * 0.16 + length(run_normal.xy) * rain * 0.10,
         0.0,
         0.22

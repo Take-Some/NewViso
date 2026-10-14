@@ -24,6 +24,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[path = "geometry.rs"]
 mod geometry;
+mod heightfield;
+mod surface_caps;
+mod surface_marks;
+pub use surface_caps::SceneSnowCap;
 
 mod animation_skinning;
 pub use animation_skinning::SceneArmIkConstraint;
@@ -50,10 +54,18 @@ mod render_math;
 mod render_policy;
 mod renderer_atmosphere;
 mod renderer_frame;
+mod geometry_upload;
+mod primitive_geometry_cache;
 mod renderer_geometry;
 mod renderer_gpu_geometry;
+mod renderer_skinning;
 mod renderer_init;
 mod renderer_materials;
+mod renderer_terrain_material;
+mod renderer_water;
+mod renderer_water_geometry;
+mod renderer_water_bump;
+mod renderer_water_underwater;
 mod renderer_pipelines;
 mod renderer_resources;
 mod renderer_shutdown;
@@ -62,6 +74,13 @@ use renderer_pipelines::{create_scene_pipelines, ScenePipelines};
 mod renderer_asset_submission;
 mod renderer_graph;
 mod renderer_passes;
+mod renderer_draw_stream;
+mod renderer_shadow_pass;
+mod renderer_cloud_passes;
+mod renderer_primitive_pass;
+mod renderer_indexed_terrain;
+mod renderer_instance_submission;
+use renderer_draw_stream::{compact_direct_draws,draw_direct_draws};
 mod renderer_submission;
 #[cfg(test)]
 mod renderer_submission_tests;
@@ -75,10 +94,18 @@ mod scene_entities;
 mod scene_lighting;
 mod scene_load;
 mod scene_state;
+mod scene_weather_state;
+mod scene_snapshot;
+mod scene_camera_state;
+mod scene_particles;
+mod scene_physics_geometry;
+mod scene_transients;
 mod vehicle_dashboard;
 pub use vehicle_dashboard::SceneVehicleDashboard;
 mod volumetric_clouds;
 mod weather_gpu_fx;
+mod weather_collision;
+use weather_collision::*;
 pub use asset_models::{
     prepare_model_geometry, SceneModelDent, SceneModelPartPose, ScenePreparedModelGeometry,
     SceneResolvedMaterial,
@@ -124,15 +151,15 @@ const FLARE_VERTEX_SHADER: &[u8] = include_bytes!("assets/flare.vert.spv");
 const FLARE_FRAGMENT_SHADER: &[u8] = include_bytes!("assets/flare.frag.spv");
 const SKY_FLOATS_PER_VERTEX: usize = 5;
 const SKY_VERTEX_STRIDE: u64 = (SKY_FLOATS_PER_VERTEX * std::mem::size_of::<f32>()) as u64;
-const SKY_UNIFORM_FLOATS: usize = 188;
+const SKY_UNIFORM_FLOATS: usize = 224 + 4 + 64 * 4 + 9 * 4;
 const MAX_SKY_VISUALS: usize = 4;
 const FLARE_FLOATS_PER_VERTEX: usize = 12;
 const FLARE_VERTEX_STRIDE: u64 = (FLARE_FLOATS_PER_VERTEX * std::mem::size_of::<f32>()) as u64;
 const CUBE_VERTEX_COUNT: u32 = 36;
 const FLOATS_PER_VERTEX: usize = 17;
 const MAX_LIGHTS: usize = 16;
-const SCENE_FRAME_UNIFORM_FLOATS: usize = 68 + MAX_LIGHTS * 20;
-const DEFAULT_SHADOW_RESOLUTION: u32 = 2048;
+const SCENE_FRAME_UNIFORM_FLOATS: usize = 68 + MAX_LIGHTS * 20 + 64 * 4 + 8 * 4 + 12;
+const DEFAULT_SHADOW_RESOLUTION: u32 = 4096;
 const VERTEX_STRIDE: u64 = (FLOATS_PER_VERTEX * std::mem::size_of::<f32>()) as u64;
 const INSTANCE_FLOATS: usize = 16;
 const INSTANCE_STRIDE: u64 = (INSTANCE_FLOATS * std::mem::size_of::<f32>()) as u64;
@@ -176,6 +203,8 @@ pub struct SceneTransientSphere {
 
 #[derive(Clone, Copy, Debug)]
 pub struct SceneSurfaceMark {
+    /// With an owner, position and normal are stored in its local space.
+    pub owner: Option<u64>,
     pub position: [f32; 3],
     pub normal: [f32; 3],
     pub radius: f32,
@@ -490,6 +519,7 @@ impl Default for SkyAtmosphereDesc {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SceneEnvironmentDesc {
+    pub render: newviso_render_client::EnvironmentRenderParams,
     pub ambient_color: [f32; 3],
     pub ambient_intensity: f32,
     pub fog_enabled: bool,
@@ -507,6 +537,7 @@ pub struct SceneEnvironmentDesc {
 impl Default for SceneEnvironmentDesc {
     fn default() -> Self {
         Self {
+            render: newviso_render_client::EnvironmentRenderParams::default(),
             ambient_color: [1.0, 1.0, 1.0],
             ambient_intensity: 0.0,
             fog_enabled: false,
@@ -812,6 +843,8 @@ pub struct CloudHatKeyframeState {
     pub enabled: bool,
     pub cloud_color: [f32; 4],
     pub cloud_light_color: [f32; 4],
+    /// Direction toward the active solar/lunar sprite; independent of its HDR disc.
+    pub light_direction: Option<[f32; 3]>,
     pub cloud_ambient_color: [f32; 4],
     pub cloud_sky_color: [f32; 4],
     pub cloud_bounce_color: [f32; 4],
@@ -829,6 +862,7 @@ impl Default for CloudHatKeyframeState {
             enabled: false,
             cloud_color: [1.0; 4],
             cloud_light_color: [1.0; 4],
+            light_direction: None,
             cloud_ambient_color: [0.0, 0.0, 0.0, 1.0],
             cloud_sky_color: [0.0, 0.0, 0.0, 1.0],
             cloud_bounce_color: [0.0, 0.0, 0.0, 1.0],
@@ -903,6 +937,53 @@ struct SceneJointAttachment {
     rotation_offset_degrees: [f32; 3],
 }
 
+/// Renderer-neutral layered sky clouds. Signed artist strengths are retained.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyframedSkyCloudDesc {
+    /// Frequency, scale, threshold, softness of the three-octave noise generator.
+    pub generation: [f32; 4],
+    /// Base strength, density multiplier, density bias, horizon fade.
+    pub density: [f32; 4],
+    /// Shadow strength, solar offset, overall detail color strength, HDR intensity.
+    pub lighting: [f32; 4],
+    /// Edge strength/scale, overall strength/scale.
+    pub detail: [f32; 4],
+    /// Small-cloud detail scale/strength, density multiplier/bias.
+    pub small: [f32; 4],
+    /// Already linear HDR filler color; W is generator density offset.
+    pub small_color: [f32; 4],
+    pub base_color: [f32; 3],
+    pub mid_color: [f32; 3],
+    pub shadow_color: [f32; 3],
+}
+
+/// Renderer-neutral TimeCycle sky settings. Colors are linear HDR values.
+#[derive(Clone, Debug)]
+pub struct KeyframedSkyDesc {
+    pub east: [f32; 3],
+    pub west: [f32; 3],
+    pub transition: [f32; 3],
+    pub zenith: [f32; 3],
+    pub zenith_transition: [f32; 3],
+    pub zenith_params: [f32; 4],
+    pub azimuth_position: f32,
+    pub hdr: f32,
+    pub lunar_phase: f32,
+    pub mie_phase: f32,
+    pub mie_scatter: f32,
+    pub mie_intensity: f32,
+    pub sun_color: [f32; 3],
+    pub clouds: Option<KeyframedSkyCloudDesc>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WaterImpact {
+    x: f32,
+    z: f32,
+    start_time: f32,
+    intensity: f32,
+}
+
 #[derive(Debug)]
 pub struct Scene3dRuntime {
     title: String,
@@ -911,6 +992,16 @@ pub struct Scene3dRuntime {
     orbit: OrbitCamera,
     render_policy: RenderPolicy,
     cubes: Vec<Cube>,
+    terrain_meshes: BTreeMap<usize, heightfield::HeightfieldPatch>,
+    snow_cap_depths: BTreeMap<String,f32>,
+    terrain_texture_paths: Option<[String; 5]>,
+    terrain_gpu_material: Option<renderer_terrain_material::TerrainGpuMaterial>,
+    water_texture_paths: Option<[String; 5]>,
+    water_render_slots: BTreeSet<usize>,
+    water_gpu_material: Option<renderer_terrain_material::TerrainGpuMaterial>,
+    water_impacts: Vec<WaterImpact>,
+    water_simulation: crate::water::WaterSimulation,
+    water_gpu: Option<renderer_water::WaterGpu>,
     asset_meshes: BTreeMap<u64, CpuAssetMesh>,
     skinned_entities: BTreeMap<u64, animation_skinning::SkinnedEntityAnimationState>,
     // Skeleton/source-space transform retained for every model with a skeleton,
@@ -935,6 +1026,9 @@ pub struct Scene3dRuntime {
     asset_binding_contexts: BTreeMap<u64, SceneAssetBindingContext>,
     asset_vertex_data: Vec<f32>,
     asset_upload_from_float: Option<usize>,
+    primitive_main_cache: primitive_geometry_cache::PrimitiveGeometryCache,
+    primitive_shadow_cache: primitive_geometry_cache::PrimitiveGeometryCache,
+    gpu_skinning: Option<renderer_skinning::SkinningGpu>,
     skinned_vertex_data: Vec<f32>,
     skinned_dirty_ranges: [Vec<(usize, usize)>; SCENE_FRAME_SLOTS],
     asset_geometry_full_rebuild: bool,
@@ -958,6 +1052,7 @@ pub struct Scene3dRuntime {
     lens_flares: BTreeMap<String, LensFlareDesc>,
     sky_clouds: SkyCloudDesc,
     sky_atmosphere: SkyAtmosphereDesc,
+    keyframed_sky: Option<KeyframedSkyDesc>,
     scene_environment: SceneEnvironmentDesc,
     timecycle_backend: TimeCycleBackendState,
     weather_backend: WeatherBackendState,
@@ -965,8 +1060,12 @@ pub struct Scene3dRuntime {
     cloudhat_keyframe: CloudHatKeyframeState,
     weather_gpu_fx: Option<WeatherGpuFxResources>,
     weather_fx_time_seconds: f32,
+    weather_collision: WeatherCollisionMap,
     weather_wetness: f32,
+    weather_wetness_external: bool,
+    weather_lens_enabled: bool,
     weather_outdoor_exposure: f32,
+    weather_physical_shelter: bool,
     sky_time_seconds: f32,
     sky_time_scale: f32,
     /// Wind-driven procedural base-noise phase. Kept independent from the
@@ -988,6 +1087,9 @@ pub struct Scene3dRuntime {
     last_submission_stats: RenderSubmissionStats,
     clear_color: [f32; 4],
     gpu: Option<GpuScene>,
+    geometry_upload: geometry_upload::GeometryUploadCache,
+    indexed_terrain: renderer_indexed_terrain::IndexedTerrain,
+    shadow_geometry_upload: geometry_upload::GeometryUploadCache,
     sky: Option<SkyDomeResources>,
     gpu_sky: Option<GpuSky>,
     gpu_atmospheric_clouds: Option<GpuAtmosphericClouds>,
@@ -995,6 +1097,9 @@ pub struct Scene3dRuntime {
     gpu_weather: Option<GpuWeatherFx>,
     frame_index: u64,
     last_render_camera: Option<Camera>,
+    // Temporal light-space anchor for the shadow map, separate from the
+    // instantaneous camera. Prevents projection/caster rebuild jumps.
+    shadow_focus: Option<Vec3>,
 }
 
 #[derive(Clone, Debug)]
@@ -1003,6 +1108,14 @@ pub struct Scene3dLoadReport {
     pub entity_count: usize,
     pub camera_name: String,
     pub mesh_name: String,
+}
+
+/// Exact resident primitive geometry, independent of imported model bounds.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneNavigationGeometry {
+    pub entity: u64,
+    pub vertices: Vec<[f32; 3]>,
+    pub triangles: Vec<[u32; 3]>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1082,33 +1195,49 @@ mod tests {
     }
 
     #[test]
-    fn directional_shadow_projection_is_stable_within_one_texel() {
+    fn shadow_focus_follows_continuously_and_handles_teleports() {
+        let camera = Vec3::new(10.0, 2.0, 0.0);
+        let first = track_shadow_focus(None, Vec3::ZERO, 1.0 / 60.0);
+        let a = track_shadow_focus(Some(first), camera, 1.0 / 60.0);
+        let b = track_shadow_focus(Some(a), camera, 1.0 / 60.0);
+        assert!(a.x > 0.0 && a.x < 10.0);
+        assert!(b.x > a.x && b.x < 10.0);
+        // Frame-rate-independent integration for constant target.
+        let one_frame = track_shadow_focus(Some(Vec3::ZERO), camera, 1.0 / 30.0);
+        let two_frames = track_shadow_focus(
+            Some(track_shadow_focus(Some(Vec3::ZERO), camera, 1.0 / 60.0)),
+            camera, 1.0 / 60.0,
+        );
+        assert!((one_frame.x - two_frames.x).abs() < 1.0e-4);
+        // Do not smear shadows across a cut or teleport.
+        let jump = Vec3::new(100.0, 0.0, 0.0);
+        let reset = track_shadow_focus(Some(a), jump, 1.0 / 60.0);
+        assert!((reset.x - 100.0).abs() < 1.0e-5);
+        assert_eq!(track_shadow_focus(Some(a), camera, 0.0).x, a.x);
+    }
+
+    #[test]
+    fn directional_shadow_projection_interpolates_across_texel_boundaries() {
         let direction = Vec3::new(-0.35, -1.0, -0.2).normalized();
         let shadow_distance = 96.0;
-        let shadow_resolution = 2048;
-        let half_extent = shadow_distance * 0.55;
-        let world_units_per_texel = (half_extent * 2.0) / shadow_resolution as f32;
+        let shadow_resolution = 4096;
+        let texel = shadow_distance * 1.1 / shadow_resolution as f32;
         let (right, _, _) = view_basis(direction, Vec3::Y);
-
-        let base = directional_shadow_view_projection(
-            direction,
-            Vec3::ZERO,
-            shadow_distance,
-            shadow_resolution,
+        let origin = directional_shadow_view_projection(
+            direction, Vec3::ZERO, shadow_distance, shadow_resolution,
         );
-        let sub_texel = directional_shadow_view_projection(
-            direction,
-            right.mul(world_units_per_texel * 0.25),
-            shadow_distance,
-            shadow_resolution,
+        let quarter = directional_shadow_view_projection(
+            direction, right.mul(texel * 0.25), shadow_distance, shadow_resolution,
         );
-
-        for (a, b) in base.iter().zip(sub_texel.iter()) {
-            assert!(
-                (a - b).abs() < 1e-6,
-                "shadow projection moved within one texel"
-            );
-        }
+        let projection_delta = (quarter[12] - origin[12]).abs();
+        assert!(projection_delta > 1.0e-8);
+        assert!(projection_delta < 2.0 / shadow_resolution as f32);
+        let before = continuous_shadow_texel(texel * (1.0 - 1.0e-3), texel);
+        let at = continuous_shadow_texel(texel, texel);
+        let after = continuous_shadow_texel(texel * (1.0 + 1.0e-3), texel);
+        assert!(before <= at && at <= after);
+        assert!((before - at).abs() < texel * 0.0001);
+        assert!((after - at).abs() < texel * 0.0001);
     }
 
     #[test]
@@ -1236,5 +1365,16 @@ mod tests {
         assert_eq!(&out[7..11], &[1.0, 1.0, 1.0, 1.0]);
         assert_eq!(&out[11..13], &[0.0, 0.0]);
         assert_eq!(&out[13..17], &[1.0, 0.0, 0.0, 1.0]);
+    }
+}
+
+
+impl Scene3dRuntime {
+    /// Exact triangle-mesh colliders for procedurally authored terrain.
+    /// Kept independent of AABB scene solids; supports sloping surfaces.
+    pub fn heightfield_collision_meshes(&self) -> Vec<(u64, Vec<[f32;3]>, Vec<[u32;3]>)> {
+        self.terrain_meshes.values().filter(|mesh| mesh.collides).map(|mesh| (
+            mesh.entity, mesh.physics_vertices.clone(), mesh.triangles.clone()
+        )).collect()
     }
 }

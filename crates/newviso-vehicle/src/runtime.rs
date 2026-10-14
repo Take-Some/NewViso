@@ -10,6 +10,7 @@ mod ignition;
 mod powertrain;
 mod simulation;
 mod systems;
+mod tires;
 
 use self::systems::advance_vehicle_systems;
 use ignition::*;
@@ -43,6 +44,9 @@ struct WheelState {
     compression: f32,
     old_compression: f32,
     angular_velocity: f32,
+    rotation_initialized: bool,
+    tyre_heat_slip_ratio: f32,
+    burnout_active: bool,
     rotation_angle: f32,
     telemetry: WheelTelemetry,
 }
@@ -70,6 +74,7 @@ impl Default for TransmissionState {
 struct VehicleEventState {
     brake_hold_seconds: f32,
     handbrake_active: bool,
+    handbrake_age: Option<f32>,
     skid_active: bool,
     wheel_spin_active: bool,
     suspension_impact_active: bool,
@@ -181,6 +186,7 @@ fn wheel_telemetry_from_state(
                 0.0
             }
         });
+    telemetry.tire_temperature = damage.map_or(0.0, |d| d.tyre_temperature);
     telemetry.tire_condition = wheel.tire_condition;
     telemetry.tire_rubber_remaining = rubber;
     telemetry.tire_grip_multiplier = wheel.tire_condition.grip_multiplier_with_rubber(rubber);
@@ -886,6 +892,13 @@ impl VehicleRuntime {
                     TireCondition::Rim | TireCondition::Missing => 0.0,
                 };
             }
+            if condition == TireCondition::Intact {
+                vehicle.damage.wheels[index].tyre_temperature = 0.0;
+                wheel.telemetry.tire_temperature = 0.0;
+            }
+            if previous == TireCondition::Missing && condition != TireCondition::Missing {
+                wheel.rotation_initialized = false;
+            }
             if condition == TireCondition::Missing {
                 wheel.contact = None;
                 wheel.compression = 0.0;
@@ -1099,6 +1112,13 @@ impl VehicleRuntime {
                 continue;
             };
 
+            // Contact-mode state is valid only for this physics step, including
+            // when an existing vehicle changes to an aircraft/watercraft class.
+            for wheel in &mut vehicle.wheels {
+                wheel.tyre_heat_slip_ratio = 0.0;
+                wheel.burnout_active = false;
+            }
+
             let forward = normalize_or(
                 rotate_vec(body.rotation, vehicle.definition.forward_local),
                 [0.0, 0.0, -1.0],
@@ -1172,6 +1192,9 @@ impl VehicleRuntime {
 
             let handbrake_active = vehicle.input.handbrake > 0.1;
             if handbrake_active != vehicle.event_state.handbrake_active {
+                if handbrake_active {
+                    vehicle.event_state.handbrake_age = Some(0.0);
+                }
                 let mut event = VehicleEvent::new(
                     0,
                     entity,
@@ -1184,6 +1207,10 @@ impl VehicleRuntime {
                 event.speed_mps = vehicle.speed_mps;
                 frame_events.push(event);
                 vehicle.event_state.handbrake_active = handbrake_active;
+            }
+
+            if let Some(age) = vehicle.event_state.handbrake_age.as_mut() {
+                *age = (*age + dt).min(60.0);
             }
 
             match vehicle.definition.class {
@@ -1235,7 +1262,14 @@ impl VehicleRuntime {
                             .get(index)
                             .is_some_and(|config| config.driven)
                         {
-                            driven_slip = driven_slip.max(telemetry.longitudinal_slip.abs() / 0.12);
+                            let drive_direction = if vehicle.transmission.gear < 0 {
+                                -1.0
+                            } else {
+                                1.0
+                            };
+                            driven_slip = driven_slip.max(
+                                (telemetry.longitudinal_slip * drive_direction).max(0.0) / 0.12,
+                            );
                         }
                         max_suspension_velocity =
                             max_suspension_velocity.max(telemetry.suspension_velocity.abs());
@@ -1297,24 +1331,36 @@ impl VehicleRuntime {
                     }
                     vehicle.event_state.suspension_impact_active = suspension_impact;
 
-                    // Preserve the reference wheel-damage state independently from
-                    // the render presentation. Slip accumulates friction damage;
-                    // deflation/burst cadence is then handled by damage.rs at 30 Hz.
+                    // Heat is driven by rotational slip. Reference friction damage
+                    // describes an injured/skewed wheel, not ordinary tyre sliding.
                     for (index, wheel) in vehicle.wheels.iter().enumerate() {
                         let telemetry = wheel.telemetry;
                         let Some(damage) = vehicle.damage.wheels.get_mut(index) else {
                             continue;
                         };
+                        let driven = vehicle.definition.wheels[index].driven;
+                        let heats_on_surface = !matches!(
+                            telemetry.surface_class,
+                            VehicleSurfaceClass::Snow
+                                | VehicleSurfaceClass::Ice
+                                | VehicleSurfaceClass::Water
+                        );
+                        let heats = telemetry.contact
+                            && heats_on_surface
+                            && damage.tyre_condition == TireCondition::Intact
+                            && ((driven
+                                && !telemetry.wheel_locked
+                                && vehicle.input.throttle.abs() > 0.1)
+                                || damage.friction_damage > 0.2);
+                        damage.tyre_temperature = tires::tyre_temperature(
+                            damage.tyre_temperature,
+                            wheel.tyre_heat_slip_ratio,
+                            heats,
+                            wheel.burnout_active
+                                || (vehicle.speed_mps < 2.0 && vehicle.input.throttle.abs() > 0.1),
+                            dt,
+                        );
                         if telemetry.contact {
-                            let slip = telemetry.slip_intensity;
-                            if slip > 1.0 && vehicle.speed_mps > 2.0 {
-                                damage.friction_damage = (damage.friction_damage
-                                    + (slip - 1.0)
-                                        * (vehicle.speed_mps / 30.0).clamp(0.0, 2.0)
-                                        * dt
-                                        * 0.12)
-                                    .clamp(0.0, 2.0);
-                            }
                             if telemetry.suspension_velocity.abs() > 4.0 {
                                 damage.suspension_health = (damage.suspension_health
                                     - (telemetry.suspension_velocity.abs() - 4.0) * dt * 18.0)

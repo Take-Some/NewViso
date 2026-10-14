@@ -34,6 +34,7 @@ impl EngineApplication {
             return Ok(false);
         };
 
+        self.capture_vehicle_wheel_motion(contact.target);
         let mass = definition.handling.mass.max(1.0);
         // GTA filters ordinary road/support contacts before CVehicleDamage.
         // Preserve that boundary here: only a real impact (or explicit weapon
@@ -587,7 +588,8 @@ impl EngineApplication {
             }
 
             let adjusted_break_chance = (0.9f32).max(angular_damage_multiplier).clamp(0.0, 1.0);
-            if vehicle_part_damage_detachable(part.role, &part.name_lower)
+            if fragment_damage::automatically_breakable(part)
+                && vehicle_part_damage_detachable(part.role, &part.name_lower)
                 && break_panel_damage_gate(body_health, outcome.effective_damage, upside_down)
                 && secondary_sample < adjusted_break_chance
             {
@@ -629,6 +631,17 @@ impl EngineApplication {
         // Semantic state transitions are authoritative over generic presentation
         // accumulation. They match the transaction that produced them.
         for signal in &outcome.signals {
+            if !fragment_damage::automatically_breakable(part)
+                && matches!(
+                    signal.kind,
+                    VehicleEventKind::PartBrokenOff
+                        | VehicleEventKind::DoorBrokenOff
+                        | VehicleEventKind::BonnetBrokenOff
+                        | VehicleEventKind::BootBrokenOff
+                )
+            {
+                continue;
+            }
             match signal.kind {
                 VehicleEventKind::TyrePunctured => {
                     if signal.wheel_index == resolve_wheel_index(&definition, part.wheel_slot) {
@@ -772,7 +785,20 @@ impl EngineApplication {
             ),
         );
 
-        Ok(part.damage > before + 1.0e-4 || !outcome.signals.is_empty())
+        let changed = part.damage > before + 1.0e-4 || !outcome.signals.is_empty();
+        let part_index = part.index;
+        let broken = self.apply_vehicle_fragment_damage(
+            contact.target,
+            part_index,
+            damage_type,
+            outcome.effective_damage,
+            if damage_type == VehicleDamageType::Collision {
+                impact_excess
+            } else {
+                contact.contact_impulse
+            },
+        );
+        Ok(changed || broken)
     }
 
     pub(super) fn detach_vehicle_part(
@@ -799,23 +825,7 @@ impl EngineApplication {
         let Some((position, rotation, scale)) = self.scene.entity_transform_values(entity) else {
             return Ok(());
         };
-        let mut indices = vec![part_index];
-        loop {
-            let mut changed = false;
-            for child in &binding.parts {
-                if child
-                    .parent_part_index
-                    .is_some_and(|parent| indices.contains(&parent))
-                    && !indices.contains(&child.index)
-                {
-                    indices.push(child.index);
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
+        let indices = fragment_body::assembly_indices(&binding.parts, part_index);
         let mut names: Vec<String> = binding
             .parts
             .iter()
@@ -823,6 +833,8 @@ impl EngineApplication {
                 indices.contains(&child.index)
                     && child.visible
                     && child.detached_entity.is_none()
+                    && !(child.role == ModelFragmentPartRole::Wheel
+                        && child.wheel_release_condition == Some(TireCondition::Rim))
                     && !(matches!(
                         child.role,
                         ModelFragmentPartRole::Glass | ModelFragmentPartRole::Light
@@ -880,37 +892,56 @@ impl EngineApplication {
         let velocity: [f32; 3] =
             std::array::from_fn(|axis| inherited_velocity[axis] + boost_world[axis]);
         let half: [f32; 3] = std::array::from_fn(|axis| extent[axis] * scale[axis].abs());
-        let mass = match part.role {
-            ModelFragmentPartRole::Wheel => 22.0,
-            ModelFragmentPartRole::Door => 28.0,
-            ModelFragmentPartRole::Bonnet => 18.0,
-            ModelFragmentPartRole::Boot => 16.0,
-            ModelFragmentPartRole::Roof => 24.0,
-            ModelFragmentPartRole::BodyPanel => 12.0,
-            ModelFragmentPartRole::Spoiler => 7.0,
-            ModelFragmentPartRole::Breakable | ModelFragmentPartRole::Extra => 6.0,
-            _ => 8.0,
-        };
-        let hull = super::collision_hull::fragment_collision_hull(
-            hull.into_iter()
-                .map(|point| std::array::from_fn(|axis| point[axis] * scale[axis]))
-                .collect(),
-        );
+        let members = binding
+            .parts
+            .iter()
+            .filter(|p| {
+                indices.contains(&p.index)
+                    && p.visible
+                    && p.detached_entity.is_none()
+                    && !(p.role == ModelFragmentPartRole::Wheel
+                        && p.wheel_release_condition == Some(TireCondition::Rim))
+                    && !(matches!(
+                        p.role,
+                        ModelFragmentPartRole::Glass
+                            | ModelFragmentPartRole::Light
+                            | ModelFragmentPartRole::Breakable
+                    ) && p.damage >= 1.0
+                        && p.index != part_index)
+            })
+            .collect::<Vec<_>>();
+        let fragment = self.vehicle_fragment_body(entity, &members, center, half, scale, hull);
+        let mass = fragment.mass;
+        let (relative_velocity, relative_spin) =
+            self.vehicle_fragment_relative_motion(entity, part, center, rotation, scale);
+        let velocity = std::array::from_fn::<_, 3, _>(|a| velocity[a] + relative_velocity[a]);
+        let angular_velocity =
+            std::array::from_fn::<_, 3, _>(|a| body.angular_velocity[a] + relative_spin[a]);
         let physics = self.physics.as_mut().expect("physics checked above");
         if let Err(error)=physics.upsert_body_from_script(&json!({
             "entity":detached,"body_kind":"dynamic","shape":{"kind":"box","half_extents":half},
-            "position":world_center,"rotation":body.rotation,"linear_velocity":velocity,"angular_velocity":body.angular_velocity,
+            "position":world_center,"rotation":body.rotation,"linear_velocity":velocity,"angular_velocity":angular_velocity,
             "density":mass/(8.0*half[0]*half[1]*half[2]).max(0.001),
-            "mass_properties":{"mass":mass,"center_of_mass":[0.0,0.0,0.0],
-                "inertia_diagonal":std::array::from_fn::<_,3,_>(|axis|mass/3.0*(half[(axis+1)%3].powi(2)+half[(axis+2)%3].powi(2)).max(0.001))},
-            "convex_hulls":if hull.len()>=4 {vec![hull]} else {Vec::new()},
+            "mass_properties":{"mass":mass,"center_of_mass":fragment.center_of_mass,
+                "inertia_diagonal":fragment.inertia},
+            "convex_hulls":fragment.hulls,
             "friction":0.65,"restitution":0.08,
             "linear_damping":if part.role==ModelFragmentPartRole::Wheel {0.11} else {0.035},
             "angular_damping":if part.role==ModelFragmentPartRole::Wheel {0.19} else {0.075},
             "participates_in_queries":true,"casts_contacts":true,"continuous_collision":true
         }),0) {self.scene.remove_runtime_entity(&key)?;return Err(error)}
-        physics.remove_fragment_collision_region(entity, center, extent);
+        if !physics.remove_body_collision_components(entity, &fragment.components) {
+            physics.remove_fragment_collision_region(entity, center, extent);
+        }
+        physics.ignore_collision_until_separated(entity, detached);
         self.register_vehicle_debris(entity, detached, part, key.clone(), half);
+        if let Some(debris) = self.vehicle_debris.get_mut(&detached) {
+            debris.assembly_parts = members.iter().map(|p| p.name.clone()).collect();
+            debris.source_components = fragment.components.clone();
+            debris.authored_physics = fragment.authored;
+            debris.mass = mass;
+            debris.center_of_mass = fragment.center_of_mass;
+        }
         if let Some(binding) = self.vehicle_presentations.get_mut(&entity) {
             for child in &mut binding.parts {
                 if indices.contains(&child.index) {
@@ -940,6 +971,7 @@ impl EngineApplication {
         if part.role != ModelFragmentPartRole::Wheel {
             let mut event = VehicleEvent::new(0, entity, kind);
             event.part = Some(part.name.clone());
+            event.part_index = Some(part.index);
             event.position = Some(world_center);
             event.magnitude = part.damage.max(1.0);
             self.vehicles.emit_event(event);

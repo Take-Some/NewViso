@@ -168,6 +168,7 @@ impl Scene3dRuntime {
                 fragment_deformable: false,
                 main_view_only: true,
                 last_fragment_poses: Default::default(),
+                fragment_mesh_bounds: Default::default(),
             },
         );
         self.world

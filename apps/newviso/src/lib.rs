@@ -31,6 +31,10 @@ pub fn run() -> ExitCode {
         .unwrap_or_else(|| bootstrap.base_dir.clone());
     let _ =
         newviso_bugtrap::configure_report_dir(project_root.join(".newviso").join("crash-reports"));
+    // The runtime reads Shared/Content/intro.toml during the platform's
+    // on_window_ready callback, using the exact game HWND already created.
+    // Resolve once before provider loading; no launcher or per-map settings.
+    std::env::set_var("NEWVISO_CONTENT_DIR", &bootstrap.content_dir);
     newviso_bugtrap::set_context("base_dir", bootstrap.base_dir.display().to_string());
     newviso_bugtrap::set_context("project_root", project_root.display().to_string());
     newviso_bugtrap::set_context("provider_dir", bootstrap.provider_dir.display().to_string());
