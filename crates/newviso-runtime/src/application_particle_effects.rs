@@ -53,7 +53,8 @@ pub(super) struct ParticleEffectSpawnReport {
 pub(super) fn preload_particle_effect(command: &Value, command_index: usize) -> Result<(), String> {
     let asset_ref = required_string(command, "asset_ref", command_index)?;
     let (logical_path, effect_name) = split_asset_ref(asset_ref)?;
-    let (dictionary, source) = load_particle_dictionary(command, logical_path, effect_name, command_index)?;
+    let (dictionary, source) =
+        load_particle_dictionary(command, logical_path, effect_name, command_index)?;
     if find_named(dictionary.get("effects"), effect_name).is_none() {
         return Err(format!("script command[{command_index}] particle effect '{effect_name}' is absent from '{source}'"));
     }
@@ -61,7 +62,9 @@ pub(super) fn preload_particle_effect(command: &Value, command_index: usize) -> 
 }
 
 pub(super) fn preload_particle_effect_resources(
-    scene: &mut Scene3dRuntime, command: &Value, command_index: usize,
+    scene: &mut Scene3dRuntime,
+    command: &Value,
+    command_index: usize,
 ) -> Result<(), String> {
     preload_particle_effect(command, command_index)?;
     let (path, effect) = split_asset_ref(required_string(command, "asset_ref", command_index)?)?;
@@ -69,7 +72,10 @@ pub(super) fn preload_particle_effect_resources(
     let assets = AssetClient::new();
     for reference in effect_texture_references(&dictionary, effect)? {
         if !scene.particle_texture_registered(&reference) {
-            scene.register_particle_texture(&reference, super::load_sky_texture(&assets, &reference, true)?)?;
+            scene.register_particle_texture(
+                &reference,
+                super::load_sky_texture(&assets, &reference, true)?,
+            )?;
         }
     }
     Ok(())
@@ -77,25 +83,45 @@ pub(super) fn preload_particle_effect_resources(
 
 fn collect_texture_references(value: &Value, references: &mut std::collections::BTreeSet<String>) {
     match value {
-        Value::Object(fields) => for (key, value) in fields {
-            if key == "texture_ref" {
-                if let Some(reference) = value.as_str() { references.insert(reference.to_owned()); }
-            } else { collect_texture_references(value, references); }
-        },
-        Value::Array(values) => for value in values { collect_texture_references(value, references); },
-        _ => {},
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                if key == "texture_ref" {
+                    if let Some(reference) = value.as_str() {
+                        references.insert(reference.to_owned());
+                    }
+                } else {
+                    collect_texture_references(value, references);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_texture_references(value, references);
+            }
+        }
+        _ => {}
     }
 }
 
-fn effect_texture_references(dictionary: &Value, name: &str) -> Result<std::collections::BTreeSet<String>, String> {
+fn effect_texture_references(
+    dictionary: &Value,
+    name: &str,
+) -> Result<std::collections::BTreeSet<String>, String> {
     let effect = find_named(dictionary.get("effects"), name)
         .ok_or_else(|| format!("particle effect '{name}' is absent"))?;
-    let events = effect.get("events").and_then(Value::as_array)
+    let events = effect
+        .get("events")
+        .and_then(Value::as_array)
         .ok_or_else(|| format!("particle effect '{name}' has no event list"))?;
     let mut references = std::collections::BTreeSet::new();
     for event in events {
-        if event.get("event_type").and_then(Value::as_u64).unwrap_or(0) != 0 { continue; }
-        let name = event.get("particle_rule").and_then(Value::as_str).unwrap_or("");
+        if event.get("event_type").and_then(Value::as_u64).unwrap_or(0) != 0 {
+            continue;
+        }
+        let name = event
+            .get("particle_rule")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         let particle = find_named(dictionary.get("particles"), name)
             .ok_or_else(|| format!("particle effect references missing particle '{name}'"))?;
         collect_texture_references(particle, &mut references);
@@ -154,42 +180,69 @@ fn load_particle_dictionary(
                 PARTICLE_RUNTIME_OUTPUT,
                 json!({"entry": effect_name}),
             );
-            let (bytes, decode_route) = match semantic_decode {
-                Ok(bytes) => (bytes, PARTICLE_RUNTIME_OUTPUT),
+            let particle_wire = match semantic_decode {
+                Ok(bytes) => Ok((bytes, PARTICLE_RUNTIME_OUTPUT)),
                 Err(semantic_error) => {
-                    // Backward compatibility for older list-file codecs that can
-                    // unwrap NEF8 but predate the semantic particle projection.
-                    // The YPT NEF8 body is already the canonical NVPT runtime wire,
-                    // which this module validates below before use.
+                    // A registered YPT format does not imply the native decoder
+                    // worker is deployed. Try a canonical embedded wire body.
                     let raw = assets.decode(
                         logical_path,
                         PARTICLE_RAW_BODY_OUTPUT,
                         json!({"entry": effect_name}),
                     );
                     match raw {
-                        Ok(bytes) => (bytes, PARTICLE_RAW_BODY_OUTPUT),
-                        Err(raw_error) => {
-                            return Err(format!(
-                            "script command[{command_index}] native YPT decode failed path='{}': semantic '{}': {}; raw-body '{}': {}",
-                            logical_path,
-                            PARTICLE_RUNTIME_OUTPUT,
-                            semantic_error,
-                            PARTICLE_RAW_BODY_OUTPUT,
-                            raw_error
-                        ));
-                        }
+                        Ok(bytes) => Ok((bytes, PARTICLE_RAW_BODY_OUTPUT)),
+                        Err(raw_error) => Err((semantic_error, raw_error)),
                     }
                 }
             };
-            (
-            decode_particle_dictionary_wire(&bytes).map_err(|error| {
-                format!(
-                    "script command[{command_index}] particle dictionary '{}' decode failed via '{}': {error}",
-                    logical_path, decode_route
-                )
-            })?,
-            logical_path.to_owned(),
-        )
+            match particle_wire {
+                Ok((bytes, decode_route)) => (
+                    decode_particle_dictionary_wire(&bytes).map_err(|error| {
+                        format!(
+                            "script command[{command_index}] particle dictionary '{}' decode failed via '{}': {error}",
+                            logical_path, decode_route
+                        )
+                    })?,
+                    logical_path.to_owned(),
+                ),
+                Err((semantic_error, raw_error)) => {
+                    // Only absent codecs may use an explicitly authored
+                    // fallback. Actual parse/corruption failures remain fatal.
+                    let codec_missing = semantic_error.contains("no registered codec accepted")
+                        && raw_error.contains("no registered codec accepted");
+                    let fallback = command
+                        .get("fallback_catalog")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|path| !path.is_empty());
+                    if !codec_missing || fallback.is_none() {
+                        return Err(format!(
+                            "script command[{command_index}] native YPT decode failed path='{}': semantic '{}': {}; raw-body '{}': {}",
+                            logical_path, PARTICLE_RUNTIME_OUTPUT, semantic_error,
+                            PARTICLE_RAW_BODY_OUTPUT, raw_error
+                        ));
+                    }
+                    let fallback = fallback.expect("validated authored fallback path");
+                    let value = assets.json(fallback).map_err(|error| {
+                        format!(
+                            "script command[{command_index}] YPT codec unavailable and authored fallback '{}' failed: {error}",
+                            fallback
+                        )
+                    })?;
+                    if find_named(value.get("effects"), effect_name).is_none() {
+                        return Err(format!(
+                            "script command[{command_index}] authored fallback '{}' has no particle effect '{}'",
+                            fallback, effect_name
+                        ));
+                    }
+                    newviso_host::warn(
+                        "newviso.particles",
+                        format!("native YPT codec unavailable for '{}'; using authored particle catalog '{}'", logical_path, fallback),
+                    );
+                    (value, fallback.to_owned())
+                }
+            }
         } else {
             let fallback = command
             .get("fallback_catalog")
@@ -250,7 +303,8 @@ pub(super) fn spawn_particle_effect(
     let mut rng = Rng(seed);
 
     let assets = AssetClient::new();
-    let (dictionary, source) = load_particle_dictionary(command, logical_path, effect_name, command_index)?;
+    let (dictionary, source) =
+        load_particle_dictionary(command, logical_path, effect_name, command_index)?;
 
     let effect = find_named(dictionary.get("effects"), effect_name).ok_or_else(|| {
         format!(
@@ -1230,9 +1284,14 @@ mod tests {
                 {"name":"mesh","meshes":[{"texture_ref":"textures@mesh"}]},
                 {"name":"unrelated","texture_ref":"textures@unused"}]
         });
-        assert_eq!(effect_texture_references(&dictionary,"water").unwrap().into_iter().collect::<Vec<_>>(),
-            vec!["textures@mesh","textures@splash"]);
-        assert!(effect_texture_references(&dictionary,"missing").is_err());
+        assert_eq!(
+            effect_texture_references(&dictionary, "water")
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["textures@mesh", "textures@splash"]
+        );
+        assert!(effect_texture_references(&dictionary, "missing").is_err());
     }
 
     #[test]
@@ -1240,7 +1299,10 @@ mod tests {
         let key = "tests/preloaded.ypt|".to_owned();
         let dictionary = Arc::new(json!({"effects":[{"name":"water_splash_generic"}]}));
         DICTIONARIES.with(|cache| {
-            cache.borrow_mut().insert(key.clone(), (dictionary.clone(), "tests/preloaded.ypt".into()));
+            cache.borrow_mut().insert(
+                key.clone(),
+                (dictionary.clone(), "tests/preloaded.ypt".into()),
+            );
         });
         let command = json!({"asset_ref":"tests/preloaded.ypt@water_splash_generic"});
         preload_particle_effect(&command, 0).unwrap();
@@ -1249,8 +1311,12 @@ mod tests {
             assert!(Arc::ptr_eq(&dictionary, &cache.borrow()[&key].0));
         });
         let missing = json!({"asset_ref":"tests/preloaded.ypt@missing_effect"});
-        assert!(preload_particle_effect(&missing, 0).unwrap_err().contains("is absent"));
-        DICTIONARIES.with(|cache| { cache.borrow_mut().remove(&key); });
+        assert!(preload_particle_effect(&missing, 0)
+            .unwrap_err()
+            .contains("is absent"));
+        DICTIONARIES.with(|cache| {
+            cache.borrow_mut().remove(&key);
+        });
     }
 
     #[test]

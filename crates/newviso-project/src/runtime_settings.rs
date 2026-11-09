@@ -1,4 +1,5 @@
 use super::{ProjectError, ProjectWorldPersistence, RUNTIME_SETTINGS_SCHEMA_V1};
+use newviso_config::merge_json as merge;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -71,21 +72,6 @@ pub struct ProjectSchedulingSettings {
     pub native_navigation_enabled: bool,
 }
 
-fn merge(target: &mut Value, patch: &Value) {
-    if let (Some(target), Some(patch)) = (target.as_object_mut(), patch.as_object()) {
-        for (key, value) in patch {
-            match target.get_mut(key) {
-                Some(current) => merge(current, value),
-                None => {
-                    target.insert(key.clone(), value.clone());
-                }
-            }
-        }
-    } else {
-        *target = patch.clone();
-    }
-}
-
 impl ProjectRuntimeSettings {
     /// Decode a complete runtime document. Engine startup normally uses
     /// from_base_and_override(), because Shared Assets own the complete base.
@@ -127,10 +113,7 @@ impl ProjectRuntimeSettings {
             ProjectError::Asset("runtime.configure settings must be an object".into())
         })?;
         for key in object.keys() {
-            if !matches!(
-                key.as_str(),
-                "camera" | "streaming" | "scripting" | "scheduling" | "variables"
-            ) {
+            if !crate::settings_schema::is_live_section(key) {
                 return Err(ProjectError::Asset(format!(
                     "runtime setting '{key}' is unknown or requires restart"
                 )));
@@ -227,11 +210,11 @@ impl ProjectRuntimeSettings {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
 
-    fn complete_base() -> Value {
+    pub(crate) fn complete_base() -> Value {
         json!({
             "schema": RUNTIME_SETTINGS_SCHEMA_V1,
             "window": {"title": null, "width": 1280, "height": 720},

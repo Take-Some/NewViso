@@ -122,6 +122,8 @@ NewViso routes subsystem communication through host services rather than linking
 For the crate boundaries and dependency rules, see [ARCHITECTURE.md](ARCHITECTURE.md).
 For autonomous-agent/NPC architecture and the remaining production navigation/locomotion work, see [docs/npc-runtime.md](docs/npc-runtime.md).
 
+For engine-owned doors, locks, latches, NPC passage and shared textured models, see [docs/physical-doors.md](docs/physical-doors.md).
+
 ## Development checks
 
 ```powershell
@@ -132,3 +134,9 @@ python scripts/verify_boundaries.py
 python scripts/verify_isolation.py
 python scripts/verify_no_console_output.py
 ```
+
+## Configurable projects and profiles
+
+See [Project configuration](docs/project-configuration.md) for inherited runtime profiles, platform/user layers, command-line overrides, per-setting source reports and the offline newviso-project-tool. Existing manifests remain compatible without mandatory migration.
+
+Scene editor and package workflow: [scene-editor-and-packaging.md](docs/scene-editor-and-packaging.md). Native Project Settings, object menus and project-defined game properties: [editor-project-settings.md](docs/editor-project-settings.md). Open Scripts/Run/RunEditor.cmd with a project; build a portable game directory with Scripts/Build/BuildGamePackage.cmd.

@@ -1,0 +1,1199 @@
+{
+  "schema": "newviso.endorphin.reference-coverage.v1",
+  "reference_root": "C:\\Games\\gta v source code\\GTAV Source",
+  "counts": {
+    "game_task": 31,
+    "recovery_task": 1,
+    "native_behaviour_unit": 76,
+    "native_support_unit": 32
+  },
+  "mapped_partial": 18,
+  "exact_parity_verified": false,
+  "scope_limits": [
+    "A partial mapping identifies related native responsibilities, not a source port or accepted parity.",
+    "Selected Physics and NaturalMotion implementation scopes plus TaskGetUp.cpp; headers and other integration directories are not a complete engine inventory.",
+    "Native behaviour units include helper and job implementation files; their count is not a behaviour count.",
+    "No original-runtime golden trace has been compared. No unit is marked exact-parity verified.",
+    "Authored tuning, animation assets, topology, contacts and networking need separate parity acceptance.",
+    "Sustained physical standing, physical locomotion and physical LOD remain open."
+  ],
+  "units": [
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskAnimatedAttach.cpp",
+      "kind": "game_task",
+      "sha256": "6e4e439b3df8a1613c42d3fbdebe2fcb898e0dad67b6e1387f3d52ef5eee8d21",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskBlendFromNM.cpp",
+      "kind": "game_task",
+      "sha256": "02cf6a27a5e585e58c9af17e4643a4743fde89c1e47ff86ec6939eb4dcd36801",
+      "status": "mapped_partial",
+      "native_mapping": [
+        "crates/newviso-endorphin/src/recovery_match.rs",
+        "crates/newviso-runtime/src/application_endorphin/getup.rs",
+        "crates/newviso-scene/src/first_scene/animation_skinning/pose_layers/recovery.rs"
+      ],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNM.cpp",
+      "kind": "game_task",
+      "sha256": "b7a334a9c7f47b65e61fb128042be784b52596079c0336e8a964ab48048d745a",
+      "status": "mapped_partial",
+      "native_mapping": [
+        "crates/newviso-endorphin/src/authority.rs",
+        "crates/newviso-runtime/src/application_endorphin.rs"
+      ],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMBalance.cpp",
+      "kind": "game_task",
+      "sha256": "5ec6386b7b47f5fb2d9f7470266eee7e8e190a34412260b2ed80e18654d09f96",
+      "status": "mapped_partial",
+      "native_mapping": [
+        "crates/newviso-endorphin/src/balance.rs",
+        "crates/newviso-endorphin/src/support.rs",
+        "crates/newviso-endorphin/src/stepping.rs"
+      ],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMBindPose.cpp",
+      "kind": "game_task",
+      "sha256": "241ab65b67f1a20b5685646b46ad90b9cdd847139c6b5f092b7e7aa3b7864389",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMBrace.cpp",
+      "kind": "game_task",
+      "sha256": "b713f90370093a23406537f1d1e5b5ce71a08eef8b92dabe77159f41214f2291",
+      "status": "mapped_partial",
+      "native_mapping": [
+        "crates/newviso-endorphin/src/protection.rs",
+        "crates/newviso-runtime/src/application_endorphin/protection/physical.rs"
+      ],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMBuoyancy.cpp",
+      "kind": "game_task",
+      "sha256": "916b1c9f4813e5549fcf2e84c16f822ed2aa3a8c0c7aa2fcdc637c19f96866be",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMDangle.cpp",
+      "kind": "game_task",
+      "sha256": "b683be6750acea6256b52775b3a52ef70092d78029e31f162f98483b2dc2aa2f",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMDraggingToSafety.cpp",
+      "kind": "game_task",
+      "sha256": "0d8680818642b7b172de1e299a0e05cb05d1bf93b70a6ec2838b8801fccd4169",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMDrunk.cpp",
+      "kind": "game_task",
+      "sha256": "fafe72b282097fc6c62e19e8b3ef6c83466ba2139b0c9a064fbae103f492ab29",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMElectrocute.cpp",
+      "kind": "game_task",
+      "sha256": "9582e369feae5aea37fec2e218dde6c205a0f88cfc91dff12afb34194673504a",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMExplosion.cpp",
+      "kind": "game_task",
+      "sha256": "b462db1f239d210f272276a14c2a8140d902d2a626705903fe5f063331644084",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMFallDown.cpp",
+      "kind": "game_task",
+      "sha256": "12c80088ca2a737526dfcb6682ea66691173a47858548c75148d513843ae9beb",
+      "status": "mapped_partial",
+      "native_mapping": [
+        "crates/newviso-endorphin/src/reactions.rs",
+        "crates/newviso-runtime/src/application_endorphin/ragdoll.rs"
+      ],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMFlinch.cpp",
+      "kind": "game_task",
+      "sha256": "dc854d7d9f5b3dad1f4820c3a88df1ed87d4eda3af64d08b73fb17ead51f4f49",
+      "status": "mapped_partial",
+      "native_mapping": [
+        "crates/newviso-endorphin/src/reactions.rs",
+        "crates/newviso-runtime/src/application_peds/physics/wounds.rs"
+      ],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMHighFall.cpp",
+      "kind": "game_task",
+      "sha256": "fd7b979150dcfdc4ac5523aee811b18b63b44a2038bfe68e4b469d5ce96b1135",
+      "status": "mapped_partial",
+      "native_mapping": [
+        "crates/newviso-endorphin/src/recovery.rs",
+        "crates/newviso-runtime/src/application_peds/physics/animation.rs"
+      ],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMInjuredOnGround.cpp",
+      "kind": "game_task",
+      "sha256": "971a9e416599320e6cb357119e4bc57315824df0215345435109cb3c19345a25",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMJumpRollFromRoadVehicle.cpp",
+      "kind": "game_task",
+      "sha256": "1ea2f5e30b6297f3cd394ae34d9b3083808ddc3c1121de8b7af4dfa3b6d36d29",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMOnFire.cpp",
+      "kind": "game_task",
+      "sha256": "1786e735991ac702c81c1af07ec6da96d09c9825de4589f58d162c16b381b86b",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMPose.cpp",
+      "kind": "game_task",
+      "sha256": "0f94b21eb27c6c2f94bed374517d3306d52dbb3950571f61d59b489b5e41075b",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMPrototype.cpp",
+      "kind": "game_task",
+      "sha256": "5b4fabcc72b29283004b8699b9ed3f32f034d3e5b144f77af624b4e7660f627f",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMRelax.cpp",
+      "kind": "game_task",
+      "sha256": "09d95a28e3d5a87478b1f0ded17ad23029f6d155ab57dd822604260bb6f50d8d",
+      "status": "mapped_partial",
+      "native_mapping": [
+        "crates/newviso-runtime/src/application_endorphin/control.rs"
+      ],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMRiverRapids.cpp",
+      "kind": "game_task",
+      "sha256": "6978e348e39b29e7a730a7d3aa3577a892c25cb779cde8e64fc1d1d133d666f2",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMRollUpAndRelax.cpp",
+      "kind": "game_task",
+      "sha256": "da44a5bb84e927e241c540b181b1cc575cb3efe4c928c2b3f1864a3fbabcb03b",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMScriptControl.cpp",
+      "kind": "game_task",
+      "sha256": "d4a2e7eea335528f0c75df80e0e7e7880672d3bba0e5eec0369cfeea73bbb7f7",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMShot.cpp",
+      "kind": "game_task",
+      "sha256": "773cb7cb7e5453483dde2ff3ac09580a88260b000372753178691d80df7e2942",
+      "status": "mapped_partial",
+      "native_mapping": [
+        "crates/newviso-endorphin/src/anatomy.rs",
+        "crates/newviso-runtime/src/application_endorphin/damage.rs"
+      ],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMSimple.cpp",
+      "kind": "game_task",
+      "sha256": "35356784ba2b3fd7ace44f19b6761c29d0e80b90b3c1de206d511d554f0ebf0c",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMSit.cpp",
+      "kind": "game_task",
+      "sha256": "b0512446d7754549d7d2f9173779bef85f1d88aff9acb657c580fc1374c6822a",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMSlungOverShoulder.cpp",
+      "kind": "game_task",
+      "sha256": "fcc3d1cf3f5ee9ebce3cd8ccd6459e06cb9256936e2d8cc9cc71a17bce75c6b9",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMStumble.cpp",
+      "kind": "game_task",
+      "sha256": "edcf84032d6e1ff191f09709d42651950231f513deba00e24b46a907182cfd2c",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskNMThroughWindscreen.cpp",
+      "kind": "game_task",
+      "sha256": "dc3fcd499678b26d45276aceb5ff50a45904c94152024a02f246e9c8b124f40d",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Physics/TaskRageRagdoll.cpp",
+      "kind": "game_task",
+      "sha256": "80efbcb0d8afc89b77d05109519b10a1ba3c9849173290072940502af8b57ea4",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/game/task/Movement/TaskGetUp.cpp",
+      "kind": "recovery_task",
+      "sha256": "f81f9d575533909deaebb4cef9e4cdeee283e0b74c295ae8569dbba3e0d87359",
+      "status": "mapped_partial",
+      "native_mapping": [
+        "crates/newviso-endorphin/src/recovery_support.rs",
+        "crates/newviso-runtime/src/application_peds/physics/recovery_support.rs",
+        "crates/newviso-endorphin/src/recovery_match.rs",
+        "crates/newviso-endorphin/src/recovery_placement.rs",
+        "crates/newviso-runtime/src/application_endorphin/getup.rs",
+        "crates/newviso-runtime/src/application_peds/physics/recovery.rs",
+        "crates/newviso-runtime/src/application_physics/queries/getup.rs",
+        "crates/newviso-runtime/src/application_physics/queries/recovery.rs",
+        "crates/newviso-runtime/src/application_peds/physics/animation.rs",
+        "crates/newviso-scene/src/first_scene/animation_skinning/pose_layers/recovery.rs"
+      ],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_AnimPose.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "c653d588753c01dd446582088ec83ab1049df899f8ac2e27ddcc12310daef465",
+      "status": "mapped_partial",
+      "native_mapping": [
+        "crates/newviso-endorphin/src/anatomy.rs"
+      ],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_ArmHang.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "862341a61acc50d7381b56f336fb9a6dfb0e24ce7303f20c2c9310e71c73e51b",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_ArmsWindmill.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "76f057523a070af3181ec519e24a095f2dcc7eb7ef25b1c20c350ab95075a74f",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_ArmsWindmillAdaptive.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "4069d411c2440857d8300c5c464421329812e5d98b0996773d2f0d177ff37020",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_BalancerCollisionsReaction.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "a564f7170c7ed06d0ea2030553d0bcbffe5d08b44f7d2bef2ac4045a48c23d12",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_BodyBalance.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "6cfb2b0351b1bf04a1e01a0150b01c17ccba2fb58c1488080d4d36a050a3f31d",
+      "status": "mapped_partial",
+      "native_mapping": [
+        "crates/newviso-endorphin/src/balance.rs",
+        "crates/newviso-endorphin/src/support.rs"
+      ],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_BodyFoetal.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "09d01f5b1d81411e631b4ec6a3cef641a0dfd9913f1a634f3692fb2cfb154c52",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_BodyWrithe.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "1c7cbd8772bdbc998fafe0f8aa5b02677a0b78391581ec4b26cde46b2814f49b",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_BraceForImpact.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "e929998eb7445d2d0f4a3ec8091ccbb88c0d2b06f1d52568abad30e395a87eb2",
+      "status": "mapped_partial",
+      "native_mapping": [
+        "crates/newviso-endorphin/src/protection.rs"
+      ],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_Breathe.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "46bbc42e7b26c6130d96db936c85b7ca298faacfc261cc25056c448a5b9d7186",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_Buoyancy.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "a23981dd2139c2dcdae08af678265f92c604f517a0de4e8d875565be7dd3160f",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_Carried.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "0869e69c3caa4fc60f2db74d3384e070c91549c63e37283403b38a4c36585101",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_Catchfall.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "b6c84cc3b7327e3babf1f80d1e55e279feac284931dc1c8e6c7ccc3e4b954f5f",
+      "status": "mapped_partial",
+      "native_mapping": [
+        "crates/newviso-endorphin/src/protection.rs"
+      ],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_CrawlLearner.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "116cb2b87fc9225fd226a989710271a1d446f4661182a36c9a529acffae202ed",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_CrushReaction.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "3517c6df99cb7bfb9e92526244b255c13a646f1240a3e3ba02334cfe0e10f4de",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_CrushReactionUtils.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "f5c0301b71546a4382b3486218dabe64cafecf96d3178deb8770736efb2fd20f",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_Dangle.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "445cfd16b61ea67b9f45ab905dedcae64a83e04e06de224bdc0ab940d73b9040",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_DBMBalanceSolve.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "8bcb620101b98e93a6413981cb60593d235dc8482a655012d9cdf0b5ccfb2a97",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_DBMBalanceSolve_job.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "5ebf78687cb919ef6a5f60778757f612ed498291d8924364e0029503b8db4891",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_DBMFootPlacement.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "771871055bc0bb34c3ed900da4513f191626413389e821942f964f41ec360f7d",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_DBMFootPlacement_job.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "fb4cb7f630d5356ac6c25a93b01fc9b0e4891eea5b8b603d78747513e5ffb303",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_DBMPelvisControl.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "11d4be7ce8c2390c0ed31001487abd2edc962e52c7cc84a710293dec47d9103b",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_DBMPelvisControl_job.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "52e6d1039417155a84a7d29b461bef5da497db5e407689a249d354a090e3d2aa",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_DebugRig.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "cf4f41d9f11a2ad99df1b6e5818862609c61ed5e99259fcf054be0ce5bc00960",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_DogDeath.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "cd49d27bbaa2db710ef5b30b4c738efed015377d26d12791d7ace9fc250e062a",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_Dragged.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "ec80d2c31aff7edb2e92568806160713549535b8a5b7715c285cf5a19f0322f1",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_DynamicBalancer.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "57829fcf4591433cea5aa566b646a40e16765c08d1a0c96d710928b9175e00d6",
+      "status": "mapped_partial",
+      "native_mapping": [
+        "crates/newviso-endorphin/src/stepping.rs"
+      ],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_Electrocute.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "f36b90d22d6d3b1e2b024d6f8f01e63fb4b52f68a871b36f18898e3af4c98838",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_FallOverWall.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "093950bf61be40ec6d6518f2c20e7e629a63a0dde2adf1753d422a6d56c9da10",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_Flinch.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "55d6adaeecec66731a5a899630212cc8e2be2df67436b843fad15b6606f7e65a",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_Grab.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "d23b60e2b8146ebf6b4a1eb36b249fc6cdf5f829df8376d5b443b483083dd590",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_Grab_Helper.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "bd6f8c7c4721d6b2ea299bfddc3a86a815f668a37d2c65d471d73fda3d0b8449",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_HardConstraint.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "6783f2d3e295e987813ad30e8463cfbbef395515a633143b639797970afad11a",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_HeadLook.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "87936f902c697edcde747b30237a573f12b9aa3fc44e67b578d1d74ad0a0dac0",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_HighFall.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "9d25b85811565a7fba96c39dd3f06d5a6b11b1accf20f1d3c6e246cc4efa171d",
+      "status": "mapped_partial",
+      "native_mapping": [
+        "crates/newviso-endorphin/src/recovery.rs",
+        "crates/newviso-runtime/src/application_endorphin/control.rs"
+      ],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_InjuredOnGround.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "d9723df634f79a03695bd491f008bcaa0107340aa0ed5c5db3eb319c730c41a3",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_Landing.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "9e2dacbf975cddb5eb74978e64403003bb315758f7b453a9cb5c1a4c1172fab6",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_LearnedCrawl.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "981836b6f3aed3289e8daa8ceb2c18724e0a3706a7bb8ebb19c34ed423ddaae4",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_OnFire.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "5da1e8a6d8bf48837b702bdf8320c7aa0bbfe946490278a3fa1ea40f4150f697",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_Pedal.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "275cbc32f1eb3d30a3985859f98467f59f35535f2ba4b862a4dbce99123d03d8",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_PointArm.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "8e5d7a3cb05f770c9e576e85f2ec9db3c826bf9f453e256d9a383bbccde8ef22",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_PointGun.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "ea8d2e0c54c16eabea4d1ac525ae047f581ad47349449e66c402c3973f59f933",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NMRsCBU_RelaxUnwind.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "3a5b2f4807cc38c6c5eaef30809c7e4c31e3aa41bf6cc08f1ed5e9f1398b5878",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_RollDownStairs.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "5de76983b2194fae211b18f412edd2e8b0f6b13bdea8f572939724eaa6fc14a1",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_RollOver.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "a46b19c69151458ace7b5a8530cf655b24e601dd8d4bc4b57c64042df16ba639",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_RollUp.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "e817d036c51f4c575d140342db3a010e514ec76ed90d6e32455994ccedabc629",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_SDCatchFall.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "a4c511fdc5c9555f7e8f4fbe4577dd22f7fb7676207607a1cf1981f2b0fffe2d",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_Shared.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "08a928391ef5f9510535838826953591fe63cc538a399f256dff710c5e8f5e01",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_ShootDodge.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "b87a5cb2dd1bfc904fd862c04b88b2170b556621b2e5f825f8a78822c2d67aa3",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_Shot.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "3675fc71574b0cdc59c08b5862f73e8825f1e672f6851a2dde389fc47c73a291",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_ShotChickenArms.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "a776278eb02b2914831e73bbb014bea83cfb41733ed8b72bb316724b46071c6f",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_ShotControlStiffness.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "5f5dcceb996c6d7064bfecc217d4bad51a336612c12c351d9517511964330ea8",
+      "status": "mapped_partial",
+      "native_mapping": [
+        "crates/newviso-endorphin/src/anatomy.rs"
+      ],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_ShotDefaultArmMotion.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "2491f60cad298dada1427a095938431d5958e4270b606b32e08a4aa6a1002476",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_ShotFallToKnees.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "f27ad40f1008cd649aa41e7d72777eb5839c7a0cbf4456ceb25bd39247a2b2af",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_ShotFling.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "aaa6c0a5b63b6b2791f4517bff87f51d0861f26fce7eb0171f0988e3a31c557e",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_ShotFromBehind.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "bf9122775a1be10f34700e1e77752e3bde4a71f1184f0b7550936bc567ffa965",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_ShotHeadLook.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "33df034e25d72098b46b41a7e2716f9e99ad78fb21e979ac91db6aca5ac6d688",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_ShotInGuts.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "45a343c81ce18c17773c010fb5662036940e432631042d98258f1bde7a5bbbab",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_ShotInjuredLimb.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "1d07ed4482d9ad412cf5e6ae84cbed6fae8166e3bf4c1ecf2055beae90860337",
+      "status": "mapped_partial",
+      "native_mapping": [
+        "crates/newviso-endorphin/src/anatomy.rs"
+      ],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_ShotJustWhenFallen.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "25a8e0b6db3ff01e629e0be11aad721f64f4f683e52edbb092c7a3ec0bd20b2b",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_ShotMelee.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "108fa1289751c6da98f5d9e8f7d48d9467598536e64ddf9ce1264b630362be58",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_ShotNewHit.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "9b1ef54bb4dd806e717e92c54cbe5c4dc46b4c55a2aefbdf18696e0b1acfda79",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NMRsCBU_ShotOnGround.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "609228f93cc962cf4067645826e82519dbae570dc6e3ec009266508631152f81",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_ShotPointGun.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "0981435ced49003ca9c38ab3c59cf8412563122784e4392f98d1c10ff9df02ff",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_ShotReachForWound.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "99af25a6acbd26c1b98ca6a415300bc0fc5ad269bbbe208c0c10c9598381dede",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_SmartFall.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "664c415ca3f730891e102e300b1805ee13bf2d02e24972ec9e3e1ecf42d09e4a",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_SoftKeyframe.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "59d83c6ad4ff2ce867e284e2896696a2b3a678f5fc01614b830a719d49ee6d67",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_SpineTwist.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "d376f952bf3961e1853214398f4c9e9668b1a373a6146b4ba72ca79a2fcec0b1",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_SplitBody.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "0b1ced631d4f47d37fb2d4573404c6335440dc78827351cc7ab405c432b0dcb4",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_StaggerFall.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "eac50237904e6761865c309aad9e817727453eda256ef9ae9efab8daf511ff57",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_StateMachine.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "3c652746d8a07a3c7637fe7e3020e945e668ff1267199656c56d9e01e302ddcc",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_Stumble.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "cb5af39ecaeb45edca089219f26bf1574b880b8f2f652e391ff32d2f6c74ef72",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_TaskBase.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "9ce8275d29d97800ee01f6c0d0ecefb1490bdba750aa158d43f802b24a26a07d",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_TaskManager.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "fa3e3a46bfc066af7eea220885dc36e1c178df41367abcbc510a052202daba2e",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_Teeter.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "ba5ffedd11f859a74a75f9ac7ad4f6791869a8c7f4dae4da5ddc8e72e840d776",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCBU_Yanked.cpp",
+      "kind": "native_behaviour_unit",
+      "sha256": "ea1852ac14af47a33e44a0ffb43f2bc0937071f76bcaab53b5490a6619eaff22",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRs1DofEffector.cpp",
+      "kind": "native_support_unit",
+      "sha256": "2487855619190cd9dedc7c2b31bcd6cf2aad1af69f24c37a6b8226d409fcc717",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRs1DofSoftLimit.cpp",
+      "kind": "native_support_unit",
+      "sha256": "e526e89c883c967eb3a3b4a7b5d96908a0ee3ef97f773d8a1a836ab9c0091266",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRs3DofEffector.cpp",
+      "kind": "native_support_unit",
+      "sha256": "d308f8f19aedab2070432d9c776b5b3787d379258dd5909ecfeeb58d3245349e",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsArticulatedWrapper.cpp",
+      "kind": "native_support_unit",
+      "sha256": "104af7cc67f51707ea6e795fc2b8214c2d4e7214303ad479d68296ba7c2f8476",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsBullet.cpp",
+      "kind": "native_support_unit",
+      "sha256": "73fee6b2644ee4ed0705dfd1596ab501d665a14afaa7171f5271df9ba8cfe3ce",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCharacter.cpp",
+      "kind": "native_support_unit",
+      "sha256": "706bf186565e4ff55e4ecaccfdaf447e5d249c361f36da8476b6b81b640d10d5",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCharacterDebugViz.cpp",
+      "kind": "native_support_unit",
+      "sha256": "e783b58892aa3d8d9e047a6e3b80a61b127bc8276869a666b8eace49fe57177e",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCharacterDeserialize.cpp",
+      "kind": "native_support_unit",
+      "sha256": "1eaaae1b6e99a0145692bb4f47cd6fc1762a85601ae492ef1895f16b7392d41a",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCharacterDInvoke.cpp",
+      "kind": "native_support_unit",
+      "sha256": "a44aaa34a87d1173901f4a9784cf2707787f7a24ce83420a83ecb3980583c7ac",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCharacterLua.cpp",
+      "kind": "native_support_unit",
+      "sha256": "ef9268aca0a0850a716cbc442c21e3bbcb1438990c2f55b372a6cd718954d1e6",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCharacterMasking.cpp",
+      "kind": "native_support_unit",
+      "sha256": "290456ce3fb1f8ce821c8d5235496d279eb53a7e3e106988f35a90310affccaf",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCharacterPatch.cpp",
+      "kind": "native_support_unit",
+      "sha256": "890d986296287dac08b91cf549e803b8ca4cda8e43b8e51ec1249c8ef8b5399d",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCharacterPhysicsHelpers.cpp",
+      "kind": "native_support_unit",
+      "sha256": "9594b2a8db765e73ac0dc229a660780b2aa72556ac0a9acde294c2e60f78697c",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsCommon.cpp",
+      "kind": "native_support_unit",
+      "sha256": "e81937a24ca581a8b5de70e1e067b528aeff652f5bdc910f217b42184d3ec868",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsEffectorInputBlendable.cpp",
+      "kind": "native_support_unit",
+      "sha256": "10a6a7e079c67fa32ac1565c110e879cf800b654362f22d22811ccc240cee60c",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsEffectorInputWrapper.cpp",
+      "kind": "native_support_unit",
+      "sha256": "b0c99d564a46cdd23cace84b34a8e908d024864131aa4588399a487f401e2442",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsEffectors.cpp",
+      "kind": "native_support_unit",
+      "sha256": "612d6f0149f9bcd50c9f3d6d02a2d23c67f3d4880b2c2210b04621ee324afd4e",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsEngine.cpp",
+      "kind": "native_support_unit",
+      "sha256": "8ee6d011322a44d40cefa3b98551e193f678bffc91465ec278322e558367e90e",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsFrictionHelper.cpp",
+      "kind": "native_support_unit",
+      "sha256": "133785552599b5c41d89e0b01eb98b4a1be37811b585b9cb307bda009088a981",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsGenericPart.cpp",
+      "kind": "native_support_unit",
+      "sha256": "77deaf23800f57089251f002429fee105804e7f6396d5596af8c15131ba52d6a",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsIK.cpp",
+      "kind": "native_support_unit",
+      "sha256": "6ae2344085e6cf9f536fd68d1812579eba3f768ff9ca9ee4d9ae9bca53495157",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsIKHelpers.cpp",
+      "kind": "native_support_unit",
+      "sha256": "2779dea1799a3e7fdabbaba9f7eba8e0622729b5c5a8c7365e8769fa0257908f",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsLimbInputBlendable.cpp",
+      "kind": "native_support_unit",
+      "sha256": "d92853285ad33d45af7e8277ef2ee84af4a9ad83423cfd785d906e2c76a9a9f9",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsLimbInputWrapper.cpp",
+      "kind": "native_support_unit",
+      "sha256": "64419de3b561ca3c1dcd62ece53ef9d3e9d2163eaac2c53de399893fcae0580b",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsLimbManager.cpp",
+      "kind": "native_support_unit",
+      "sha256": "0d543f6715ebfe666b38ac8eeec10f68ab2521469cdef714791c157652ae84d3",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsLimbs.cpp",
+      "kind": "native_support_unit",
+      "sha256": "9c6e214b8e81eca8964fa0b16319484a4014d6b56bb0e2aef5505f77feaee9fe",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsPhInstNM.cpp",
+      "kind": "native_support_unit",
+      "sha256": "cefa2a762f8170643a70f8e9869bd83cb7206efd6a74ecb7ffb89b63e5a38bf7",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsPosture.cpp",
+      "kind": "native_support_unit",
+      "sha256": "6d8147358690b00b4ebb84750945ce841c8e11807270f000d4ebe7bf747f6705",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsPublicFns.cpp",
+      "kind": "native_support_unit",
+      "sha256": "00c4fff7b5278e93319a065575f10afb988ee00650b7e2d7fc71813b1d657102",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsSpy.cpp",
+      "kind": "native_support_unit",
+      "sha256": "6a9a71ffd782b77227d1236728f3e8dda1c2b82650ea563a010f369542e70117",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsStateMachine.cpp",
+      "kind": "native_support_unit",
+      "sha256": "818def4e562169a69633fe958cd7e8f491a54a44616e10529b4f8c63408cbbd9",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    },
+    {
+      "source": "src/dev_ng/rage/naturalmotion/src/rockstar/NmRsUtils.cpp",
+      "kind": "native_support_unit",
+      "sha256": "52548e68b79498325bfe37ba50be7a388e98ed621ee0d6883bef1b76e5c03060",
+      "status": "unmapped",
+      "native_mapping": [],
+      "exact_parity_verified": false
+    }
+  ]
+}

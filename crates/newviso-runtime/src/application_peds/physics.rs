@@ -4,8 +4,6 @@ use crate::application_physics::{PhysicsDamageContact, PhysicsDamageKind};
 
 const PED_MASS_KG: f32 = 70.0;
 const VEHICLE_DAMAGE_INTERVAL: f64 = 0.4;
-// CPed::KillPedWithCar uses CTaskFallAndGetUp(..., 2.0f).
-const VEHICLE_FALL_SECONDS: f32 = 2.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VehiclePedHit {
@@ -32,7 +30,7 @@ impl VehiclePedHit {
 }
 
 #[derive(Clone, Debug)]
-struct VehiclePedResponse {
+pub(crate) struct VehiclePedResponse {
     source: u64,
     kind: VehiclePedHit,
     elapsed: f32,
@@ -40,29 +38,48 @@ struct VehiclePedResponse {
     wheel_load: f32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct PedBody {
     pub entity: u64,
     pub center_offset: f32,
-    radius: f32,
-    half_height: f32,
+    pub(crate) radius: f32,
+    pub(crate) half_height: f32,
     pub recovery_seconds: f32,
     pub death_heading: f32,
-    was_dead: bool,
-    reset_requested: bool,
-    vehicle_response: Option<VehiclePedResponse>,
-    reaction: Option<animation::PedReactionState>,
-    animation_generation: u64,
-    ragdoll: Option<ragdoll::RagdollState>,
-    hit_reaction: Option<wounds::HitReaction>,
+    pub(crate) was_dead: bool,
+    pub(crate) reset_requested: bool,
+    pub(crate) vehicle_response: Option<VehiclePedResponse>,
+    pub(crate) reaction: Option<animation::PedReactionState>,
+    pub(crate) animation_generation: u64,
+    pub(crate) endorphin: crate::application_endorphin::EndorphinActor,
+    pub(crate) mass_kg: f32,
+    pub(crate) hit_reaction: Option<wounds::HitReaction>,
+}
+
+impl PedBody {
+    pub(crate) fn authority(&self, dead: bool) -> newviso_endorphin::ControlAuthority {
+        newviso_endorphin::ControlAuthority::resolve(newviso_endorphin::AuthorityObservation {
+            dead,
+            reset_pending: self.reset_requested,
+            articulated: self.endorphin.ragdoll.is_some(),
+            recovering: self.recovery_seconds > 0.0 || self.reaction.is_some(),
+            vehicle_response: self.vehicle_response.is_some(),
+            hit_reaction: self.hit_reaction.is_some(),
+            protective_reach: self.endorphin.control.protection.active(),
+        })
+    }
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct PedPhysicsRuntime {
     pub bodies: BTreeMap<String, PedBody>,
-    weapon_sources: BTreeMap<u64, String>,
-    last_collision_damage: BTreeMap<(String, u64), f64>,
+    pub(super) melee: super::melee::MeleeRuntime,
+    pub(super) combat: super::combat::CombatHostRuntime,
+    pub(super) weapon_sources: BTreeMap<u64, String>,
+    pub(super) last_collision_damage: BTreeMap<(String, u64), f64>,
     last_wheel_tick: u64,
+    pub(super) grip_models: BTreeMap<String, newviso_agent::peds::grip::WeaponGripModel>,
+    pub(super) grip_motion: BTreeMap<String, super::grip::GripMotionSample>,
 }
 
 fn capsule_body_command(
@@ -71,12 +88,13 @@ fn capsule_body_command(
     velocity: [f32; 3],
     radius: f32,
     half_height: f32,
+    mass_kg: f32,
 ) -> Value {
     let volume = std::f32::consts::PI * radius * radius * (2.0 * half_height + 4.0 * radius / 3.0);
     json!({"entity": entity, "body_kind": "dynamic", "position": center,
         "shape": {"kind": "capsule", "radius": radius, "half_height": half_height},
         "rotation": [0, 0, 0, 1], "linear_velocity": velocity,
-        "density": PED_MASS_KG / volume, "friction": 0.65, "restitution": 0.0,
+        "density": mass_kg / volume, "friction": 0.65, "restitution": 0.0,
         "linear_damping": 0.0, "angular_damping": 12.0,
         "is_trigger": false, "continuous_collision": true,
         "participates_in_queries": true, "casts_contacts": true})
@@ -124,8 +142,8 @@ pub(crate) mod animation;
 mod damage;
 mod lifecycle;
 mod presentation;
-pub(crate) mod ragdoll;
 mod recovery;
+pub(crate) mod recovery_support;
 mod vehicle_hits;
 mod wounds;
 
@@ -135,7 +153,7 @@ mod tests {
 
     #[test]
     fn ped_capsule_has_real_mass_contacts_queries_and_ccd() {
-        let body = capsule_body_command(12, [1.0, 0.9, 3.0], [0.0; 3], 0.3, 0.6);
+        let body = capsule_body_command(12, [1.0, 0.9, 3.0], [0.0; 3], 0.3, 0.6, 70.0);
         let volume = std::f32::consts::PI * 0.3 * 0.3 * (1.2 + 4.0 * 0.3 / 3.0);
         assert!((body["density"].as_f64().unwrap() as f32 * volume - 70.0).abs() < 0.001);
         assert_eq!(body["body_kind"], "dynamic");
@@ -207,3 +225,5 @@ mod tests {
         );
     }
 }
+
+mod weapon_pose;

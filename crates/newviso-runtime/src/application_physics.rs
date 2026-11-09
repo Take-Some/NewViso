@@ -144,6 +144,7 @@ pub(super) struct PhysicsRuntime {
     bodies: BTreeMap<u64, PhysicsBodySnapshot>,
     joints: BTreeMap<u64, PhysicsJointSnapshot>,
     supports_joints: bool,
+    supports_articulation: bool,
     supports_collision_filters: bool,
     separation_pairs: BTreeSet<[u64; 2]>,
     body_hull_components: BTreeMap<u64, (Vec<u32>, Vec<u32>)>,
@@ -159,26 +160,41 @@ pub(super) struct PhysicsRuntime {
     damage_sources: BTreeMap<u64, PhysicsDamageSource>,
     scene_pose_offsets: BTreeMap<u64, [f32; 3]>,
     scene_rotation_offsets: BTreeMap<u64, [f32; 4]>,
+    scene_hinges: scene_hinges::SceneHingeBindings,
+    doors: doors::PhysicalDoors,
+    script_character_drives: BTreeMap<u64, character_drive::ScriptCharacterDrive>,
+    character_stairs: BTreeMap<u64, stairs::CharacterStairs>,
     frame_index: u64,
     fixed_tick: u64,
+    fixed_seconds: f64,
     next_command_seq: u64,
     accumulator: f32,
     settings: PhysicsWorldSettings,
     water: Option<water::WaterPhysics>,
     water_excluded: BTreeSet<u64>,
     last_output: PhysicsFrameOutput,
+    frame_perf: PhysicsFramePerf,
 }
 
+mod character_drive;
 mod colliders;
 mod commands;
 mod components;
 mod damage;
+pub(crate) mod doors;
 mod frame_events;
-mod math;
+mod hinges;
+mod performance;
+mod protection;
+mod scene_hinges;
+pub(crate) use performance::performance_trace_enabled;
+pub(crate) use performance::PhysicsFramePerf;
+pub(crate) mod math;
 mod presentation;
 mod queries;
-mod water;
+mod stairs;
 mod step;
+mod water;
 use math::*;
 
 impl PhysicsRuntime {
@@ -189,6 +205,7 @@ impl PhysicsRuntime {
             bodies: BTreeMap::new(),
             joints: BTreeMap::new(),
             supports_joints: false,
+            supports_articulation: false,
             supports_collision_filters: false,
             separation_pairs: BTreeSet::new(),
             body_hull_components: BTreeMap::new(),
@@ -204,14 +221,20 @@ impl PhysicsRuntime {
             damage_sources: BTreeMap::new(),
             scene_pose_offsets: BTreeMap::new(),
             scene_rotation_offsets: BTreeMap::new(),
+            scene_hinges: Default::default(),
+            doors: Default::default(),
+            script_character_drives: Default::default(),
+            character_stairs: Default::default(),
             frame_index: 0,
             fixed_tick: 0,
+            fixed_seconds: 0.0,
             next_command_seq: 1,
             accumulator: 0.0,
             settings: PhysicsWorldSettings::default(),
             water: None,
             water_excluded: BTreeSet::new(),
             last_output: PhysicsFrameOutput::default(),
+            frame_perf: PhysicsFramePerf::default(),
         }
     }
 
@@ -245,6 +268,13 @@ impl PhysicsRuntime {
             .diagnostics()
             .map(|info| info.capabilities.supports(PhysicsFeature::JointConstraints))
             .unwrap_or(false);
+        let supports_articulation = client
+            .diagnostics()
+            .map(|d| {
+                d.capabilities.supports(PhysicsFeature::JointMotors)
+                    && d.capabilities.supports(PhysicsFeature::JointAngularLimits)
+            })
+            .unwrap_or(false);
         let supports_collision_filters = client
             .diagnostics()
             .map(|info| {
@@ -260,6 +290,7 @@ impl PhysicsRuntime {
             bodies: BTreeMap::new(),
             joints: BTreeMap::new(),
             supports_joints,
+            supports_articulation,
             streamed_colliders: BTreeMap::new(),
             camera_collision_meshes: BTreeMap::new(),
             streamed_surface_ids: BTreeMap::new(),
@@ -272,14 +303,20 @@ impl PhysicsRuntime {
             damage_sources: BTreeMap::new(),
             scene_pose_offsets: BTreeMap::new(),
             scene_rotation_offsets: BTreeMap::new(),
+            scene_hinges: Default::default(),
+            doors: Default::default(),
+            script_character_drives: Default::default(),
+            character_stairs: Default::default(),
             frame_index: 0,
             fixed_tick: 0,
+            fixed_seconds: 0.0,
             next_command_seq: 1,
             accumulator: 0.0,
             settings: PhysicsWorldSettings::default(),
             water: None,
             water_excluded: BTreeSet::new(),
             last_output: PhysicsFrameOutput::default(),
+            frame_perf: PhysicsFramePerf::default(),
         })
     }
 }
@@ -377,6 +414,7 @@ mod tests {
             bodies: BTreeMap::new(),
             joints: BTreeMap::new(),
             supports_joints: false,
+            supports_articulation: false,
             supports_collision_filters: false,
             separation_pairs: BTreeSet::new(),
             body_hull_components: BTreeMap::new(),
@@ -392,14 +430,20 @@ mod tests {
             damage_sources: BTreeMap::new(),
             scene_pose_offsets: BTreeMap::new(),
             scene_rotation_offsets: BTreeMap::new(),
+            scene_hinges: Default::default(),
+            doors: Default::default(),
+            script_character_drives: Default::default(),
+            character_stairs: Default::default(),
             frame_index: 0,
             fixed_tick: 0,
+            fixed_seconds: 0.0,
             next_command_seq: 1,
             accumulator: 0.0,
             settings: PhysicsWorldSettings::default(),
             water: None,
             water_excluded: BTreeSet::new(),
             last_output: PhysicsFrameOutput::default(),
+            frame_perf: PhysicsFramePerf::default(),
         };
         let collision = CollisionMeshResource {
             id: newviso_resource_runtime::AssetId(1),
@@ -456,6 +500,7 @@ mod tests {
             bodies: BTreeMap::new(),
             joints: BTreeMap::new(),
             supports_joints: false,
+            supports_articulation: false,
             supports_collision_filters: false,
             separation_pairs: BTreeSet::new(),
             body_hull_components: BTreeMap::new(),
@@ -471,14 +516,20 @@ mod tests {
             damage_sources: BTreeMap::new(),
             scene_pose_offsets: BTreeMap::new(),
             scene_rotation_offsets: BTreeMap::new(),
+            scene_hinges: Default::default(),
+            doors: Default::default(),
+            script_character_drives: Default::default(),
+            character_stairs: Default::default(),
             frame_index: 0,
             fixed_tick: 0,
+            fixed_seconds: 0.0,
             next_command_seq: 1,
             accumulator: 0.0,
             settings: PhysicsWorldSettings::default(),
             water: None,
             water_excluded: BTreeSet::new(),
             last_output: PhysicsFrameOutput::default(),
+            frame_perf: PhysicsFramePerf::default(),
         };
         let collision = CollisionMeshResource {
             id: newviso_resource_runtime::AssetId(77),
@@ -534,6 +585,7 @@ mod tests {
             bodies: BTreeMap::new(),
             joints: BTreeMap::new(),
             supports_joints: false,
+            supports_articulation: false,
             supports_collision_filters: false,
             separation_pairs: BTreeSet::new(),
             body_hull_components: BTreeMap::new(),
@@ -549,14 +601,20 @@ mod tests {
             damage_sources: BTreeMap::new(),
             scene_pose_offsets: BTreeMap::new(),
             scene_rotation_offsets: BTreeMap::new(),
+            scene_hinges: Default::default(),
+            doors: Default::default(),
+            script_character_drives: Default::default(),
+            character_stairs: Default::default(),
             frame_index: 0,
             fixed_tick: 0,
+            fixed_seconds: 0.0,
             next_command_seq: 1,
             accumulator: 0.0,
             settings: PhysicsWorldSettings::default(),
             water: None,
             water_excluded: BTreeSet::new(),
             last_output: PhysicsFrameOutput::default(),
+            frame_perf: PhysicsFramePerf::default(),
         };
         let wall = CollisionMeshResource {
             id: newviso_resource_runtime::AssetId(2),
@@ -594,6 +652,7 @@ mod tests {
             bodies: BTreeMap::new(),
             joints: BTreeMap::new(),
             supports_joints: false,
+            supports_articulation: false,
             supports_collision_filters: false,
             separation_pairs: BTreeSet::new(),
             body_hull_components: BTreeMap::new(),
@@ -609,14 +668,20 @@ mod tests {
             damage_sources: BTreeMap::new(),
             scene_pose_offsets: BTreeMap::new(),
             scene_rotation_offsets: BTreeMap::new(),
+            scene_hinges: Default::default(),
+            doors: Default::default(),
+            script_character_drives: Default::default(),
+            character_stairs: Default::default(),
             frame_index: 0,
             fixed_tick: 0,
+            fixed_seconds: 0.0,
             next_command_seq: 1,
             accumulator: 0.0,
             settings: PhysicsWorldSettings::default(),
             water: None,
             water_excluded: BTreeSet::new(),
             last_output: PhysicsFrameOutput::default(),
+            frame_perf: PhysicsFramePerf::default(),
         };
         assert!(runtime.scene_collider_interests().is_none());
 
@@ -830,7 +895,7 @@ mod tests {
     }
 
     #[test]
-    fn vertical_lethal_hit_still_starts_a_physical_capsule_fall() {
+    fn released_character_preserves_contact_motion_and_uses_authored_damping() {
         let mut runtime = PhysicsRuntime::empty_for_tests();
         runtime
             .upsert_body_from_script(
@@ -840,18 +905,28 @@ mod tests {
             )
             .unwrap();
         runtime
-            .release_character_body_towards(12, [0.0, -1.0, 0.0])
+            .drive_character_body(12, [1.0, 0.0, 0.0], None)
             .unwrap();
-        let velocity = runtime.bodies[&12].angular_velocity;
-        assert!(velocity[0].hypot(velocity[2]) > 1.0);
-        assert!(!runtime.pending_commands.iter().any(|command| matches!(
-            command.kind, PhysicsCommandKind::SetAngularVelocity { .. }
-        )));
-        runtime.drive_character_body(12, [1.0, 0.0, 0.0], None).unwrap();
+        runtime.set_character_angular_velocity(12, [1.2, -0.4, 0.8]);
+        runtime.release_character_body(12, 0.45).unwrap();
+        assert_eq!(runtime.bodies[&12].angular_velocity, [1.2, -0.4, 0.8]);
+        assert_eq!(runtime.bodies[&12].angular_damping, Some(0.45));
+        assert!(
+            runtime.pending_commands.is_empty(),
+            "old controller commands cannot survive ownership transfer"
+        );
+        assert!(!runtime
+            .pending_commands
+            .iter()
+            .any(|command| matches!(command.kind, PhysicsCommandKind::SetAngularVelocity { .. })));
+        runtime
+            .drive_character_body(12, [1.0, 0.0, 0.0], None)
+            .unwrap();
         assert_eq!(runtime.bodies[&12].angular_velocity, [0.0; 3]);
-        assert!(!runtime.pending_commands.iter().any(|command| matches!(
-            command.kind, PhysicsCommandKind::SetAngularVelocity { .. }
-        )));
+        assert!(!runtime
+            .pending_commands
+            .iter()
+            .any(|command| matches!(command.kind, PhysicsCommandKind::SetAngularVelocity { .. })));
     }
 
     #[test]
@@ -957,6 +1032,44 @@ mod tests {
     }
 
     #[test]
+    fn same_frame_teleport_survives_character_control_and_handoff() {
+        let mut runtime = PhysicsRuntime::empty_for_tests();
+        runtime
+            .upsert_body_from_script(
+                &json!({"entity":12,"position":[0,0.9,0],
+            "shape":{"kind":"capsule","radius":0.3,"half_height":0.6}}),
+                0,
+            )
+            .unwrap();
+        runtime
+            .set_body_pose_from_script(&json!({"entity":12,"position":[4,0.9,8]}), 0)
+            .unwrap();
+        runtime
+            .set_body_velocity_from_script(&json!({"entity":12,"velocity":[2,0,0]}), 0)
+            .unwrap();
+        let before = runtime.vehicle_body_state(12).unwrap();
+        assert_eq!(before.position, [4.0, 0.9, 8.0]);
+        assert_eq!(before.linear_velocity, [2.0, 0.0, 0.0]);
+        assert!((runtime.bodies[&12].bounds_min[2] - 7.7).abs() < 1e-6);
+        runtime
+            .drive_character_body(12, [1.0, 0.0, 0.0], None)
+            .unwrap();
+        assert!(runtime
+            .pending_commands
+            .iter()
+            .filter_map(|c| match c.kind {
+                PhysicsCommandKind::SetBodyPose { position, .. } => Some(position),
+                _ => None,
+            })
+            .all(|p| p == [4.0, 0.9, 8.0]));
+        runtime.release_character_body(12, 0.4).unwrap();
+        assert_eq!(
+            runtime.vehicle_body_state(12).unwrap().position,
+            [4.0, 0.9, 8.0]
+        );
+    }
+
+    #[test]
     fn sphere_bounds_follow_physics_pose() {
         let (min, max) = shape_bounds(CollisionShape::Sphere { radius: 0.25 }, [1.0, 2.0, 3.0]);
         assert_eq!(min, [0.75, 1.75, 2.75]);
@@ -991,3 +1104,6 @@ mod tests {
         assert_eq!(runtime.body_collision_hulls(7).unwrap().len(), 2);
     }
 }
+
+#[cfg(test)]
+mod endorphin_tests;

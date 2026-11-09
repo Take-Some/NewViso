@@ -1,0 +1,57 @@
+import * as Game from './world_main.ysc';
+import {createRuntimeSnapshotDecoder} from './newviso/snapshot_delta.ysc';
+const decode=createRuntimeSnapshotDecoder(),wall=900083001;
+let stage=0,since=0,leaf='',playerBody=0,evidence:any={},peakAnchor=0;
+const encode=(v:any)=>JSON.stringify(v,(_k:string,v:any)=>typeof v==='bigint'?String(v):v);
+function check(ok:any,text:string):void{if(!ok)throw new Error('PHYSICAL_PROJECT '+text);}
+function next(n:number,now:number,cmd:any[]):void{stage=n;since=now;cmd.push({op:'console.write',message:'PHYSICAL_PROJECT_STAGE '+n});}
+export function on_start(raw:any):any{return Game.on_start(decode(raw));}
+export function on_frame(raw:any):any{
+ const p=decode(raw);p.frame={...p.frame,platform:{...p.frame.platform,focused:false}};
+ const result:any=Game.on_frame(p),cmd=result.commands,r=p.runtime;
+ const config=p.project.runtime.variables,now=Number(r?.peds?.world_seconds??p.elapsed_seconds);
+ const actor=r?.endorphin?.protection?.actors?.find((a:any)=>a.actor_id===config.engine_player.scene_id);
+ const bodies=r?.physics?.bodies??[],body=bodies.find((b:any)=>Number(b.entity)===playerBody);
+ const spec=config.engine_doors.doors[0];
+ const door=leaf?bodies.find((b:any)=>String(b.entity_key)===leaf):bodies.find((b:any)=>b.mass_properties?.mass===25&&Math.abs(b.position[0]-spec.hinge_position[0]-.5)<.1&&Math.abs(b.position[2]-spec.hinge_position[2])<.1);
+ if(!since)since=now;
+ if(door){
+  const [x,y,z,w]=door.rotation,v=[-spec.size[0]/2,0,0],t=[2*(y*v[2]-z*v[1]),2*(z*v[0]-x*v[2]),2*(x*v[1]-y*v[0])];
+  const point=[v[0]+w*t[0]+y*t[2]-z*t[1],v[1]+w*t[1]+z*t[0]-x*t[2],v[2]+w*t[2]+x*t[1]-y*t[0]];
+  peakAnchor=Math.max(peakAnchor,Math.hypot(...point.map((v:number,i:number)=>v+door.position[i]-spec.hinge_position[i])));
+  check(peakAnchor<.02,'authored door must clear the real project floor and retain its hinge '+encode({peakAnchor,stage,now,door,spec,contacts:(r.physics.events??[]).filter((e:any)=>{const c=e.ContactBegin??e.ContactPersist;return c&&(String(c.a_key??c.a)===String(door.entity_key)||String(c.b_key??c.b)===String(door.entity_key));})}));
+ }
+ if(stage===0&&actor?.ready&&door&&now>1){
+  check(config.engine_player.controller==='project','real project owns its player controller');
+  check(actor.body_entity===config.engine_peds.player_proxy.physics_entity,'protection binds actual project physics proxy');
+  playerBody=Number(actor.body_entity);const actual=bodies.find((b:any)=>Number(b.entity)===playerBody);
+  if(actual){
+   leaf=String(door.entity_key);
+   cmd.push({op:'physics.body.upsert',entity:wall,body_kind:'kinematic',position:[actual.position[0],actual.position[1],actual.position[2]-.85],
+    shape:{kind:'box',half_extents:[1,1.2,.08]},friction:.5,restitution:0,participates_in_queries:true,casts_contacts:true});
+   evidence.project_controller=true;evidence.real_player_body=playerBody;next(1,now,cmd);
+  }
+ }else if(stage===1&&body){
+  cmd.push({op:'physics.body.velocity.set',entity:playerBody,velocity:[0,0,-2.5]});
+  if(actor?.state?.arms?.some((a:any)=>a.weight>.3)){
+   evidence.project_player_protects=true;
+   cmd.push({op:'physics.body.destroy',entity:wall},{op:'physics.body.velocity.set',entity:playerBody,velocity:[0,0,0]});next(2,now,cmd);
+  }
+ }else if(stage===2&&!actor?.combat_reserved&&now-since>.2){
+  cmd.push({op:'physics.body.pose.set',entity:playerBody,position:[spec.hinge_position[0]+.8,.97,spec.hinge_position[2]+1.2],rotation:[0,0,0,1]},
+   {op:'physics.body.velocity.set',entity:playerBody,velocity:[0,0,-2.5]});next(3,now,cmd);
+ }else if(stage===3&&body&&door){
+  cmd.push({op:'physics.body.velocity.set',entity:playerBody,velocity:[0,0,-2.5]});
+  const angle=2*Math.atan2(door.rotation[1],door.rotation[3]);
+  if(Math.abs(angle)>.35){
+   evidence.authored_door_pushed=true;evidence.angle_radians=angle;evidence.maximum_anchor_separation=peakAnchor;
+   cmd.push({op:'console.write',message:'PHYSICAL_PROJECT_VERIFY_EVIDENCE '+encode(evidence)},
+    {op:'console.write',message:'PHYSICAL_PROJECT_VERIFY_PASS project_controller protective_hands shared_physical_door'});
+   result.exit_requested=true;next(4,now,cmd);
+  }
+ }
+ check(stage===4||now-since<15,'stage '+stage+' '+encode({actor,playerBody,door,spec}));
+ return result;
+}
+export function on_event(p:any):any{return Game.on_event(p);}
+export function on_shutdown(p:any):any{return Game.on_shutdown(p);}

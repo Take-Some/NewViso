@@ -8,6 +8,30 @@ impl EngineApplication {
         op: &str,
     ) -> Result<(), String> {
         match op {
+            "items.inventory.state.set" => {
+                let owner = command
+                    .get("owner_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "item state requires owner_id".to_owned())?;
+                let item = command
+                    .get("item_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "item state requires item_id".to_owned())?;
+                let state = command
+                    .get("state")
+                    .cloned()
+                    .ok_or_else(|| "item state requires state".to_owned())?;
+                // A pipelined frame from before a drop cannot resurrect its old item state.
+                let generation = command.get("equipment_generation").and_then(Value::as_u64);
+                if self.items.inventory_quantity(owner, item) > 0
+                    && generation.is_none_or(|g| {
+                        self.items.equipped_item(owner, "hands") == Some(item)
+                            && self.items.equipped_generation(owner, "hands") == g
+                    })
+                {
+                    self.items.set_item_state(owner, item, state)?;
+                }
+            }
             "items.definition.upsert" => {
                 let id = command.get("id").and_then(Value::as_str).ok_or_else(|| {
                     format!("script command[{index}] items.definition.upsert requires string 'id'")
@@ -221,6 +245,26 @@ impl EngineApplication {
                     .runtime_entity_stable_id(visual)
                     .ok_or_else(|| format!("pickup visual '{visual}' does not exist"))?;
                 self.items.bind_pickup_body(id, entity)?;
+                if let Some(origin) = self.items.pickup_origin(id) {
+                    if let Some(physics) = self.physics.as_mut() {
+                        if let Some(body) = self.ped_physics.bodies.get(&origin.owner_id) {
+                            let family = body
+                                .endorphin
+                                .ragdoll
+                                .as_ref()
+                                .map_or(std::slice::from_ref(&body.entity), |r| r.entities());
+                            for own in family {
+                                physics.ignore_collision_until_separated(entity, *own);
+                            }
+                        } else if let Some(own) = self
+                            .peds
+                            .state(&origin.owner_id)
+                            .and_then(|p| p.profile.damage_entity)
+                        {
+                            physics.ignore_collision_until_separated(entity, own);
+                        }
+                    }
+                }
             }
             "items.inventory.drop" => {
                 let text = |field: &str| {

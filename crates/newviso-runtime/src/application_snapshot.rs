@@ -5,13 +5,22 @@ impl EngineApplication {
         let Some(settings) = self.settings.variables.get("engine_player") else {
             return json!({"available": false});
         };
-        let actor = settings.get("scene_id").and_then(Value::as_str).unwrap_or("player.character");
-        let joint = settings.pointer("/first_person/eye_joint").and_then(Value::as_str).unwrap_or("SKEL_Head");
+        let actor = settings
+            .get("scene_id")
+            .and_then(Value::as_str)
+            .unwrap_or("player.character");
+        let joint = settings
+            .pointer("/first_person/eye_joint")
+            .and_then(Value::as_str)
+            .unwrap_or("SKEL_Head");
         let Some(entity) = self.scene.runtime_entity_stable_id(actor) else {
             return json!({"actor_id": actor, "available": false});
         };
         let position = self.scene.entity_joint_world_position(entity, joint).ok();
-        let delta = self.scene.entity_joint_animation_delta_pose(entity, joint).ok();
+        let delta = self
+            .scene
+            .entity_joint_animation_delta_pose(entity, joint)
+            .ok();
         json!({
             "actor_id": actor, "joint": joint, "available": position.is_some() && delta.is_some(),
             "head_position": position,
@@ -31,6 +40,10 @@ impl EngineApplication {
             .as_object_mut()
             .expect("scene script frame state must be a JSON object");
 
+        root.insert(
+            "endorphin".to_owned(),
+            json!({"protection":self.endorphin.protection.snapshot(&self.scene),"feet":self.foot_motion_snapshot()}),
+        );
         root.insert("climate".to_owned(), self.climate_state(false));
         root.insert("cold".to_owned(), self.cold.state());
 
@@ -44,17 +57,29 @@ impl EngineApplication {
                 self.elapsed_seconds + interval
             };
             let mut world = self.living_world.frame_state();
-            world["persistence"] = self.world_persistence.as_ref()
+            world["persistence"] = self
+                .world_persistence
+                .as_ref()
                 .map(WorldPersistence::runtime_state)
                 .unwrap_or_else(|| json!({"enabled": false, "restored": false}));
             world["presentation_transitions"] = self.world_presentations_state();
             root.insert("living_world".to_owned(), world);
             root.insert("agents".to_owned(), self.agents.runtime_state());
             root.insert("peds".to_owned(), self.ped_runtime_state());
+
             root.insert(
                 "physical_characters".to_owned(),
                 self.physical_characters.runtime_state(),
             );
+        }
+        // Vitals and magazine state are input critical, independently of world snapshot cadence.
+        if !world_snapshot_fresh
+            && self.peds.states().any(|p| {
+                p.profile.damage_entity.is_some()
+                    || p.melee.as_ref().is_some_and(|m| m.phase != "idle")
+            })
+        {
+            root.insert("peds".to_owned(), self.ped_runtime_state());
         }
         // Inventory/pickup interaction is player-input critical and must not be
         // throttled with the large living-world snapshot.
@@ -81,9 +106,15 @@ impl EngineApplication {
         );
 
         root.insert("water".to_owned(), self.scene.water_state_json());
-        root.insert("audio_loops".to_owned(), json!(self.script_audio_loops.iter()
-            .map(|(key,(cue,voice))| json!({"key":key,"cue":cue,"voice_id":voice}))
-            .collect::<Vec<_>>()));
+        root.insert(
+            "audio_loops".to_owned(),
+            json!(
+                self.script_audio_loops
+                    .iter()
+                    .map(|(key, (cue, voice))| json!({"key":key,"cue":cue,"voice_id":voice}))
+                    .collect::<Vec<_>>()
+            ),
+        );
 
         if let Some(physics) = self.physics.as_ref() {
             let samples = physics.water_query_positions()
@@ -217,12 +248,22 @@ impl EngineApplication {
         let root = runtime_state
             .as_object_mut()
             .expect("scene runtime state must be a JSON object");
+        root.insert(
+            "endorphin".to_owned(),
+            json!({"protection":self.endorphin.protection.snapshot(&self.scene),"feet":self.foot_motion_snapshot()}),
+        );
         root.insert("climate".to_owned(), self.climate_state(true));
         root.insert("cold".to_owned(), self.cold.state());
         root.insert("water".to_owned(), self.scene.water_state_json());
-        root.insert("audio_loops".to_owned(), json!(self.script_audio_loops.iter()
-            .map(|(key,(cue,voice))| json!({"key":key,"cue":cue,"voice_id":voice}))
-            .collect::<Vec<_>>()));
+        root.insert(
+            "audio_loops".to_owned(),
+            json!(
+                self.script_audio_loops
+                    .iter()
+                    .map(|(key, (cue, voice))| json!({"key":key,"cue":cue,"voice_id":voice}))
+                    .collect::<Vec<_>>()
+            ),
+        );
 
         root.insert("player_camera".to_owned(), self.player_camera_frame_state());
         living_world_state["persistence"] = self

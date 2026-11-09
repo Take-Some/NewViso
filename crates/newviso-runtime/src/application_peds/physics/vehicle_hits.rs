@@ -7,7 +7,6 @@ impl EngineApplication {
         source: u64,
         kind: VehiclePedHit,
         direction: [f32; 3],
-        launch: bool,
     ) -> Result<(), String> {
         let body = self
             .ped_physics
@@ -38,11 +37,16 @@ impl EngineApplication {
         } else {
             kind
         };
-        body.recovery_seconds = body.recovery_seconds.max(if kind == VehiclePedHit::Bump {
-            0.2
-        } else {
-            VEHICLE_FALL_SECONDS
-        });
+        // Falls recover from Endorphin support evidence and clip completion.
+        if kind == VehiclePedHit::Bump {
+            let gravity = self.physics.as_ref().map_or(0.0, |p| p.gravity_magnitude());
+            if gravity > 0.0 {
+                body.recovery_seconds = body.recovery_seconds.max(
+                    (2.0 * (body.radius + body.half_height) / gravity).sqrt()
+                        * body.endorphin.model.recovery.response_time_scale,
+                );
+            }
+        }
         let elapsed = body.vehicle_response.as_ref().map_or(0.0, |r| r.elapsed);
         body.vehicle_response = Some(VehiclePedResponse {
             source,
@@ -52,45 +56,6 @@ impl EngineApplication {
             wheel_load: 0.0,
         });
         if kind != VehiclePedHit::Bump && !already_fallen {
-            let physics = self.physics.as_mut().expect("native ped has physics");
-            physics.release_character_body_towards(body.entity, direction)?;
-            if launch {
-                if let Some(vehicle) = physics.vehicle_body_state(source) {
-                    let current = physics.body_linear_velocity(body.entity);
-                    let mut velocity = vehicle.linear_velocity.map(|v| {
-                        v * if kind == VehiclePedHit::RunOver {
-                            0.9
-                        } else {
-                            0.65
-                        }
-                    });
-                    velocity[1] = current[1];
-                    if kind == VehiclePedHit::Rammed {
-                        let speed = vehicle.linear_velocity[0].hypot(vehicle.linear_velocity[2]);
-                        let local = physics
-                            .body_local_point(
-                                source,
-                                physics
-                                    .vehicle_body_state(body.entity)
-                                    .expect("ped has body")
-                                    .position,
-                            )
-                            .unwrap_or([0.0; 3]);
-                        let (_, max) = physics
-                            .body_local_bounds(source)
-                            .unwrap_or(([0.0; 3], [1.0, 0.5, 2.0]));
-                        let rise_time = max[2].abs().max(0.5) / speed.max(0.5);
-                        velocity[1] = velocity[1]
-                            .max(((max[1] - local[1]).max(0.1) * 1.5 / rise_time).clamp(1.0, 6.0));
-                    }
-                    physics.set_body_velocity_from_script(
-                        &json!({"entity": body.entity, "velocity": velocity}),
-                        0,
-                    )?;
-                }
-            }
-        }
-        if kind != VehiclePedHit::Bump {
             self.start_ped_fall_animation(
                 id,
                 direction,
@@ -100,6 +65,9 @@ impl EngineApplication {
                     "vehicle_ram"
                 },
             );
+            // Native contacts have already transferred linear/angular motion.
+            // Endorphin inherits it without a prescribed launch velocity.
+            self.enter_ped_physical_fall(id, direction)?;
         }
         Ok(())
     }
@@ -133,7 +101,11 @@ impl EngineApplication {
                     continue;
                 };
                 let Some((id, _)) = self.ped_physics.bodies.iter().find(|(_, b)| {
-                    b.entity == entity || b.ragdoll.as_ref().is_some_and(|r| r.contains(entity))
+                    b.entity == entity
+                        || b.endorphin
+                            .ragdoll
+                            .as_ref()
+                            .is_some_and(|r| r.contains(entity))
                 }) else {
                     continue;
                 };
@@ -164,7 +136,6 @@ impl EngineApplication {
                 source,
                 VehiclePedHit::RunOver,
                 normal.map(|v| -v),
-                false,
             )?;
             self.ped_physics
                 .bodies

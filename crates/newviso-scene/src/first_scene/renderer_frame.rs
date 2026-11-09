@@ -5,6 +5,25 @@ fn all_frame_perf_logging_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var("NEWVISO_PERF_LOG_EVERY_FRAME").as_deref() == Ok("1"))
 }
 
+// Same opt-in sampling policy as the host frame trace. The render scene
+// owns its stages; no dependency from scene -> runtime is introduced.
+fn scene_perf_trace_interval() -> Option<u64> {
+    static INTERVAL: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *INTERVAL.get_or_init(|| {
+        if std::env::var("NEWVISO_PERF_TRACE").as_deref() != Ok("1") {
+            return None;
+        }
+        Some(
+            std::env::var("NEWVISO_PERF_TRACE_INTERVAL")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(30)
+                .clamp(1, 100_000),
+        )
+    })
+}
+
 impl Scene3dRuntime {
     pub fn update_native_input_from_snapshot(
         &mut self,
@@ -35,7 +54,9 @@ impl Scene3dRuntime {
         let eye = self.camera.position;
         self.water_simulation.update_camera([eye.x, eye.y, eye.z]);
         self.shadow_focus = Some(track_shadow_focus(
-            self.shadow_focus, self.camera.position, dt,
+            self.shadow_focus,
+            self.camera.position,
+            dt,
         ));
 
         if dt.is_finite() && dt > 0.0 {
@@ -102,33 +123,64 @@ impl Scene3dRuntime {
             fov_y_radians: self.camera.fov_y_degrees.to_radians(),
             aspect,
         };
-        let reflected_plan = if self.water_simulation.enabled && !self.water_render_slots.is_empty() {
-            let reflected = renderer_water::reflect_camera(self.camera.clone(),self.water_simulation.surface.level);
-            let reflected_view = SceneView {position:reflected.position,
-                forward:reflected.target.sub(reflected.position).normalized(),up:reflected.up,
-                near:reflected.near,far:reflected.far,fov_y_radians:reflected.fov_y_degrees.to_radians(),aspect};
-            let candidates=self.world.visibility_candidates(reflected_view);
-            Some(self.world.scan_visibility_candidates(reflected_view,candidates))
-        }else{None};
+        let reflected_plan = if self.water_simulation.enabled && !self.water_render_slots.is_empty()
+        {
+            let reflected = renderer_water::reflect_camera(
+                self.camera.clone(),
+                self.water_simulation.surface.level,
+            );
+            let reflected_view = SceneView {
+                position: reflected.position,
+                forward: reflected.target.sub(reflected.position).normalized(),
+                up: reflected.up,
+                near: reflected.near,
+                far: reflected.far,
+                fov_y_radians: reflected.fov_y_degrees.to_radians(),
+                aspect,
+            };
+            let candidates = self.world.visibility_candidates(reflected_view);
+            Some(
+                self.world
+                    .scan_visibility_candidates(reflected_view, candidates),
+            )
+        } else {
+            None
+        };
         let mut visibility_candidates = self.world.visibility_candidates(view);
         if let Some(graph) = self.portal_visibility.as_mut() {
             graph.filter_candidates(&self.camera, aspect, &mut visibility_candidates);
         }
-        self.frame_plan = self.world.scan_visibility_candidates(view,visibility_candidates);
-        if let Some(plan)=reflected_plan {
-            self.frame_plan.visible_entities.extend(plan.visible_entities);
-            self.frame_plan.visible_entities.sort_unstable();self.frame_plan.visible_entities.dedup();
-            self.frame_plan.visible_render_slots.extend(plan.visible_render_slots);
-            self.frame_plan.requested_entities.extend(plan.requested_entities);
-            self.frame_plan.requested_entities.sort_unstable();self.frame_plan.requested_entities.dedup();
-            self.frame_plan.streaming_entities.extend(plan.streaming_entities);
-            self.frame_plan.streaming_entities.sort_unstable();self.frame_plan.streaming_entities.dedup();
+        self.frame_plan = self
+            .world
+            .scan_visibility_candidates(view, visibility_candidates);
+        if let Some(plan) = reflected_plan {
+            self.frame_plan
+                .visible_entities
+                .extend(plan.visible_entities);
+            self.frame_plan.visible_entities.sort_unstable();
+            self.frame_plan.visible_entities.dedup();
+            self.frame_plan
+                .visible_render_slots
+                .extend(plan.visible_render_slots);
+            self.frame_plan
+                .requested_entities
+                .extend(plan.requested_entities);
+            self.frame_plan.requested_entities.sort_unstable();
+            self.frame_plan.requested_entities.dedup();
+            self.frame_plan
+                .streaming_entities
+                .extend(plan.streaming_entities);
+            self.frame_plan.streaming_entities.sort_unstable();
+            self.frame_plan.streaming_entities.dedup();
         }
         if self.water_simulation.enabled {
-            self.frame_plan.visible_render_slots.extend(self.water_render_slots.iter().copied());
+            self.frame_plan
+                .visible_render_slots
+                .extend(self.water_render_slots.iter().copied());
         }
-        self.frame_plan.visible_render_slots.sort_unstable();self.frame_plan.visible_render_slots.dedup();
-        self.frame_plan.visible_count=self.frame_plan.visible_entities.len();
+        self.frame_plan.visible_render_slots.sort_unstable();
+        self.frame_plan.visible_render_slots.dedup();
+        self.frame_plan.visible_count = self.frame_plan.visible_entities.len();
         aspect
     }
 
@@ -141,6 +193,9 @@ impl Scene3dRuntime {
         }
         self.sync_static_asset_gpu()?;
         self.warmup_gpu_skinning_models()?;
+        let render = RenderClient::new();
+        self.warmup_skinned_output_capacity(&render)?;
+        self.prepare_gpu_skinning_entities(&render)?;
         self.sync_startup_asset_material_gpu()?;
         self.warmup_particle_textures_gpu()?;
         let required_vertices = self.vertex_count();
@@ -252,10 +307,17 @@ impl Scene3dRuntime {
             .ok_or_else(|| "3D scene GPU resources disappeared".to_owned())?;
         let vertex_data = self.cached_primitive_main_blocks(aspect);
         let shadow_vertex_data = self.cached_primitive_shadow_blocks();
-        debug_assert_eq!(vertex_data.iter().map(|block| block.len()).sum::<usize>(),
-            required_vertices as usize*FLOATS_PER_VERTEX);
-        debug_assert_eq!(shadow_vertex_data.iter().map(|block| block.len()).sum::<usize>(),
-            required_shadow_vertices as usize*FLOATS_PER_VERTEX);
+        debug_assert_eq!(
+            vertex_data.iter().map(|block| block.len()).sum::<usize>(),
+            required_vertices as usize * FLOATS_PER_VERTEX
+        );
+        debug_assert_eq!(
+            shadow_vertex_data
+                .iter()
+                .map(|block| block.len())
+                .sum::<usize>(),
+            required_shadow_vertices as usize * FLOATS_PER_VERTEX
+        );
         let flare_vertex_data = self.build_lens_flare_vertices(aspect);
         let flare_vertex_count =
             u32::try_from(flare_vertex_data.len() / FLARE_FLOATS_PER_VERTEX).unwrap_or(0);
@@ -267,6 +329,8 @@ impl Scene3dRuntime {
         render_perf_mark = std::time::Instant::now();
 
         let render = RenderClient::new();
+        self.warmup_skinned_output_capacity(&render)?;
+        self.prepare_gpu_skinning_entities(&render)?;
         self.sync_mass_instance_gpu(&render, aspect)?;
         self.sync_atmospheric_cloud_gpu_residency(&render)?;
         self.ensure_volumetric_cloud_targets(&render, width, height)?;
@@ -324,12 +388,20 @@ impl Scene3dRuntime {
         let perf_residency_sync_ms = render_perf_mark.elapsed().as_secs_f64() * 1000.0;
         render_perf_mark = std::time::Instant::now();
 
-        let terrain_upload_bytes=self.sync_indexed_terrain(&render,frame_slot)?;
-        let perf_primitive_upload_bytes = terrain_upload_bytes as usize + self.geometry_upload.sync_blocks(
-            &render, frame_slot, gpu.vertex_buffers[frame_slot], &vertex_data,
-        )? + self.shadow_geometry_upload.sync_blocks(
-            &render, frame_slot, gpu.shadow_vertex_buffers[frame_slot], &shadow_vertex_data,
-        )?;
+        let terrain_upload_bytes = self.sync_indexed_terrain(&render, frame_slot)?;
+        let perf_primitive_upload_bytes = terrain_upload_bytes as usize
+            + self.geometry_upload.sync_blocks(
+                &render,
+                frame_slot,
+                gpu.vertex_buffers[frame_slot],
+                &vertex_data,
+            )?
+            + self.shadow_geometry_upload.sync_blocks(
+                &render,
+                frame_slot,
+                gpu.shadow_vertex_buffers[frame_slot],
+                &shadow_vertex_data,
+            )?;
         let perf_primitive_upload_ms = render_perf_mark.elapsed().as_secs_f64() * 1000.0;
         if flare_vertex_count > 0 {
             render.write_buffer_f32(gpu.flare_vertex_buffers[frame_slot], 0, &flare_vertex_data)?;
@@ -395,19 +467,21 @@ impl Scene3dRuntime {
             .last_render_camera
             .as_ref()
             .is_some_and(|previous| previous_hiz_camera_compatible(previous, &self.camera));
-        render.record_ordered_commands(|record| self.render_frame_inner(
-            record,
-            gpu,
-            width,
-            height,
-            frame_index,
-            frame_slot,
-            shadow_enabled,
-            flare_vertex_count,
-            &particle_batches,
-            previous_hiz_camera_compatible,
-            overlay,
-        ))?;
+        render.record_ordered_commands(|record| {
+            self.render_frame_inner(
+                record,
+                gpu,
+                width,
+                height,
+                frame_index,
+                frame_slot,
+                shadow_enabled,
+                flare_vertex_count,
+                &particle_batches,
+                previous_hiz_camera_compatible,
+                overlay,
+            )
+        })?;
         recording.finish();
         if all_frame_perf_logging_enabled() && frame_index % 60 == 0 {
             if let Ok(inspector) = render.renderer_inspector() {
@@ -417,6 +491,21 @@ impl Scene3dRuntime {
 
         let perf_inner_ms = render_perf_mark.elapsed().as_secs_f64() * 1000.0;
         let perf_total_ms = render_perf_start.elapsed().as_secs_f64() * 1000.0;
+        if scene_perf_trace_interval().is_some_and(|interval| frame_index % interval == 0) {
+            host_runtime::info("newviso.perf.trace.render", format!(
+                "render_frame={} render_total_ms={:.4} visibility_ms={:.4} geometry_sync_ms={:.4} material_sync_ms={:.4} geometry_build_ms={:.4} residency_sync_ms={:.4} acquire_wall_ms={:.4} skin_upload_wall_ms={:.4} primitive_upload_wall_ms={:.4} primitive_upload_bytes={} uploads_wall_ms={:.4} graph_record_wall_ms={:.4} graph_cpu_ms={:.4} visible={} resident={} instances={} hiz_draws={} graph_passes={} graph_skipped={}",
+                frame_index, perf_total_ms, perf_visibility_ms, perf_geometry_sync_ms,
+                perf_material_sync_ms, perf_geometry_ms, perf_residency_sync_ms,
+                perf_acquire_ms, perf_skin_upload_ms, perf_primitive_upload_ms,
+                perf_primitive_upload_bytes, perf_uploads_ms, perf_inner_ms,
+                self.last_submission_stats.graph_cpu_record_ms,
+                self.frame_plan.visible_count, self.frame_plan.resident_count,
+                self.last_submission_stats.instance_count,
+                self.last_submission_stats.hiz_draws,
+                self.last_submission_stats.graph_executed_passes,
+                self.last_submission_stats.graph_skipped_passes,
+            ));
+        }
         if perf_total_ms >= 25.0 || frame_index % 60 == 0 || all_frame_perf_logging_enabled() {
             host_runtime::info(
                 "newviso.perf.render",

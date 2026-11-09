@@ -1,0 +1,116 @@
+import * as Game from './default_game_base.ysc';
+import {createRuntimeSnapshotDecoder} from './snapshot_delta.ysc';
+import {LivingWorldCommands as World} from './world/living_world.ysc';
+const decode=createRuntimeSnapshotDecoder(),foe='endorphin.test.enemy',npcWall=900081001,playerWall=900081002;
+let stage=0,since=0,playerId='',playerBody=0,baseline:any={},saw:any={},evidence:any={},captures:any={};
+const encode=(v:any)=>JSON.stringify(v,(_k:string,v:any)=>typeof v==='bigint'?String(v):v);
+const distance=(a:any,b:any)=>Math.hypot(...a.map((v:number,i:number)=>v-b[i]));
+function check(ok:any,message:string):void{if(!ok)throw new Error('ENDORPHIN_PROTECTION '+message);}
+function next(n:number,now:number,commands:any[]):void{stage=n;since=now;commands.push({op:'console.write',message:'PROTECTION_STAGE '+n});}
+function protection(r:any,id:string):any{return r?.endorphin?.protection?.actors?.find((a:any)=>a.actor_id===id);}
+function physical(r:any,entity:any):any{return r?.physics?.bodies?.find((b:any)=>String(b.entity_key??b.entity)===String(entity));}
+function wall(commands:any[],entity:number,position:number[]):void{
+ commands.push({op:'physics.body.upsert',entity,body_kind:'kinematic',position,
+  shape:{kind:'box',half_extents:[1.1,1.2,.08]},friction:.5,restitution:0,participates_in_queries:true,casts_contacts:true});
+}
+export function on_start(raw:any):any{
+ const p=decode(raw);playerId=p.project.runtime.variables.engine_player.scene_id;playerBody=p.project.runtime.variables.engine_player.physics_entity;
+ return Game.on_start(p);
+}
+export function on_frame(raw:any):any{
+ const p=decode(raw);p.frame={...p.frame,platform:{...p.frame.platform,focused:false}};
+ const result:any=Game.on_frame(p),cmd=result.commands,r=p.runtime,now=Number(r?.peds?.world_seconds??p.elapsed_seconds);
+ const record=r?.peds?.physics?.bodies?.find((b:any)=>b.actor_id===foe),npc=r?.peds?.peds?.find((v:any)=>v.profile.actor_id===foe);
+ const body=physical(r,record?.entity_key),player=physical(r,playerBody);
+ const a=protection(r,foe),b=protection(r,playerId);
+ if(!since)since=now;
+ if(p.project.runtime.variables.endorphin_capture&&(stage===0||stage===1)){
+  const who=p.project.runtime.variables.endorphin_capture_target??'npc',target=who==='npc'?body?.position:player?.position;
+  if(target)cmd.push({op:'scene.camera.set',position:[target[0]+1.8,1.7,target[2]+(who==='npc'?.4:-.4)],target:[target[0],1.3,target[2]],fov_y_degrees:50});
+ }
+ if(stage===0&&record?.controlled&&player&&now>1){
+  check(r?.endorphin?.protection,'engine protective controller is unavailable');
+  if(a?.ready&&b?.ready){
+   wall(cmd,npcWall,[body.position[0],1.1,body.position[2]+.85]);
+   wall(cmd,playerWall,[player.position[0],1.1,player.position[2]-.85]);
+   next(1,now,cmd);
+  }else check(now-since<5,'bindings unavailable '+encode({a,b}));
+ }else if(stage===1){
+  cmd.push({op:'physics.body.velocity.set',id:foe,velocity:[0,0,2.5]},
+   {op:'physics.body.velocity.set',entity:playerBody,velocity:[0,0,-2.5]});
+  for(const [id,actor] of [[foe,a],[playerId,b]] as any){
+   if(actor?.state?.arms?.some((g:any)=>g.weight>.05)&&actor.achieved?.length===2){
+    const frame=actor.state.frame,right=frame.shoulders[0],left=frame.shoulders[1],up=frame.up,dx=right.map((v:number,i:number)=>v-left[i]);
+    const front=[up[1]*dx[2]-up[2]*dx[1],up[2]*dx[0]-up[0]*dx[2],up[0]*dx[1]-up[1]*dx[0]],span=Math.hypot(...front);
+    for(const goal of actor.state.arms){const shoulder=frame.shoulders[goal.arm];
+     check(goal.wrist.reduce((s:number,v:number,i:number)=>s+(v-shoulder[i])*front[i],0)/span>=-.005,'protective targets must stay in the anatomical front hemisphere '+encode({id,goal,right,left}));}
+    check(actor.combat_reserved,'protective limbs must reserve combat');
+    if(id===foe)check(record.authority?.locomotion===true&&record.authority?.combat===false,'protection keeps movement and suspends combat');
+    if(!baseline[id])baseline[id]=actor.achieved.map((x:any)=>({y:x.wrist[1],upper:distance(x.shoulder,x.elbow),lower:distance(x.elbow,x.wrist)}));
+    for(let i=0;i<actor.achieved.length;i++){
+     const arm=actor.achieved[i],old=baseline[id][i];
+     check(Math.abs(distance(arm.shoulder,arm.elbow)-old.upper)<.002&&Math.abs(distance(arm.elbow,arm.wrist)-old.lower)<.002,'protective IK preserves limb lengths');
+     if(actor.state.arms[i].weight>.75){
+      const delta=arm.palm.map((v:number,j:number)=>v-arm.wrist[j]);
+      check(delta.reduce((s:number,v:number,j:number)=>s+v*frame.up[j],0)>0,'protective palms must keep their fingers upwards '+encode({id,arm}));
+     }
+     if(arm.wrist[1]>old.y+.06)saw[id]=true;
+    }
+    const who=id===foe?'npc':'player';
+    if(p.project.runtime.variables.endorphin_capture&&who===p.project.runtime.variables.endorphin_capture_target
+      &&saw[id]&&actor.state.activation>.75&&!captures[who]){
+     captures[who]=true;cmd.push({op:'console.write',message:'INTERACTION_CAPTURE '+who});
+    }
+   }
+  }
+  if(saw[foe]&&saw[playerId]&&now-since>.25){
+   evidence.npc_and_player_reached=true;evidence.arm_lengths_preserved=true;
+   cmd.push({op:'physics.body.destroy',entity:npcWall},{op:'physics.body.destroy',entity:playerWall},
+    {op:'physics.body.velocity.set',id:foe,velocity:[0,0,0]},{op:'physics.body.velocity.set',entity:playerBody,velocity:[0,0,0]});
+   next(2,now,cmd);
+  }
+ }else if(stage===2&&!a?.combat_reserved&&!b?.combat_reserved&&now-since>.2){
+  evidence.release_restores_authority=record.authority?.combat===true;
+  check(evidence.release_restores_authority,'released hands must restore combat authority');
+  wall(cmd,npcWall,[body.position[0],1.1,body.position[2]+1]);
+  cmd.push({op:'physics.body.velocity.set',id:foe,velocity:[0,0,0]});next(3,now,cmd);
+ }else if(stage===3){
+  const wallBody=physical(r,npcWall);
+  cmd.push({op:'physics.body.velocity.set',id:foe,velocity:[0,0,0]});
+  if(wallBody)cmd.push({op:'physics.body.pose.set',entity:npcWall,
+   position:[wallBody.position[0],wallBody.position[1],wallBody.position[2]-Math.min(.03,Number(p.dt??.016)*1.5)],rotation:[0,0,0,1]},
+   {op:'physics.body.velocity.set',entity:npcWall,velocity:[0,0,-1.5]});
+  if(a?.combat_reserved&&a.state.threat?.closing_speed>1){
+   evidence.incoming_moving_surface=true;
+   cmd.push({op:'physics.body.destroy',entity:npcWall},{op:'ped.upsert',profile:{...npc.profile,combat:null,melee:null},reset:true},
+    World.upsertActor({id:foe,kind:'pedestrian',position:[0,.05,-5],group:'raiders',tags:['combatant']}),
+    {op:'physics.body.pose.set',id:foe,position:[0,.95,-5],rotation:[0,0,0,1]},
+    {op:'physics.body.velocity.set',id:foe,velocity:[0,0,0]});next(4,now,cmd);
+  }
+ }else if(stage===4&&record?.controlled&&now-since>.3){
+  wall(cmd,npcWall,[0,1.1,-4.3]);
+  cmd.push({op:'ped.endorphin.activate',actor_id:foe,direction:[0,0,1],impulse:30});next(5,now,cmd);
+ }else if(stage===5&&record?.ragdoll?.active){
+  const control=record.endorphin?.control;
+  if(control?.protection?.arms?.some((x:any)=>x.weight>.05)){
+   const names=new Set(['right_upper_arm','right_forearm','right_hand','left_upper_arm','left_forearm','left_hand']);
+   const parts=record.ragdoll.parts.filter((x:any)=>names.has(x.name));
+   const joints=record.ragdoll.joints.filter((j:any)=>parts.some((x:any)=>String(x.entity_key)===String(j.child_key)));
+   check(joints.some((j:any)=>j.motor?.max_torque>0),'protective articulation needs actual native muscles');
+   check(record.ragdoll.skeleton_integrity.max_relative_scale_error<.0001,'physical protective skeleton remains rigid');
+   evidence.articulated_muscles=true;
+   cmd.push({op:'ped.damage',actor_id:foe,source:'protection.proof',amount:1000,origin:[0,1,0]});next(6,now,cmd);
+  }
+ }else if(stage===6&&npc?.dead&&now-since>.15){
+  check(!a?.combat_reserved,'a dead actor cannot keep protective authority');
+  check(record.ragdoll.joints.every((j:any)=>!j.motor),'death disables protective muscles');
+  evidence.death_disables_protection=true;
+  cmd.push({op:'console.write',message:'ENDORPHIN_VERIFY_EVIDENCE '+encode(evidence)},
+   {op:'console.write',message:'ENDORPHIN_VERIFY_PASS predictive_hands player npc incoming_surface release native_muscles death rigid_lengths'});
+  result.exit_requested=true;next(7,now,cmd);
+ }
+ check(stage===7||now-since<9,'stage timeout '+stage+' '+encode({a,b,record}));
+ return result;
+}
+export function on_event(p:any):any{return Game.on_event(p);}
+export function on_shutdown(p:any):any{return Game.on_shutdown(p);}

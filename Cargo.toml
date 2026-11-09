@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/newviso-editor-viewport",
+    "crates/newviso-scene-document",
     "crates/newviso-contract-api",
     "crates/newviso-service-api",
     "crates/newviso-ui-draw",
@@ -11,11 +13,14 @@ members = [
     "crates/newviso-steering",
     "crates/newviso-character",
     "crates/newviso-navigation",
+    "crates/newviso-doors",
     "crates/newviso-agent",
+    "crates/newviso-endorphin",
     "crates/newviso-bugtrap",
     "crates/newviso-audio-client",
     "crates/newviso-audio-api",
     "apps/newviso",
+    "apps/newviso-project-tool",
     "apps/newviso-bugtrap",
     "crates/newviso-scripting",
     "crates/newviso-ui-client",
@@ -57,6 +62,8 @@ license = "Proprietary"
 version = "0.1.0"
 
 [workspace.dependencies]
+newviso-editor-viewport = { path = "crates/newviso-editor-viewport" }
+newviso-scene-document = { path = "crates/newviso-scene-document" }
 newviso-contract-api = { path = "crates/newviso-contract-api" }
 newviso-service-api = { path = "crates/newviso-service-api" }
 newviso-ui-draw = { path = "crates/newviso-ui-draw" }
@@ -67,7 +74,9 @@ newviso-task-api = { path = "crates/newviso-task-api" }
 newviso-steering = { path = "crates/newviso-steering" }
 newviso-character = { path = "crates/newviso-character" }
 newviso-navigation = { path = "crates/newviso-navigation" }
+newviso-doors = { path = "crates/newviso-doors" }
 newviso-agent = { path = "crates/newviso-agent" }
+newviso-endorphin = { path = "crates/newviso-endorphin" }
 newviso-bugtrap = { path = "crates/newviso-bugtrap" }
 newviso-audio-api = { path = "crates/newviso-audio-api" }
 newviso-audio-client = { path = "crates/newviso-audio-client" }

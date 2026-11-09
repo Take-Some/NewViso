@@ -1,0 +1,89 @@
+// Native trajectory checks: cadence and rolled contact, rather than one landing per tread.
+export class FootMotionAudit {
+ private previous:any={};
+ private totals:any={};
+ private maxPenetration=0;
+ private maxCollisionProjection=0;
+ private maxFreeHorizontal=0;
+ private maxFreeUnconstrainedHorizontal=0;
+ private maxFreeRollError=0;
+ private maxCorrectionSpeed=0;
+ private maxTargetSpeed=0;
+ private frames=0;
+ private check(x:any,m:string):void {if(!x)throw new Error("NATURAL_FOOT_VERIFY "+m);}
+ private floor(z:number):number|undefined {
+  if(z>=0&&z<=8)return 0;
+  if(z<0&&z>-2.56)return Math.ceil(-z/.32)*.18;
+  if(z<=-2.56&&z>=-6)return 1.44;
+  return undefined;
+ }
+ observe(feet:any[],t:number,active:boolean):void{
+  if(!active){this.previous={};return;}
+  this.frames++;
+  for(const actor of feet){
+   const at=Number(actor.sample_seconds);
+   this.check(Number.isFinite(at),"missing pose sample clock");
+   const a=this.totals[actor.entity_key]??(this.totals[actor.entity_key]={frames:0,swing:0,contact:0,held:0,landings:0,rolled:0,realContact:0,stairContact:0});
+   a.frames++;
+   this.check(actor.legs.length===2,"missing leg trajectory "+actor.entity_key+" "+actor.legs.length);
+   for(const leg of actor.legs){
+    const s=leg.support;this.check(s&&Number.isFinite(s.contact_weight),"missing phase contract");
+    const key=actor.entity_key+leg.foot,old=this.previous[key],weight=s.contact_weight,demand=s.contact_demand;
+    const actual=s.actual_sole,normal=s.normal;
+    this.maxCollisionProjection=Math.max(this.maxCollisionProjection,s.collision_adjustment??0);
+    const speed=Math.hypot(...s.correction_velocity);
+    this.maxCorrectionSpeed=Math.max(this.maxCorrectionSpeed,speed);
+    this.check(speed<=5,"unbounded correction velocity "+speed);
+    for(const corner of actual){
+     const ground=this.floor(corner[2]);if(ground===undefined)continue;
+     const penetration=ground-corner[1];this.maxPenetration=Math.max(this.maxPenetration,penetration);
+     this.check(penetration<.006,"sole penetrates riser/tread "+JSON.stringify({t,actor:actor.entity_key,leg,ground,penetration}));
+    }
+    if((s.landing_weight??s.phase_weight??weight)<.05&&demand<.05){
+     a.swing++;
+     const horizontal=Math.hypot(leg.position[0]-s.authored_ankle[0],leg.position[2]-s.authored_ankle[2]);
+     this.maxFreeHorizontal=Math.max(this.maxFreeHorizontal,horizontal);
+     const span=Math.hypot(...s.contact_sole[0].map((v:number,i:number)=>v-s.contact_sole[3][i]));
+     const response=s.constraint_response;
+     this.check(response?.length===3&&response.every(Number.isFinite),"missing contact response");
+     const avoidance=Math.hypot(response[0],response[2]);
+     const unconstrained=Math.max(0,horizontal-avoidance);
+     this.maxFreeUnconstrainedHorizontal=Math.max(this.maxFreeUnconstrainedHorizontal,unconstrained);
+     this.check(unconstrained<span*.15,"unobstructed swing pulled towards a landing "+JSON.stringify({t,leg,horizontal,avoidance}));
+     const qa=s.authored_rotation,qb=s.actual_rotation;
+     const dot=Math.min(1,Math.abs(qa.reduce((sum:number,v:number,i:number)=>sum+v*qb[i],0)));
+     const angle=2*Math.acos(dot);this.maxFreeRollError=Math.max(this.maxFreeRollError,angle);
+     this.check(angle<.12,"swing foot was flattened "+angle);
+    }
+    if(weight>.8&&demand>.8){
+     a.contact++;
+     const gaps=actual.map((v:number[])=>{const h=this.floor(v[2]);return h===undefined?999:Math.abs(v[1]-h);});
+     const gap=Math.min(...gaps);
+     if(gap<.015){a.realContact++;if(actual.some((v:number[])=>v[2]<0&&v[2]>-2.56))a.stairContact++;}
+     if(old?.weight>.8)this.check(gap<.035,"loaded foot floats "+JSON.stringify({t,leg,gap}));
+    }
+    if(s.held)a.held++;
+    if(old&&old.weight<.5&&weight>=.5)a.landings++;
+    if(s.authored_rotation&&Math.abs(s.authored_rotation[0])>.03&&weight<.2)a.rolled++;
+    if(old)this.check(at>=old.t,"pose sample clock regressed");
+    if(old&&at>old.t&&at-old.t<.05){
+     const speed=Math.hypot(...leg.position.map((v:number,i:number)=>v-old.position[i]))/(at-old.t);
+     this.maxTargetSpeed=Math.max(this.maxTargetSpeed,speed);
+     this.check(speed<10,"foot target snaps "+JSON.stringify({t,speed,leg,old}));
+    }
+    this.previous[key]={t:at,weight,position:leg.position};
+   }
+  }
+ }
+ finish(expected:string[]):any{
+  this.check(this.frames>100,"insufficient native trajectory frames");
+  for(const id of expected){
+   const a=this.totals[id];this.check(a&&a.swing>10&&a.contact>10&&a.landings>=6&&a.held>3&&a.rolled>3&&a.realContact>10&&a.stairContact>6,
+    "missing natural contact/swing cycles "+id+" "+JSON.stringify(a));
+  }
+  return {frames:this.frames,actors:this.totals,maxPenetration:this.maxPenetration,
+   maxCollisionProjection:this.maxCollisionProjection,maxFreeHorizontal:this.maxFreeHorizontal,
+   maxFreeUnconstrainedHorizontal:this.maxFreeUnconstrainedHorizontal,
+   maxFreeRollErrorRadians:this.maxFreeRollError,maxCorrectionSpeed:this.maxCorrectionSpeed,maxTargetSpeed:this.maxTargetSpeed};
+ }
+}

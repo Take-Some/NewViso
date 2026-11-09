@@ -392,6 +392,8 @@ impl Scene3dRuntime {
         self.particle_interiors.remove(&id.0);
         self.joint_attachments.remove(&id.0);
         self.arm_ik_constraints.remove(&id.0);
+        self.protective_arm_ik_constraints.remove(&id.0);
+        self.leg_ik_constraints.remove(&id.0);
         self.joint_attachments
             .retain(|_, attachment| attachment.parent_stable_id != id.0);
         self.runtime_entity_ids.remove(key);
@@ -429,6 +431,9 @@ impl Scene3dRuntime {
         self.particle_interiors.remove(&stable_id);
         self.joint_attachments.remove(&stable_id);
         self.arm_ik_constraints.remove(&stable_id);
+        self.protective_arm_ik_constraints.remove(&stable_id);
+        self.leg_ik_constraints.remove(&stable_id);
+        self.character_bindings.remove(&stable_id);
         self.joint_attachments
             .retain(|_, attachment| attachment.parent_stable_id != stable_id);
         self.world.request_remove(SceneEntityId(stable_id))?;
@@ -640,7 +645,7 @@ impl Scene3dRuntime {
         )
     }
 
-    fn set_entity_transform_from(
+    pub(super) fn set_entity_transform_from(
         &mut self,
         stable_id: u64,
         position: [f32; 3],
@@ -710,13 +715,7 @@ impl Scene3dRuntime {
                 previous_bounds.max.sub(old_center),
             )
         };
-        let bounds = animation_skinning::arm_ik_bounds(
-            bounds,
-            self.arm_ik_constraints
-                .get(&stable_id)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]),
-        );
+        let bounds = animation_skinning::arm_ik_bounds(bounds, &self.combined_arm_ik(stable_id));
 
         self.world
             .update_spatial_from(id, transform, bounds, source)?;

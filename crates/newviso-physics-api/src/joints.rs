@@ -21,6 +21,10 @@ pub struct PhysicsJointSnapshot {
     /// They still collide with the world, vehicles and other families.
     #[serde(default)]
     pub collision_family: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angular_limits: Option<PhysicsAngularLimits>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motor: Option<PhysicsJointMotor>,
 }
 
 pub(super) fn validate_joints(input: &PhysicsFrameInput) -> Result<(), String> {
@@ -53,6 +57,8 @@ pub(super) fn validate_joints(input: &PhysicsFrameInput) -> Result<(), String> {
             || !(0.0..=std::f32::consts::PI).contains(&joint.cone_limit)
             || !joint.angular_stiffness.is_finite()
             || joint.angular_stiffness < 0.0
+            || joint.angular_limits.is_some_and(|v| !v.valid())
+            || joint.motor.is_some_and(|v| !v.valid())
             || !joint.angular_damping.is_finite()
             || joint.angular_damping < 0.0
         {
@@ -89,9 +95,111 @@ mod tests {
             angular_stiffness: 10.0,
             angular_damping: 1.0,
             collision_family: 1,
+            angular_limits: None,
+            motor: None,
         });
         assert!(validate_joints(&input).is_err());
         input.joints[0].max_force = f32::NAN;
         assert!(validate_joints(&input).is_err());
     }
+}
+
+/// Limits in the joint frame: Y is twist, X/Z span the swing plane.
+/// Stops are compliant physical torques; they never overwrite body poses.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PhysicsAngularLimits {
+    pub swing_x: [f32; 2],
+    pub swing_z: [f32; 2],
+    pub twist: [f32; 2],
+    pub stiffness: f32,
+    pub damping: f32,
+    pub max_torque: f32,
+}
+impl PhysicsAngularLimits {
+    pub fn valid(self) -> bool {
+        [self.swing_x, self.swing_z, self.twist].iter().all(|r| {
+            r.iter()
+                .all(|v| v.is_finite() && v.abs() <= std::f32::consts::PI)
+                && r[0] <= 0.0
+                && r[1] >= 0.0
+        }) && [self.stiffness, self.damping, self.max_torque]
+            .iter()
+            .all(|v| v.is_finite() && *v >= 0.0)
+    }
+}
+/// An internal equal/opposite angular drive, in Nm/rad, Nm*s/rad and Nm.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PhysicsJointMotor {
+    /// World goal, actuated by this same internal couple and effort budget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub world_drive: Option<PhysicsWorldAngularDrive>,
+    /// Internal child torque in the parent joint frame; shares the motor torque budget.
+    #[serde(default)]
+    pub feed_forward_torque: PhysicsVec3,
+    pub target_rotation: PhysicsQuat,
+    pub stiffness: f32,
+    pub damping: f32,
+    pub max_torque: f32,
+}
+impl PhysicsJointMotor {
+    pub fn valid(self) -> bool {
+        self.world_drive.is_none_or(|g| g.valid())
+            && self.feed_forward_torque.iter().all(|v| v.is_finite())
+            && self.target_rotation.iter().all(|v| v.is_finite())
+            && (self.target_rotation.iter().map(|v| v * v).sum::<f32>() - 1.0).abs() <= 0.01
+            && [self.stiffness, self.damping, self.max_torque]
+                .iter()
+                .all(|v| v.is_finite() && *v >= 0.0)
+    }
+}
+
+/// The other body receives the opposite reaction, including when unsupported.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PhysicsWorldAngularDrive {
+    #[serde(default)]
+    pub body: PhysicsJointBody,
+    pub target_rotation: PhysicsQuat,
+    pub stiffness: f32,
+    pub damping: f32,
+}
+impl PhysicsWorldAngularDrive {
+    pub fn valid(self) -> bool {
+        self.target_rotation.iter().all(|v| v.is_finite())
+            && (self.target_rotation.iter().map(|v| v * v).sum::<f32>() - 1.0).abs() <= 0.01
+            && [self.stiffness, self.damping]
+                .iter()
+                .all(|v| v.is_finite() && *v >= 0.0)
+    }
+}
+
+#[cfg(test)]
+mod world_drive_validation_tests {
+    use super::*;
+    #[test]
+    fn legacy_motor_and_invalid_parent_orientation_are_handled() {
+        let raw = r#"{"target_rotation":[0,0,0,1],"stiffness":5,"damping":1,"max_torque":10}"#;
+        let mut motor: PhysicsJointMotor = serde_json::from_str(raw).unwrap();
+        assert!(motor.world_drive.is_none() && motor.valid());
+        motor.world_drive = Some(PhysicsWorldAngularDrive {
+            body: PhysicsJointBody::Parent,
+            target_rotation: [0.0; 4],
+            stiffness: 1.0,
+            damping: 1.0,
+        });
+        assert!(!motor.valid());
+        motor.world_drive.as_mut().unwrap().target_rotation = [0.0, 0.0, 0.0, 1.0];
+        assert!(motor.valid());
+        motor.world_drive.as_mut().unwrap().damping = f32::NAN;
+        assert!(!motor.valid());
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PhysicsJointBody {
+    #[default]
+    Parent,
+    Child,
 }

@@ -32,7 +32,7 @@ pub mod reserved {
     /// tessellation for rects, borders and temporary vector stubs.
     pub const SOLID_WHITE: UiTexId = UiTexId(15);
     pub const USER_BEGIN: u32 = 16;
-    /// Stable engine-managed namespace for asset-backed UI textures resolved from `.ytd@entry`.
+    /// Stable engine-managed namespace for asset-backed UI textures resolved from opaque asset references.
     /// Kept separate from provider-created atlas ids and external GPU render targets.
     pub const ASSET_REF_BEGIN: u32 = 0x4000_0000;
 

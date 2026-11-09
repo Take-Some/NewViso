@@ -1,0 +1,120 @@
+import * as Game from "./default_game_base.ysc";
+import * as FPS from "../fps/game.ysc";
+import { CFG } from "../fps/config.ysc";
+import { state as FPSState } from "../fps/state.ysc";
+import { Ped } from "./world/peds.ysc";
+import { createRuntimeSnapshotDecoder } from "./snapshot_delta.ysc";
+const decode=createRuntimeSnapshotDecoder();
+let elapsed=0,stage=0,since=0,npcs:string[]=[],config:any,project=false,events:any={},samples:any[]=[],physical:any[]=[],footFrames:any={},boneLengths:any={},maxFootError=0,maxBoneError=0,scenario='stairs',soleFrames:any={},soleTreads:any={},maxSolePlaneError=0,maxPlantedSoleError=0,unshiftedFits:any={},middleCaptured=false;
+function check(x:any,m:string):void{if(!x)throw new Error("STAIR_VERIFY "+m);}
+export function on_event(e:any):any{
+ const id=e?.payload?.actor_id;if(id){const a=events[id]??(events[id]={});a[e.topic]=(a[e.topic]??0)+1;}
+ return Game.on_event(e);
+}
+export function on_start(raw:any):any{
+ const p=decode(raw);config=p.project.runtime.variables.engine_player;project=config.controller==="project";
+ npcs=p.project.runtime.variables.stair_verification_npcs??[];scenario=p.project.runtime.variables.stair_verification_case??'stairs';
+ const r:any=Game.on_start(p);
+ if(project){(CFG as any).physicsWorld.requiredStreamedMeshColliders=0;(CFG as any).physicsWorld.sceneColliders.enabled=true;
+ r.commands.push(...FPS.startGame(p).commands);
+ // Seed the real adapter at this course rather than its authored map spawn.
+ const feet=config.spawn_position,eye=[feet[0],feet[1]+CFG.eyeHeight,feet[2]];
+ Object.assign(FPSState,{position:[...eye],spawn:[...eye],yaw:0,pitch:0,targetYaw:0,targetPitch:0});}
+ return r;
+}
+export function on_frame(raw:any):any{
+ const p=decode(raw);elapsed+=Number(p.delta_seconds);
+ const bodies=p.runtime.physics?.bodies??[];
+ const distance=(a:number[],b:number[])=>Math.hypot(...a.map((v,i)=>v-b[i]));
+ for(const actor of p.runtime.endorphin?.feet??[]){
+  for(const leg of actor.legs??[]){
+   if(!leg.hip||!leg.knee||!leg.position)continue;
+   footFrames[actor.entity_key]=(footFrames[actor.entity_key]??0)+1;
+   const key=actor.entity_key+leg.foot,l=[distance(leg.hip,leg.knee),distance(leg.knee,leg.position)];
+   if(!boneLengths[key])boneLengths[key]=l;
+   maxBoneError=Math.max(maxBoneError,...l.map((v,i)=>Math.abs(v-boneLengths[key][i])));
+   maxFootError=Math.max(maxFootError,distance(leg.position,leg.target));
+    const support=leg.support;
+    check(support&&support.target_sole?.length===4&&support.actual_sole?.length===4,"missing footprint support contract");
+    const candidate=support.contact_sole,span=distance(candidate[0],candidate[2]);
+    const clearSource=(support.authored_ankle[2]>.3+span&&candidate.every((v:number[])=>v[2]>.3))||
+      (support.authored_ankle[2]<-2.86-span&&candidate.every((v:number[])=>v[2]<-2.86));
+    if(support.has_surface&&support.surface_complete&&!support.anchored_goal&&!support.preview_goal&&clearSource&&
+       candidate.every((v:number[])=>v[0]>-1.2&&v[0]<7.2)){
+     check(Math.hypot(support.contact_target[0]-support.authored_ankle[0],support.contact_target[2]-support.authored_ankle[2])<.0001,"unnecessary centring on clear landing "+JSON.stringify({actor:actor.entity_key,leg}));
+     unshiftedFits[actor.entity_key]=(unshiftedFits[actor.entity_key]??0)+1;
+    }
+    if(support.planted){
+     soleFrames[actor.entity_key]=(soleFrames[actor.entity_key]??0)+1;
+     const target=support.contact_sole??support.target_sole,actual=support.actual_sole;
+     maxPlantedSoleError=Math.max(maxPlantedSoleError,...actual.map((v:number[],i:number)=>distance(v,target[i])));
+     check(maxPlantedSoleError<.01,"planted sole above or outside its support "+JSON.stringify({entity:actor.entity_key,leg,maxPlantedSoleError}));
+
+     const y=target.reduce((s:number,v:number[])=>s+v[1],0)/4;
+     maxSolePlaneError=Math.max(maxSolePlaneError,...target.map((v:number[])=>Math.abs(v[1]-y)));
+     check(maxSolePlaneError<.002,"sole not aligned to tread plane");
+     if(y>.1&&y<1.5&&target.every((v:number[])=>v[2]<0&&v[2]>-2.56)){
+      const tread=Math.round(y/.18)-1;
+      check(tread>=0&&tread<8,"invalid tread support height "+y);
+      const lo=-(tread+1)*.32,hi=-tread*.32;
+      check(target.every((v:number[])=>v[0]>=-1.5&&v[0]<=7.5&&v[2]>=lo-.002&&v[2]<=hi+.002),"target sole spans risers "+JSON.stringify({tread,target,support}));
+      check(actual.every((v:number[])=>v[2]>=lo-.004&&v[2]<=hi+.004),"solved sole outside tread "+JSON.stringify({tread,actual,support}));
+      const origin=target.map((v:number[])=>[v[0]+support.authored_ankle[0]-leg.target[0],v[1],v[2]+support.authored_ankle[2]-leg.target[2]]);
+      if(!support.anchored_goal&&!support.preview_goal&&origin.every((v:number[])=>v[0]>-1.5+.03&&v[0]<7.5-.03&&v[2]>lo+.03&&v[2]<hi-.03)){
+       check(Math.hypot((support.contact_target??leg.target)[0]-support.authored_ankle[0],(support.contact_target??leg.target)[2]-support.authored_ankle[2])<.0001,"unnecessary centring of an already fitting sole");
+       unshiftedFits[actor.entity_key]=(unshiftedFits[actor.entity_key]??0)+1;
+      }
+      const t=soleTreads[actor.entity_key]??(soleTreads[actor.entity_key]={});t[tread]=(t[tread]??0)+1;
+     }
+    }
+
+  }
+ }
+ const player=bodies.find((b:any)=>String(b.entity_key??b.entity)==="900000000");
+ if(p.runtime.peds?.physics?.bodies)physical=p.runtime.peds.physics.bodies;
+ const actors=physical.filter((b:any)=>npcs.includes(b.actor_id)).map((b:any)=>{
+  const s=bodies.find((x:any)=>String(x.entity_key??x.entity)===String(b.entity_key??b.entity));
+  return {id:b.actor_id,p:s?.position,center:b.center_offset,s:s?.stair_support,v:s?.linear_velocity};
+ });
+ const up=stage===1&&player&&player.position[2]>-3.6,down=stage===2&&player&&player.position[2]<1.6;
+ p.frame={...p.frame,platform:{...p.frame.platform,focused:true,cursor_captured:true},
+ input:{state:{keys:{down:up?[41]:down?[37]:[],pressed:[]},mouse:{down:[],pressed:[1],delta:{x:0,y:0}}}}};
+ const r:any=Game.on_frame(p);if(project)r.commands.push(...FPS.frameGame(p).commands);
+ r.commands.push({op:"scene.camera.set",position:[-5,4.6,2],target:[2.5,1,-1.5],up:[0,1,0],fov_y_degrees:65,near:.04,far:200});
+ if(player){
+  if(stage===0&&elapsed>1.5&&(p.runtime.endorphin?.feet??[]).length>=3){stage=1;since=elapsed;for(let i=0;i<npcs.length;i++)r.commands.push(new Ped(npcs[i]).goTo([3+i*3,1.44,-4],1.5));}
+  const ready=actors.length===npcs.length&&actors.every((a:any)=>a.p);
+   if(!middleCaptured&&stage===1&&player.position[2]<-1&&player.position[2]>-2){
+    middleCaptured=true;r.commands.push({op:"console.write",message:"STAIR_CAPTURE middle"});
+   }
+
+  if(scenario!=='stairs'&&stage===1&&elapsed-since>5){
+   check(player.position[2]>.1&&player.position[1]<1.02,"obstacle was climbed "+JSON.stringify(player));
+   r.commands.push({op:"console.write",message:"STAIR_VERIFY_PASS "+JSON.stringify({scenario,player:player.position,actors,events})});r.exit_requested=true;return r;
+  }
+  if(stage===1&&ready&&player.position[2]<-3.5&&actors.every((a:any)=>a.p[2]<-3.5)){
+   check(Math.abs(player.position[1]-config.body_height/2-1.44)<.07,"player wrong upper landing "+JSON.stringify(player));
+   for(const a of actors)check(Math.abs(a.p[1]-a.center-1.44)<.09,"NPC wrong landing "+JSON.stringify(a));
+   stage=2;since=elapsed;for(let i=0;i<npcs.length;i++)r.commands.push(new Ped(npcs[i]).goTo([3+i*3,0,2],1.2));
+   r.commands.push({op:"console.write",message:"STAIR_CAPTURE upper"});
+  }else if(stage===2&&ready&&player.position[2]>1.5&&actors.every((a:any)=>a.p[2]>1.5)){
+   check(Math.abs(player.position[1]-config.body_height/2)<.07,"player wrong lower landing");
+   for(const a of actors)check(Math.abs(a.p[1]-a.center)<.09,"NPC wrong lower landing "+JSON.stringify(a));
+   for(const [id,e]of Object.entries(events)as any)check(!e["character.jump"]&&!e["character.fall"]&&!e["character.land"],"stairs generated air events "+id+" "+JSON.stringify(e));
+   check(maxBoneError<.004,"leg bone lengths changed "+maxBoneError);
+   check(maxFootError<.065,"leg target error "+maxFootError);
+   check(Object.keys(unshiftedFits).length>=3&&Object.values(unshiftedFits).every((n:any)=>n>5),"missing off-centre natural placements "+JSON.stringify(unshiftedFits));
+    check(Object.keys(soleFrames).length>=3&&Object.values(soleFrames).every((n:any)=>n>5),"missing complete-foot contact samples");
+    check(Object.keys(footFrames).length>=3&&Object.values(footFrames).every((n:any)=>n>5),"missing lower-limb control "+JSON.stringify(footFrames));
+   r.commands.push({op:"console.write",message:"STAIR_VERIFY_PASS "+JSON.stringify({player:player.position,actors,events,footFrames,maxFootError,maxBoneError,soleFrames,soleTreads,maxSolePlaneError,maxPlantedSoleError,unshiftedFits})});r.exit_requested=true;
+  }
+  if(samples.length===0||elapsed-samples[samples.length-1].t>.2){
+   const s={t:elapsed,stage,player:{p:player.position,v:player.linear_velocity,s:player.stair_support},actors};
+   if(p.project.runtime.variables.stair_verification_trace)r.commands.push({op:'console.write',message:'SOLE_SAMPLE '+JSON.stringify({t:elapsed,feet:p.runtime.endorphin?.feet})});
+    samples.push(s);r.commands.push({op:"console.write",message:"STAIR_SAMPLE "+JSON.stringify(s)});
+  }
+ }
+ check(elapsed<32,"timeout "+JSON.stringify({stage,player,actors,events}));
+ return r;
+}
+export function on_shutdown(p:any):any{const r:any=Game.on_shutdown(p);if(project)r.commands.push(...FPS.shutdownGame().commands);return r;}

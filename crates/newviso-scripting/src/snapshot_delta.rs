@@ -43,12 +43,18 @@ impl SnapshotDelta {
 // Preserve signed zero and number representation as observed by script code.
 fn exact_equal(previous: &Value, current: &Value) -> bool {
     match (previous, current) {
-        (Value::Object(a), Value::Object(b)) => a.len() == b.len()
-            && a.iter().zip(b).all(|((ka, va), (kb, vb))| ka == kb && exact_equal(va, vb)),
-        (Value::Array(a), Value::Array(b)) => a.len() == b.len()
-            && a.iter().zip(b).all(|(a, b)| exact_equal(a, b)),
-        (Value::Number(a), Value::Number(b)) if a.is_f64() && b.is_f64() =>
-            a.as_f64().unwrap().to_bits() == b.as_f64().unwrap().to_bits(),
+        (Value::Object(a), Value::Object(b)) => {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b)
+                    .all(|((ka, va), (kb, vb))| ka == kb && exact_equal(va, vb))
+        }
+        (Value::Array(a), Value::Array(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| exact_equal(a, b))
+        }
+        (Value::Number(a), Value::Number(b)) if a.is_f64() && b.is_f64() => {
+            a.as_f64().unwrap().to_bits() == b.as_f64().unwrap().to_bits()
+        }
         _ => previous == current,
     }
 }
@@ -59,10 +65,14 @@ enum PathSegment<'a> {
 }
 
 fn path_value(path: &[PathSegment<'_>]) -> Value {
-    Value::Array(path.iter().map(|segment| match segment {
-        PathSegment::Key(key) => Value::String((*key).to_owned()),
-        PathSegment::Index(index) => json!(index),
-    }).collect())
+    Value::Array(
+        path.iter()
+            .map(|segment| match segment {
+                PathSegment::Key(key) => Value::String((*key).to_owned()),
+                PathSegment::Index(index) => json!(index),
+            })
+            .collect(),
+    )
 }
 
 // Compare transport sizes without allocating two temporary byte buffers.
@@ -72,7 +82,9 @@ impl std::io::Write for EncodedSize {
         self.0 += bytes.len();
         Ok(bytes.len())
     }
-    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 fn encoded_size<T: serde::Serialize + ?Sized>(value: &T) -> Option<usize> {
     let mut size = EncodedSize(0);
@@ -81,7 +93,12 @@ fn encoded_size<T: serde::Serialize + ?Sized>(value: &T) -> Option<usize> {
 }
 
 // Path segments borrow keys. Unchanged fields allocate no temporary strings.
-fn diff<'a>(previous: &'a Value, current: &'a Value, path: &mut Vec<PathSegment<'a>>, out: &mut Vec<Value>) {
+fn diff<'a>(
+    previous: &'a Value,
+    current: &'a Value,
+    path: &mut Vec<PathSegment<'a>>,
+    out: &mut Vec<Value>,
+) {
     // Equal descriptor subtrees need no path construction or keyed lookups.
     if exact_equal(previous, current) {
         return;
@@ -111,7 +128,9 @@ fn diff<'a>(previous: &'a Value, current: &'a Value, path: &mut Vec<PathSegment<
                 path.push(PathSegment::Index(index));
                 diff(old, new, path, out);
                 path.pop();
-                if out.len() != element_start { changed_elements += 1; }
+                if out.len() != element_start {
+                    changed_elements += 1;
+                }
             }
             // Dense vector/body updates otherwise produce thousands of paths
             // which each decoder must traverse. Replace the complete array only
@@ -119,7 +138,8 @@ fn diff<'a>(previous: &'a Value, current: &'a Value, path: &mut Vec<PathSegment<
             // Sparse descriptor edits keep their existing narrow paths.
             if out.len() - start >= 2 && changed_elements.saturating_mul(2) >= new.len() {
                 let replacement = json!({"path":path_value(path),"value":current});
-                if encoded_size(&out[start..]).zip(encoded_size(&replacement))
+                if encoded_size(&out[start..])
+                    .zip(encoded_size(&replacement))
                     .is_some_and(|(fine, coarse)| coarse <= fine)
                 {
                     out.truncate(start);
@@ -156,7 +176,10 @@ mod tests {
             }
             let last = path.last().unwrap();
             if op["remove"] == true {
-                parent.as_object_mut().unwrap().remove(last.as_str().unwrap());
+                parent
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(last.as_str().unwrap());
             } else if let Some(index) = last.as_u64() {
                 parent[index as usize] = op["value"].clone();
             } else {
@@ -193,7 +216,10 @@ mod tests {
         let delta = snapshots.encode(&new);
         assert_eq!(delta["operations"].as_array().unwrap().len(), 2);
         let result = apply(&old, &delta);
-        assert_eq!(result["zero"].as_f64().unwrap().to_bits(), (-0.0f64).to_bits());
+        assert_eq!(
+            result["zero"].as_f64().unwrap().to_bits(),
+            (-0.0f64).to_bits()
+        );
         assert!(result["numeric"].as_number().unwrap().is_f64());
     }
 
@@ -224,44 +250,58 @@ mod tests {
 
     #[test]
     fn dense_physics_arrays_use_one_compact_transaction() {
-        let bodies = (0..144).map(|i| json!({"entity_key":i.to_string(),
+        let bodies = (0..144)
+            .map(|i| {
+                json!({"entity_key":i.to_string(),
             "position":[0.0,1.0,2.0],"rotation":[0.0,0.0,0.0,1.0],
             "velocity":[0.0,0.0,0.0],"bounds_min":[0.0,0.0,0.0],
-            "bounds_max":[1.0,1.0,1.0],"kind":"dynamic"})).collect::<Vec<_>>();
+            "bounds_max":[1.0,1.0,1.0],"kind":"dynamic"})
+            })
+            .collect::<Vec<_>>();
         let old = json!({"physics":{"bodies":bodies}});
         let mut new = old.clone();
-        for (i, body) in new["physics"]["bodies"].as_array_mut().unwrap().iter_mut().enumerate() {
-            body["position"] = json!([i as f64 + 0.1,2.1,3.1]);
-            body["rotation"] = json!([0.2,0.3,0.4,0.8]);
-            body["velocity"] = json!([1.2,2.3,3.4]);
-            body["bounds_min"] = json!([1.0,2.0,3.0]);
-            body["bounds_max"] = json!([2.0,3.0,4.0]);
+        for (i, body) in new["physics"]["bodies"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .enumerate()
+        {
+            body["position"] = json!([i as f64 + 0.1, 2.1, 3.1]);
+            body["rotation"] = json!([0.2, 0.3, 0.4, 0.8]);
+            body["velocity"] = json!([1.2, 2.3, 3.4]);
+            body["bounds_min"] = json!([1.0, 2.0, 3.0]);
+            body["bounds_max"] = json!([2.0, 3.0, 4.0]);
         }
-        let mut snapshots = SnapshotDelta::default();snapshots.commit(old.clone());
+        let mut snapshots = SnapshotDelta::default();
+        snapshots.commit(old.clone());
         let delta = snapshots.encode(&new);
-        assert_eq!(delta["operations"].as_array().unwrap().len(),1);
-        assert_eq!(delta["operations"][0]["path"],json!(["physics","bodies"]));
-        assert_eq!(apply(&old,&delta),new);
+        assert_eq!(delta["operations"].as_array().unwrap().len(), 1);
+        assert_eq!(delta["operations"][0]["path"], json!(["physics", "bodies"]));
+        assert_eq!(apply(&old, &delta), new);
     }
 
     #[test]
     fn sparse_record_updates_do_not_retransmit_large_immutable_descriptors() {
-        let old=json!({"records":vec![json!({"position":[0.0,0.0,0.0],"description":"x".repeat(4096)});144]});
-        let mut new=old.clone();new["records"][73]["position"]=json!([1.0,2.0,3.0]);new["records"][91]["position"]=json!([4.0,5.0,6.0]);
-        let mut snapshots=SnapshotDelta::default();snapshots.commit(old.clone());
-        let delta=snapshots.encode(&new);
-        assert!(serde_json::to_vec(&delta).unwrap().len()<400);
-        assert_eq!(apply(&old,&delta),new);
+        let old = json!({"records":vec![json!({"position":[0.0,0.0,0.0],"description":"x".repeat(4096)});144]});
+        let mut new = old.clone();
+        new["records"][73]["position"] = json!([1.0, 2.0, 3.0]);
+        new["records"][91]["position"] = json!([4.0, 5.0, 6.0]);
+        let mut snapshots = SnapshotDelta::default();
+        snapshots.commit(old.clone());
+        let delta = snapshots.encode(&new);
+        assert!(serde_json::to_vec(&delta).unwrap().len() < 400);
+        assert_eq!(apply(&old, &delta), new);
     }
 
     #[test]
     fn changed_numeric_vectors_are_sent_as_a_single_vector() {
-        let old=json!({"position":[0.0,1.0,2.0]});let new=json!({"position":[0.3,1.4,2.5]});
-        let mut snapshots=SnapshotDelta::default();snapshots.commit(old.clone());
-        let delta=snapshots.encode(&new);
-        assert_eq!(delta["operations"].as_array().unwrap().len(),1);
-        assert_eq!(delta["operations"][0]["path"],json!(["position"]));
-        assert_eq!(apply(&old,&delta),new);
+        let old = json!({"position":[0.0,1.0,2.0]});
+        let new = json!({"position":[0.3,1.4,2.5]});
+        let mut snapshots = SnapshotDelta::default();
+        snapshots.commit(old.clone());
+        let delta = snapshots.encode(&new);
+        assert_eq!(delta["operations"].as_array().unwrap().len(), 1);
+        assert_eq!(delta["operations"][0]["path"], json!(["position"]));
+        assert_eq!(apply(&old, &delta), new);
     }
 }
-

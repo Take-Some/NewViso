@@ -330,10 +330,11 @@ pub(super) fn advance_task(
                 return;
             }
             task.facing_target = Some(target.position);
-            if distance_xz(actor.position, target.position) > range * 0.9 {
+            if distance_xz(actor.position, target.position) > range {
                 if starting || task.elapsed_seconds >= task.next_action_seconds {
-                    move_to(task, actor, target.position, speed, 0.5, commands);
-                    task.next_action_seconds = task.elapsed_seconds + 0.5;
+                    move_to(task, actor, target.position, speed, range, commands);
+                    task.next_action_seconds =
+                        task.elapsed_seconds + (range / speed).min(cooldown_seconds);
                 }
             } else {
                 cancel(task, actor, commands);

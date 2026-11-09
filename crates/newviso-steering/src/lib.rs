@@ -73,6 +73,30 @@ pub fn choose_velocity(
         }
     }
 
+    // A finite clearance can require speeds below the coarse angular rings.
+    // Add the approach speed that spends the remaining gap over the horizon.
+    // Collision scoring still checks every neighbor and obstacle.
+    let direction = normalize_or_zero(desired);
+    let mut approach_speed = length(desired);
+    let mut bound = |position: Vec2, velocity: Vec2, radius: f32| {
+        let relative = sub(position, input.position);
+        let along = dot(relative, direction);
+        let side_squared = (dot(relative, relative) - along * along).max(0.0);
+        let combined = input.radius + radius;
+        if along > 0.0 && side_squared < combined * combined {
+            let gap = along - (combined * combined - side_squared).sqrt();
+            let speed = gap.max(0.0) / input.time_horizon + dot(velocity, direction);
+            approach_speed = approach_speed.min(speed.max(0.0));
+        }
+    };
+    for neighbor in neighbors {
+        bound(neighbor.position, neighbor.velocity, neighbor.radius);
+    }
+    for obstacle in obstacles {
+        bound(obstacle.position, [0.0; 2], obstacle.radius);
+    }
+    candidates.push(mul(direction, approach_speed));
+
     let mut best = desired;
     let mut best_cost = f32::INFINITY;
 
@@ -99,7 +123,7 @@ pub fn choose_velocity(
                 let directional_penalty = if separating_speed > 0.0 {
                     1.0 / (1.0 + separating_speed)
                 } else {
-                    2.0 + (-separating_speed).min(input.max_speed)
+                    1.0 + (-separating_speed).min(input.max_speed)
                 };
                 cost += input.separation_weight * overlap * directional_penalty;
             }
@@ -133,7 +157,7 @@ pub fn choose_velocity(
 fn collision_penalty(time: Option<f32>, horizon: f32) -> f32 {
     match time {
         Some(t) if t <= 0.0 => 1000.0,
-        Some(t) if t < horizon => 12.0 * (1.0 - t / horizon).powi(2) + 1.0 / (t + 0.05),
+        Some(t) if t < horizon => (1.0 - t / horizon).powi(2) * (12.0 + 1.0 / (t + 0.05)),
         _ => 0.0,
     }
 }
@@ -289,5 +313,48 @@ mod tests {
         let output = choose_velocity(input(), &[neighbor], &[]).unwrap();
         assert!(output.avoidance_cost.is_finite());
         assert!(output.constrained);
+    }
+
+    #[test]
+    fn close_approach_can_slow_down_without_stalling_outside_contact() {
+        let neighbor = SteeringNeighbor {
+            id: 2,
+            position: [0.0, 0.0],
+            velocity: [0.0; 2],
+            radius: 0.3,
+        };
+        let mut position = [0.75, 0.0];
+        let mut velocity = [0.0; 2];
+        for _ in 0..600 {
+            if length(position) <= 0.65 {
+                break;
+            }
+            let desired = mul(normalize_or_zero(position), -2.2);
+            let output = choose_velocity(
+                SteeringInput {
+                    position,
+                    velocity,
+                    desired_velocity: desired,
+                    radius: 0.3,
+                    max_speed: 2.2,
+                    time_horizon: 1.5,
+                    separation_weight: 2.0,
+                },
+                &[neighbor],
+                &[],
+            )
+            .unwrap();
+            velocity = output.velocity;
+            position[0] += velocity[0] / 60.0;
+            position[1] += velocity[1] / 60.0;
+            assert!(
+                length(position) >= 0.6,
+                "avoidance overlapped the stationary body"
+            );
+        }
+        assert!(
+            length(position) <= 0.65,
+            "approach stalled outside interaction reach: {position:?}"
+        );
     }
 }

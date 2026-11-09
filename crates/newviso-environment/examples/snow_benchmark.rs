@@ -1,4 +1,5 @@
 //! Reproducible CPU benchmark; assets and tuning are supplied by the caller.
+use std::io::Write as _;
 use newviso_environment::snow::{SnowField,SnowFieldSpec,SnowPolicy,SnowDriftPolicy,SnowDynamicsPolicy,SnowLayerPolicy};
 use serde_json::{json,Value};
 use std::{env,fs,time::Instant};
@@ -35,7 +36,7 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
         std::hint::black_box(report);
         std::hint::black_box(changes);
     }
-    println!("{}",json!({"schema":"newviso.snow.cpu_benchmark.v1",
+    let _ = writeln!(std::io::stdout().lock(),"{}",json!({"schema":"newviso.snow.cpu_benchmark.v1",
         "profile":if cfg!(debug_assertions){"optimized-debug"}else{"release"},
         "columns":original.spec.columns,"rows":original.spec.rows,"wind":wind,
         "delta_seconds":2,"iterations":iterations,"changed_vertices":changed,

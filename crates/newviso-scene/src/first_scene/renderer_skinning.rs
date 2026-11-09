@@ -302,18 +302,19 @@ impl Scene3dRuntime {
         Ok(())
     }
 
-    /// Run before shadow/depth/water recording, rather than leaving deformation
-    /// in the later main-view graph. All consumers see the same acquired slot.
-    pub(super) fn dispatch_gpu_skinning(
+    /// Prepare all per-skeleton compute descriptors outside acquired frame
+    /// ownership. This can run in the loading compositor and is idempotent.
+    /// Actual palette/pose writes still occur in the acquired frame slot.
+    pub(super) fn prepare_gpu_skinning_entities(
         &mut self,
         render: &RenderClient,
-        slot: usize,
-        gpu: GpuScene,
     ) -> Result<(), String> {
-        let state = self
-            .gpu_skinning
-            .as_mut()
-            .ok_or_else(|| "GPU skinning was not initialized".to_owned())?;
+        let Some(gpu) = self.gpu else {
+            return Err("3D scene GPU resources are not initialized".to_owned());
+        };
+        let Some(state) = self.gpu_skinning.as_mut() else {
+            return Ok(());
+        };
         let obsolete: Vec<_> = state
             .entities
             .keys()
@@ -325,22 +326,12 @@ impl Scene3dRuntime {
         for id in obsolete {
             state.entities.remove(&id).unwrap().destroy(render);
         }
-
-        let mut dispatches = Vec::new();
-        // Include resident offscreen skeletons: their shadows and reflection
-        // passes can still be visible even when their main view was culled.
         for (id, animation) in &self.skinned_entities {
-            let Some(mesh) = self.asset_meshes.get(id) else {
-                continue;
-            };
-            let Some(first) = mesh.skinned_first_vertex else {
-                continue;
-            };
+            let Some(mesh) = self.asset_meshes.get(id) else { continue };
+            if mesh.skinned_first_vertex.is_none() { continue; }
             let palette = animation.presented_skin_palette();
             let source = mesh.source_model_id.0;
-            let vertices = self
-                .asset_model_cache
-                .get(&source)
+            let vertices = self.asset_model_cache.get(&source)
                 .ok_or_else(|| format!("GPU skin source {source} is not resident"))?;
             state.prepare_model(render, source, vertices, palette.len())?;
             let model = &state.models[&source];
@@ -403,6 +394,36 @@ impl Scene3dRuntime {
                     return Err(error);
                 }
                 state.entities.insert(*id, entity);
+            }
+        }
+        Ok(())
+    }
+
+    /// Run before shadow/depth/water recording, rather than leaving deformation
+    /// in the later main-view graph. All consumers see the same acquired slot.
+    pub(super) fn dispatch_gpu_skinning(
+        &mut self,
+        render: &RenderClient,
+        slot: usize,
+    ) -> Result<(), String> {
+        self.prepare_gpu_skinning_entities(render)?;
+        let state = self.gpu_skinning.as_mut()
+            .ok_or_else(|| "GPU skinning was not initialized".to_owned())?;
+        let mut dispatches = Vec::new();
+        // Include resident offscreen skeletons: their shadows and reflection
+        // passes can still be visible even when their main view was culled.
+        for (id, animation) in &self.skinned_entities {
+            let Some(mesh) = self.asset_meshes.get(id) else {
+                continue;
+            };
+            let Some(first) = mesh.skinned_first_vertex else {
+                continue;
+            };
+            let palette = animation.presented_skin_palette();
+            let source = mesh.source_model_id.0;
+            let model = &state.models[&source];
+            if model.vertices != mesh.vertex_count as usize || model.joints != palette.len() {
+                return Err(format!("GPU skin source dimensions changed entity={id}"));
             }
             let entity = &state.entities[id];
             let dimensions = [

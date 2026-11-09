@@ -31,6 +31,26 @@ impl AudioClient {
         self.play(&AudioPlayRequest::new(uri))
     }
 
+    /// First-class XVAG playback through the existing low-level clip method.
+    /// Additional spatial/route metadata is passed through to the provider.
+    /// Device-side support must be verified against the installed backend.
+    pub fn play_xvag(&self, request: &AudioPlayRequest) -> Result<AudioPlayAck, String> {
+        let mut request = request.clone();
+        request.clip.uri = normalize_xvag_uri(&request.clip.uri)?;
+        self.play(&request.sanitized()?)
+    }
+
+    pub fn preload_xvag(&self, uri: &str) -> Result<AudioPreloadAck, String> {
+        let clip = normalize_xvag_uri(uri)?;
+        self.preload(&AudioPreloadRequest::new(clip))
+    }
+
+    /// Play a final YSCD cue through the existing engine.audio provider.
+    pub fn play_cue(&self, request: &AudioCuePlayRequest) -> Result<AudioPlayAck, String> {
+        let request = request.clone().sanitized()?;
+        self.post(AUDIO_METHOD_PLAY_CUE_JSON_V1, &request)
+    }
+
     pub fn stop(&self, voice_id: u64) -> Result<AudioVoiceAck, String> {
         self.post(
             AUDIO_METHOD_STOP_VOICE_JSON_V1,

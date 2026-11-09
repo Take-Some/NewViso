@@ -47,6 +47,9 @@ impl WorldActorPresentationBinding {
             if let Some(reactions) = &locomotion.reactions {
                 reactions.validate()?;
             }
+            if locomotion.endorphin_model.trim().is_empty() {
+                return Err("Endorphin model asset must not be empty".into());
+            }
             if let Some(ragdoll) = &locomotion.ragdoll {
                 ragdoll.validate()?;
             }
@@ -293,6 +296,22 @@ impl EngineApplication {
                 intent.heading_degrees,
                 self.peds.state(actor_id).is_some(),
             );
+            // The action's committed facing owns the attacking skeleton, including
+            // manual attacks that have no AI combat task to turn the actor.
+            if let Some(heading) = self
+                .peds
+                .state(actor_id)
+                .filter(|p| !p.dead)
+                .and_then(|p| p.melee.as_ref())
+                .filter(|m| {
+                    m.blocking
+                        || (m.action.is_some()
+                            && matches!(m.phase.as_str(), "windup" | "active" | "recovery"))
+                })
+                .and_then(|m| heading_degrees_from_velocity(m.facing))
+            {
+                rotation_degrees[1] = binding.rotation_degrees[1] + heading;
+            }
             if let Some(clip) = intent.clip_ref {
                 animation_clip = Some(clip);
                 locomotion_state = "action";
@@ -538,7 +557,7 @@ mod tests {
         WorldActorPresentationBinding {
             scene_key: "npc.test".to_owned(),
             visual: SceneRuntimeVisualKind::None,
-            asset_ref: Some("models/npc.ydd".to_owned()),
+            asset_ref: Some("models/npc.model".to_owned()),
             position_offset: [0.0; 3],
             rotation_degrees: [0.0; 3],
             scale: [1.0; 3],
@@ -558,6 +577,7 @@ mod tests {
                 land_clip: Some("land".to_owned()),
                 reactions: None,
                 ragdoll: None,
+                endorphin_model: application_endorphin::default_model_asset(),
                 walk_speed_threshold: 0.15,
                 run_speed_threshold: 3.5,
                 animation_rate_hz: 30.0,

@@ -1,5 +1,7 @@
 //! Bounded animation scheduling: select the best N jobs instead of sorting every
 //! visible entity. The ordering remains identical to a full priority sort.
+#[cfg(test)]
+use std::io::Write as _;
 use std::cmp::Ordering;
 
 pub(super) type Candidate = (f64, f32, u64, f64);
@@ -77,7 +79,7 @@ mod tests {
             black_box(&next);
         }
         let selected_ms = selected_started.elapsed().as_secs_f64() * 1000.0;
-        println!("SKINNING_BENCH candidates=20000 budget=8 repetitions={} full_sort_ms={:.3} bounded_select_ms={:.3} relative_speedup={:.2}x",
+        let _ = writeln!(std::io::stdout().lock(),"SKINNING_BENCH candidates=20000 budget=8 repetitions={} full_sort_ms={:.3} bounded_select_ms={:.3} relative_speedup={:.2}x",
             repetitions, full_ms, selected_ms, full_ms / selected_ms);
     }
 

@@ -17,7 +17,40 @@ impl Scene3dRuntime {
 
         Self::load_scene_value(scene)
     }
+    pub fn load_for_authoring_from_asset(
+        logical_path: &str,
+    ) -> Result<(Self, Scene3dLoadReport), String> {
+        let bytes =
+            host_runtime::call_service(ASSET_SERVICE, "asset.text_v1", logical_path.as_bytes())?;
+        let scene: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        Self::load_scene_value_mode(scene, true)
+    }
     pub(super) fn load_scene_value(scene: Value) -> Result<(Self, Scene3dLoadReport), String> {
+        Self::load_scene_value_mode(scene, false)
+    }
+    fn load_scene_value_mode(
+        mut scene: Value,
+        authoring: bool,
+    ) -> Result<(Self, Scene3dLoadReport), String> {
+        newviso_scene_document::validate_scene(
+            &scene,
+            newviso_scene_document::SceneTypeRegistry::builtin(),
+        )?;
+        let mut authoring_entity_ids = if authoring {
+            vec![None; scene["entities"].as_array().expect("validated scene").len()]
+        } else {
+            vec![]
+        };
+        if authoring {
+            for (i, e) in scene["entities"]
+                .as_array_mut()
+                .expect("validated scene")
+                .iter_mut()
+                .enumerate()
+            {
+                e["newviso_editor_source_index"] = json!(i);
+            }
+        }
         let mut portal_visibility = PortalVisibilityGraph::from_scene_value(&scene)?;
         // Keep authored root data before the scene provider normalizes ECS records.
         let water_config = scene.get("water").cloned().unwrap_or(Value::Null);
@@ -51,6 +84,7 @@ impl Scene3dRuntime {
             .and_then(Value::as_array)
             .ok_or_else(|| format!("Flecs scene snapshot has no entities: {snapshot}"))?;
 
+        let mut character_bindings=BTreeMap::new();
         let mut camera_record: Option<&Value> = None;
         let mut camera_entity_id: Option<u64> = None;
         let mut mesh_records: Vec<(u64, &Value)> = Vec::new();
@@ -70,6 +104,21 @@ impl Scene3dRuntime {
                 .and_then(Value::as_u64)
                 .unwrap_or((snapshot_index + 1) as u64);
 
+            if let Some(value)=record.get("character") {
+                if let Some(binding)=SceneCharacterBinding::parse(value)? {character_bindings.insert(stable_id,std::sync::Arc::new(binding));}
+            }
+            if authoring {
+                let index = record["newviso_editor_source_index"]
+                    .as_u64()
+                    .ok_or("Scene provider did not retain the editor source identity")?
+                    as usize;
+                let slot = authoring_entity_ids
+                    .get_mut(index)
+                    .ok_or("Invalid editor source identity from scene provider")?;
+                if slot.replace(stable_id).is_some() {
+                    return Err("Duplicate editor source identity from scene provider".into());
+                }
+            }
             match record.get("kind").and_then(Value::as_str) {
                 Some("camera") if camera_record.is_none() => {
                     camera_record = Some(record);
@@ -81,6 +130,9 @@ impl Scene3dRuntime {
             }
         }
 
+        if authoring && authoring_entity_ids.iter().any(Option::is_none) {
+            return Err("Scene provider lost an editor entity binding".into());
+        }
         let camera_record =
             camera_record.ok_or_else(|| "NewViso scene snapshot has no camera".to_owned())?;
         let mesh_record = mesh_records
@@ -162,7 +214,7 @@ impl Scene3dRuntime {
         let mut cubes = Vec::with_capacity(mesh_records.len());
         let mut terrain_meshes = BTreeMap::new();
         let mut terrain_texture_paths: Option<[String; 5]> = None;
-        let mut water_texture_paths: Option<[String;5]> = None;
+        let mut water_texture_paths: Option<[String; 5]> = None;
         let mut water_render_slots = BTreeSet::new();
         let mut parent_links = Vec::<(SceneEntityId, SceneEntityId)>::new();
         for (stable_id, record) in mesh_records {
@@ -262,21 +314,32 @@ impl Scene3dRuntime {
                 base_color: read_color4(material, "base_color", [1.0, 1.0, 1.0, 1.0])?,
             };
             let render_slot = cubes.len();
-            if record.pointer("/material/water_surface").and_then(Value::as_bool)==Some(true) {
+            if record
+                .pointer("/material/water_surface")
+                .and_then(Value::as_bool)
+                == Some(true)
+            {
                 water_render_slots.insert(render_slot);
                 {
-                    let maps=record.pointer("/material/water_textures").unwrap_or(&Value::Null);
-                    let keys=["normal_a","normal_b","foam","fog","noise"];
-                    let mut paths=Vec::with_capacity(5);
+                    let maps = record
+                        .pointer("/material/water_textures")
+                        .unwrap_or(&Value::Null);
+                    let keys = ["normal_a", "normal_b", "foam", "fog", "noise"];
+                    let mut paths = Vec::with_capacity(5);
                     for key in keys {
-                        let path=maps.get(key).and_then(Value::as_str)
+                        let path = maps
+                            .get(key)
+                            .and_then(Value::as_str)
                             .filter(|v| !v.trim().is_empty())
                             .map(str::to_owned)
-                            .unwrap_or_else(||format!("textures/environment/water/{key}.dds"));
+                            .unwrap_or_else(|| format!("textures/environment/water/{key}.dds"));
                         paths.push(path);
                     }
-                    water_texture_paths=Some(paths.try_into()
-                        .map_err(|_|"water requires five authored textures")?);
+                    water_texture_paths = Some(
+                        paths
+                            .try_into()
+                            .map_err(|_| "water requires five authored textures")?,
+                    );
                 }
             }
             if primitive == "heightfield" {
@@ -284,29 +347,39 @@ impl Scene3dRuntime {
                     let keys = ["grass", "sand", "rock", "soil", "wood"];
                     let mut paths = Vec::with_capacity(keys.len());
                     for key in keys {
-                        let path = maps.get(key).and_then(Value::as_str)
+                        let path = maps
+                            .get(key)
+                            .and_then(Value::as_str)
                             .filter(|value| !value.trim().is_empty())
                             .ok_or_else(|| format!("terrain texture '{key}' missing"))?;
                         paths.push(path.to_owned());
                     }
-                    let arr: [String; 5] = paths.try_into()
+                    let arr: [String; 5] = paths
+                        .try_into()
                         .map_err(|_| "terrain textures require five files")?;
                     terrain_texture_paths = Some(arr);
                 }
             }
             let heightfield = if primitive == "heightfield" {
                 Some(heightfield::HeightfieldPatch::from_record(
-                    stable_id, record, cube.position, cube.scale, cube.base_color
+                    stable_id,
+                    record,
+                    cube.position,
+                    cube.scale,
+                    cube.base_color,
                 )?)
-            } else { None };
+            } else {
+                None
+            };
             let bounds = if let Some(patch) = &heightfield {
                 let mut bounds = Aabb {
-                    min:[f32::MAX;3], max:[f32::MIN;3]
+                    min: [f32::MAX; 3],
+                    max: [f32::MIN; 3],
                 };
                 for xyz in &patch.physics_vertices {
                     for i in 0..3 {
-                        bounds.min[i]=bounds.min[i].min(xyz[i]);
-                        bounds.max[i]=bounds.max[i].max(xyz[i]);
+                        bounds.min[i] = bounds.min[i].min(xyz[i]);
+                        bounds.max[i] = bounds.max[i].max(xyz[i]);
                     }
                 }
                 bounds
@@ -478,26 +551,32 @@ impl Scene3dRuntime {
             mesh_name,
         };
 
-        let mut water_simulation=crate::water::WaterSimulation::default();
+        let mut water_simulation = crate::water::WaterSimulation::default();
         if !water_render_slots.is_empty() {
-            let profile = host_runtime::call_service(ASSET_SERVICE, "asset.raw_bytes_v1",
-                b"environment/water/defaults.json").map_err(|e|format!("shared water profile: {e}"))?;
-            let defaults: Value = serde_json::from_slice(&profile).map_err(|e|e.to_string())?;
+            let profile = host_runtime::call_service(
+                ASSET_SERVICE,
+                "asset.raw_bytes_v1",
+                b"environment/water/defaults.json",
+            )
+            .map_err(|e| format!("shared water profile: {e}"))?;
+            let defaults: Value = serde_json::from_slice(&profile).map_err(|e| e.to_string())?;
             water_simulation.configure_optics(&defaults)?;
         }
         water_simulation.configure_regions(&water_config)?;
         water_simulation.configure_optics(&water_config)?;
-        water_simulation.enabled=!water_render_slots.is_empty();
+        water_simulation.enabled = !water_render_slots.is_empty();
         Ok((
             Self {
                 title,
                 camera_entity_id,
+                authoring_entity_ids,
+                editor_camera_detached: authoring,
                 camera,
                 orbit,
                 render_policy: RenderPolicy::default(),
                 cubes,
                 terrain_meshes,
-                snow_cap_depths:BTreeMap::new(),
+                snow_cap_depths: BTreeMap::new(),
                 terrain_texture_paths,
                 terrain_gpu_material: None,
                 water_texture_paths,
@@ -511,6 +590,9 @@ impl Scene3dRuntime {
                 entity_skeletons: BTreeMap::new(),
                 joint_attachments: BTreeMap::new(),
                 arm_ik_constraints: BTreeMap::new(),
+                protective_arm_ik_constraints: BTreeMap::new(),
+                leg_ik_constraints: BTreeMap::new(),
+                character_bindings,
                 animation_skinning_pool: animation_skinning::SkinningWorkerPool::new()?,
                 animation_skinning_in_flight: BTreeSet::new(),
                 main_view_mesh_visibility: Default::default(),
@@ -568,7 +650,7 @@ impl Scene3dRuntime {
                 weather_wetness_external: false,
                 weather_lens_enabled: false,
                 weather_outdoor_exposure: 1.0,
-            weather_physical_shelter: false,
+                weather_physical_shelter: false,
                 sky_time_seconds: 0.0,
                 sky_time_scale: 1.0,
                 sky_cloud_noise_phase: [1.0, 1.0],

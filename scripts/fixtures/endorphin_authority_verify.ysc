@@ -1,0 +1,73 @@
+import * as Game from './default_game_base.ysc';
+import {createRuntimeSnapshotDecoder} from './snapshot_delta.ysc';
+const decode=createRuntimeSnapshotDecoder(),id='endorphin.test.enemy';
+let stage=0,since=0,profile:any=null,attacks=0,hits=0,evidence:any={};
+const encode=(v:any)=>JSON.stringify(v,(_k:string,v:any)=>typeof v==='bigint'?String(v):v);
+function check(ok:any,msg:string):void{if(!ok)throw new Error('ENDORPHIN_AUTHORITY '+msg);}
+function next(n:number,t:number,cmd:any[]):void{stage=n;since=t;cmd.push({op:'console.write',message:'ENDORPHIN_AUTHORITY_STAGE '+n});}
+function guard(cmd:any[],enabled:boolean):void{cmd.push({op:'ped.melee.guard',actor_id:id,enabled,direction:[0,0,-1]});}
+export function on_start(raw:any):any{return Game.on_start(decode(raw));}
+export function on_frame(raw:any):any{
+ const p=decode(raw);p.frame={...p.frame,platform:{...p.frame.platform,focused:false}};
+ const out:any=Game.on_frame(p),cmd=out.commands,r=p.runtime,t=Number(r.peds?.world_seconds??p.elapsed_seconds);
+ const ped=r.peds?.peds?.find((v:any)=>v.profile.actor_id===id);
+ const body=r.peds?.physics?.bodies?.find((v:any)=>v.actor_id===id),m=ped?.melee;
+ if(!since)since=t;
+ if(stage===0&&ped&&body?.controlled&&t>1){
+  profile={...ped.profile,combat:null,melee:{},armed:false,block_events:true,max_health:100,armour:0};
+  cmd.push({op:'ped.upsert',profile,reset:true},{op:'agent.tasks.clear',agent_id:profile.agent_id},
+   {op:'items.inventory.unequip',owner_id:id,slot:'hands'});next(1,t,cmd);
+ }else if(stage===1&&body.controlled&&t-since>.3){
+  guard(cmd,true);next(2,t,cmd);
+ }else if(stage===2&&m?.blocking){
+  evidence.upright_guard=true;attacks=m.attacks;hits=m.hits;
+  cmd.push({op:'ped.endorphin.activate',actor_id:id,direction:[1,0,0],impulse:0});
+  guard(cmd,true);
+  cmd.push({op:'ped.melee.attack',actor_id:id,direction:[0,0,-1]});next(3,t,cmd);
+ }else if(stage===3&&body?.ragdoll?.active&&t-since>.1){
+  check(!m.blocking,'articulated body retained an upright combat guard '+encode({m,authority:body.authority}));
+  check(m.attacks===attacks&&m.hits===hits,'voluntary attack entered physical ownership');
+  check(body.authority?.owner==='endorphin'&&!body.authority?.locomotion&&!body.authority?.combat&&!body.controlled,
+   'physical ownership disagrees with movement/combat '+encode(body.authority));
+  evidence.physical_rejects_guard_and_attack=true;
+  cmd.push({op:'ped.upsert',profile,reset:true});next(4,t,cmd);
+ }else if(stage===4&&body?.controlled&&!body.ragdoll?.active&&t-since>.3){
+  check(body.authority?.owner==='locomotion'&&body.authority.combat,'reset did not return control');
+  cmd.push({op:'ped.melee.attack',actor_id:id,direction:[0,0,-1]});next(5,t,cmd);
+ }else if(stage===5&&m?.phase==='windup'){
+  attacks=m.attacks;hits=m.hits;
+  cmd.push({op:'ped.endorphin.activate',actor_id:id,direction:[1,0,0],impulse:0});next(6,t,cmd);
+ }else if(stage===6&&body?.ragdoll?.active&&t-since>.1){
+  check(m.contact_consumed&&!m.blocking&&m.hits===hits,'transfer retained a pending strike '+encode(m));
+  check(m.attacks===attacks,'physical ownership started another attack');
+  evidence.transfer_cancels_inflight_strike=true;
+  cmd.push({op:'ped.damage',actor_id:id,source:'authority.proof',amount:1000,origin:[0,1,0]});
+  guard(cmd,true);next(7,t,cmd);
+ }else if(stage===7&&ped.dead&&body.ragdoll?.active&&t-since>.1){
+  check(body.authority?.owner==='passive_physics'&&!body.authority?.combat&&!body.controlled&&!m.blocking,
+   'death retained voluntary authority '+encode({authority:body.authority,m}));
+  evidence.death_is_passive=true;
+  cmd.push({op:'ped.upsert',profile,reset:true});next(8,t,cmd);
+ }else if(stage===8&&body?.controlled&&!body.ragdoll?.active&&t-since>.3){
+  cmd.push({op:'ped.damage',actor_id:id,source:'authority.proof',amount:1,origin:[0,1,-5],hit_part:'torso'});next(9,t,cmd);
+ }else if(stage===9&&body.hit_reaction){
+  check(body.controlled&&body.authority?.owner==='locomotion'&&body.authority?.locomotion&&!body.authority?.combat,
+   'supported flinch disagrees about ownership '+encode(body.authority));
+  guard(cmd,true);evidence.supported_flinch_keeps_locomotion=true;next(10,t,cmd);
+ }else if(stage===10&&t-since>.05){
+  check(!m.blocking,'flinching body accepted combat guard');
+  next(11,t,cmd);
+ }else if(stage===11&&!body.hit_reaction&&body.controlled&&t-since>.4){
+  check(body.authority.combat,'settled body did not recover combat authority');
+  guard(cmd,true);next(12,t,cmd);
+ }else if(stage===12&&m.blocking){
+  evidence.authority_returns_after_recovery=true;
+  cmd.push({op:'console.write',message:'ENDORPHIN_VERIFY_EVIDENCE '+encode(evidence)},
+   {op:'console.write',message:'ENDORPHIN_VERIFY_PASS authority guard action transfer death reset supported_flinch'});
+  out.exit_requested=true;stage=13;
+ }
+ check(stage===13||t-since<12,'timeout stage '+stage+' '+encode({ped,body}));
+ return out;
+}
+export function on_event(p:any):any{return Game.on_event(p);}
+export function on_shutdown(p:any):any{return Game.on_shutdown(p);}

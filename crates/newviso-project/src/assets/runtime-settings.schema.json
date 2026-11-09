@@ -1,0 +1,230 @@
+{
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "newviso.project.runtime.v1"
+    },
+    "window": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 0,
+          "exclusiveMinimum": 0
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 0,
+          "exclusiveMinimum": 0
+        }
+      },
+      "required": [
+        "width",
+        "height"
+      ],
+      "additionalProperties": false
+    },
+    "camera": {
+      "type": "object",
+      "properties": {
+        "rotate_sensitivity": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "zoom_sensitivity": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "min_distance": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "max_distance": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "rotate_button": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "min_pitch_degrees": {
+          "type": "number",
+          "exclusiveMinimum": -90,
+          "exclusiveMaximum": 90
+        },
+        "max_pitch_degrees": {
+          "type": "number",
+          "exclusiveMinimum": -90,
+          "exclusiveMaximum": 90
+        }
+      },
+      "required": [
+        "rotate_sensitivity",
+        "zoom_sensitivity",
+        "min_distance",
+        "max_distance",
+        "rotate_button",
+        "min_pitch_degrees",
+        "max_pitch_degrees"
+      ],
+      "additionalProperties": false
+    },
+    "streaming": {
+      "type": "object",
+      "properties": {
+        "max_resident_mb": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "MiB. Zero means unlimited."
+        },
+        "max_loads_per_tick": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Zero means unlimited."
+        },
+        "parallel_loads": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        },
+        "max_model_materializations_per_frame": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_source_mb_per_tick": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "eviction_grace_frames": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed_retry_frames": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dependency_priority_scale": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "max_resident_mb",
+        "max_loads_per_tick",
+        "parallel_loads",
+        "max_model_materializations_per_frame",
+        "max_source_mb_per_tick",
+        "eviction_grace_frames",
+        "failed_retry_frames",
+        "dependency_priority_scale"
+      ],
+      "additionalProperties": false
+    },
+    "scripting": {
+      "type": "object",
+      "properties": {
+        "event_queue_capacity": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "world_snapshot_interval_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 5
+        }
+      },
+      "required": [
+        "event_queue_capacity",
+        "world_snapshot_interval_seconds"
+      ],
+      "additionalProperties": false
+    },
+    "scheduling": {
+      "type": "object",
+      "properties": {
+        "max_physics_frame_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "scene_focus_observer": {
+          "type": "boolean"
+        },
+        "native_navigation_enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "max_physics_frame_seconds",
+        "scene_focus_observer",
+        "native_navigation_enabled"
+      ],
+      "additionalProperties": false
+    },
+    "world_persistence": {
+      "type": "object",
+      "properties": {
+        "save_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "load_on_start": {
+          "type": "boolean"
+        },
+        "save_on_shutdown": {
+          "type": "boolean"
+        },
+        "autosave_interval_seconds": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "variables": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Project-owned data. Individual consumers validate their own contracts."
+    },
+    "startup_commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "op"
+        ],
+        "properties": {
+          "op": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "window",
+    "camera",
+    "streaming",
+    "scripting",
+    "scheduling",
+    "world_persistence",
+    "variables",
+    "startup_commands"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NewViso runtime settings",
+  "description": "Complete effective runtime document. Layer files are partial documents with the same schema marker. Native validation additionally checks cross-field invariants and integer overflow."
+}

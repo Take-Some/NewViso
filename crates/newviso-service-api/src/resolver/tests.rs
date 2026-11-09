@@ -395,8 +395,8 @@ fn explanation_graph_reports_rejections_shadowing_and_score_breakdown() {
 fn preflight_rejection_is_preserved_by_shared_explanation_graph() {
     let candidate = candidate("render.format-mismatch", 1000).with_preflight_rejection(
         CompositionRejectionReason::new(CompositionRejectionKind::FormatMismatch)
-            .with_expected(".ytd")
-            .with_actual(".ydd"),
+            .with_expected(".texture")
+            .with_actual(".model"),
     );
     let plan = CompositionSolver::resolve([candidate]);
     assert!(plan.selected("engine.render").is_none());

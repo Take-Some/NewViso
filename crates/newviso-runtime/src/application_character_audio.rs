@@ -21,7 +21,12 @@ pub(super) struct CharacterMotionSample {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Gait { Idle, Walk, Run, Sprint }
+pub(super) enum Gait {
+    Idle,
+    Walk,
+    Run,
+    Sprint,
+}
 
 impl Gait {
     pub fn parse(text: &str) -> Option<Self> {
@@ -54,9 +59,14 @@ impl Gait {
 
     /// Animation playback is adjusted only within a natural-looking range:
     /// never use the previous 0.2..4.0 rate that overcranked Abby's movement.
+    #[cfg(test)]
     pub fn playback_rate(self, speed: f32, duration: f32) -> Option<f32> {
-        if self == Self::Idle || !speed.is_finite() || speed < 0.12
-            || !duration.is_finite() || duration <= 0.0 {
+        if self == Self::Idle
+            || !speed.is_finite()
+            || speed < 0.12
+            || !duration.is_finite()
+            || duration <= 0.0
+        {
             return None;
         }
         // Imported .ycd locomotion clips may contain MANY alternating
@@ -83,7 +93,11 @@ pub(super) struct ClipPhase {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum SoundKind { Footstep, Lift, Landing }
+pub(super) enum SoundKind {
+    Footstep,
+    Lift,
+    Landing,
+}
 
 #[derive(Clone, Debug)]
 pub(super) struct ContactSound {
@@ -111,7 +125,6 @@ struct ActorContacts {
     foot_samples_active: bool,
     clock_seconds: f32,
     last_contact_seconds: [Option<f32>; 2],
-
 }
 
 #[derive(Default)]
@@ -119,8 +132,19 @@ pub(super) struct CharacterAudioRuntime {
     actors: BTreeMap<String, ActorContacts>,
 }
 
-fn cue(dictionary: &str, surface: &str, action: &str) -> String {
-    format!("{dictionary}@{surface}_{action}")
+/// XVAG keeps samples independent from event selection. YSCD is accepted only
+/// for surfaces that have not yet been exported into native XVAG clip assets.
+pub(super) fn sound_asset(dictionary: &str, surface: &str, action: &str, seed: u64) -> String {
+    if dictionary.to_ascii_lowercase().ends_with(".yscd") {
+        return format!("{dictionary}@{surface}_{action}");
+    }
+    let variants: u64 = match action {
+        "land" => 5,
+        "lift" | "walk" | "run" | "sprint" => 8,
+        _ => 1,
+    };
+    let take = seed % variants + 1;
+    format!("{dictionary}/{surface}/{action}_{take:02}.xvag")
 }
 
 fn sound(
@@ -132,7 +156,7 @@ fn sound(
 ) -> ContactSound {
     ContactSound {
         kind,
-        cue: cue(&sample.dictionary, &sample.surface, action),
+        cue: sound_asset(&sample.dictionary, &sample.surface, action, seed),
         position: sample.position,
         seed,
         gain,
@@ -169,7 +193,13 @@ fn planted_feet(raised: &mut [bool; 2], feet: &[[f32; 3]; 2]) -> Vec<usize> {
 }
 
 impl CharacterAudioRuntime {
-    pub(super) fn remove(&mut self, actor_id: &str) { self.actors.remove(actor_id); }
+    pub(super) fn retain_actors(&mut self, active: impl Fn(&str) -> bool) {
+        self.actors.retain(|id, _| active(id));
+    }
+
+    pub(super) fn remove(&mut self, actor_id: &str) {
+        self.actors.remove(actor_id);
+    }
 
     pub(super) fn sample(
         &mut self,
@@ -180,13 +210,14 @@ impl CharacterAudioRuntime {
         let mut result = Vec::with_capacity(3);
         let valid_motion = sample.delta_seconds.is_finite()
             && (0.0..=0.25).contains(&sample.delta_seconds)
-            && sample.speed.is_finite() && sample.speed >= 0.0;
+            && sample.speed.is_finite()
+            && sample.speed >= 0.0;
         let previous_position = actor.position.replace(sample.position);
         let displacement = previous_position.map(|previous| {
-            (sample.position[0] - previous[0])
-                .hypot(sample.position[2] - previous[2])
+            (sample.position[0] - previous[0]).hypot(sample.position[2] - previous[2])
         });
-        let real_travel = displacement.filter(|distance| distance.is_finite() && *distance <= 2.25)
+        let real_travel = displacement
+            .filter(|distance| distance.is_finite() && *distance <= 2.25)
             .unwrap_or(0.0);
         let stationary = sample.gait == Gait::Idle || sample.speed < 0.12;
 
@@ -199,7 +230,13 @@ impl CharacterAudioRuntime {
                     "dirt" | "metal" | "stone" | "water" | "wood" => "lift",
                     _ => "walk",
                 };
-                result.push(sound(sample, SoundKind::Lift, lift_action, actor.step_index, 1.0));
+                result.push(sound(
+                    sample,
+                    SoundKind::Lift,
+                    lift_action,
+                    actor.step_index,
+                    1.0,
+                ));
                 actor.landing_armed = true;
             }
             actor.airborne = true;
@@ -228,8 +265,13 @@ impl CharacterAudioRuntime {
         }
 
         if sample.landed && actor.airborne && actor.landing_armed {
-            result.push(sound(sample, SoundKind::Landing, "land", actor.step_index,
-                (0.72 + sample.impact_speed.abs() * 0.08).clamp(0.65, 1.35)));
+            result.push(sound(
+                sample,
+                SoundKind::Landing,
+                "land",
+                actor.step_index,
+                (0.72 + sample.impact_speed.abs() * 0.08).clamp(0.65, 1.35),
+            ));
         }
         if sample.landed {
             actor.airborne = false;
@@ -265,9 +307,12 @@ impl CharacterAudioRuntime {
             Gait::Sprint => 0.10,
         };
 
-        let compatible = playback.filter(|p| p.duration.is_finite()
-            && p.duration > 0.0 && p.time.is_finite()
-            && clip_has_gait(&p.name.to_ascii_lowercase(), sample.gait));
+        let compatible = playback.filter(|p| {
+            p.duration.is_finite()
+                && p.duration > 0.0
+                && p.time.is_finite()
+                && clip_has_gait(&p.name.to_ascii_lowercase(), sample.gait)
+        });
 
         if let Some(clip) = compatible {
             if let Some(feet) = &clip.feet {
@@ -281,12 +326,18 @@ impl CharacterAudioRuntime {
                     planted_feet(&mut actor.foot_raised, feet)
                 };
                 for foot in planted {
-                    if actor.last_contact_seconds[foot].is_some_and(|last|
-                        actor.clock_seconds - last < min_contact_interval) {
+                    if actor.last_contact_seconds[foot]
+                        .is_some_and(|last| actor.clock_seconds - last < min_contact_interval)
+                    {
                         continue;
                     }
-                    let mut hit = sound(sample, SoundKind::Footstep,
-                        sample.gait.action(), actor.step_index, 1.0);
+                    let mut hit = sound(
+                        sample,
+                        SoundKind::Footstep,
+                        sample.gait.action(),
+                        actor.step_index,
+                        1.0,
+                    );
                     hit.position = feet[foot];
                     hit.source = "foot_joint";
                     result.push(hit);
@@ -319,12 +370,18 @@ impl CharacterAudioRuntime {
         while actor.distance_remainder >= fallback_threshold && emitted < 4 {
             actor.distance_remainder -= fallback_threshold;
             let foot = (actor.step_index % 2) as usize;
-            if actor.last_contact_seconds[foot].is_some_and(|last|
-                actor.clock_seconds - last < min_contact_interval) {
+            if actor.last_contact_seconds[foot]
+                .is_some_and(|last| actor.clock_seconds - last < min_contact_interval)
+            {
                 continue;
             }
-            let mut hit = sound(sample, SoundKind::Footstep,
-                sample.gait.action(), actor.step_index, 1.0);
+            let mut hit = sound(
+                sample,
+                SoundKind::Footstep,
+                sample.gait.action(),
+                actor.step_index,
+                1.0,
+            );
             hit.source = "travel_distance";
             result.push(hit);
             actor.step_index = actor.step_index.wrapping_add(1);
@@ -343,21 +400,69 @@ mod tests {
     use super::*;
     fn sample(speed: f32, grounded: bool, gait: Gait, x: f32) -> CharacterMotionSample {
         CharacterMotionSample {
-            actor_id: "player".into(), scene_id: "player.character".into(),
-            position: [x, 0.0, 0.0], grounded,
-            jumped: false, landed: false, speed, gait,
-            surface: "stone".into(), dictionary: "audio/footsteps/footsteps.yscd".into(),
-            delta_seconds: 1.0 / 60.0, impact_speed: 0.0,
+            actor_id: "player".into(),
+            scene_id: "player.character".into(),
+            position: [x, 0.0, 0.0],
+            grounded,
+            jumped: false,
+            landed: false,
+            speed,
+            gait,
+            surface: "stone".into(),
+            dictionary: "audio/footsteps".into(),
+            delta_seconds: 1.0 / 60.0,
+            impact_speed: 0.0,
         }
+    }
+
+    #[test]
+    fn removed_actor_cannot_reuse_landing_or_stride_state() {
+        let mut runtime = CharacterAudioRuntime::default();
+        runtime.sample(&sample(1.5, true, Gait::Walk, 0.0), None);
+        let mut air = sample(0.0, false, Gait::Idle, 0.0);
+        air.jumped = true;
+        assert_eq!(runtime.sample(&air, None).len(), 1);
+        runtime.retain_actors(|_| false);
+        assert!(runtime.actors.is_empty());
+        let mut respawn = sample(0.0, true, Gait::Idle, 0.0);
+        respawn.landed = true;
+        assert!(runtime.sample(&respawn, None).is_empty());
+    }
+
+    #[test]
+    fn native_footstep_selection_is_seeded_xvag_not_legacy_cue() {
+        assert_eq!(
+            sound_asset("audio/footsteps", "stone", "walk", 0),
+            "audio/footsteps/stone/walk_01.xvag"
+        );
+        assert_eq!(
+            sound_asset("audio/footsteps", "stone", "walk", 8),
+            "audio/footsteps/stone/walk_01.xvag"
+        );
+        assert_eq!(
+            sound_asset("audio/footsteps", "stone", "land", 4),
+            "audio/footsteps/stone/land_05.xvag"
+        );
+        assert_eq!(
+            sound_asset("audio/footsteps/footsteps.yscd", "wood", "walk", 0),
+            "audio/footsteps/footsteps.yscd@wood_walk"
+        );
     }
 
     #[test]
     fn physical_walk_and_run_cadence_is_distance_based() {
         let count = |gait, speed| {
             let mut runtime = CharacterAudioRuntime::default();
-            (0..600).map(|frame| {
-                runtime.sample(&sample(speed, true, gait, frame as f32 * speed / 60.0), None).len()
-            }).sum::<usize>()
+            (0..600)
+                .map(|frame| {
+                    runtime
+                        .sample(
+                            &sample(speed, true, gait, frame as f32 * speed / 60.0),
+                            None,
+                        )
+                        .len()
+                })
+                .sum::<usize>()
         };
         let walk = count(Gait::Walk, 1.5);
         let run = count(Gait::Run, 3.0);
@@ -372,7 +477,8 @@ mod tests {
         let mut input = sample(2.8, true, Gait::Run, 0.0);
         let clip = |time, l, r| ClipPhase {
             name: "abby-mm-explore-run-loop-fw".into(),
-            time, duration: 2.4,
+            time,
+            duration: 2.4,
             feet: Some([[0.0, l, 0.0], [0.25, r, 0.0]]),
         };
         // Eight independent alternating bone plants inside ONE clip cycle.
@@ -380,28 +486,38 @@ mod tests {
         for n in 0..17 {
             let i = n / 2;
             let raised_left = n % 4 < 2;
-            let (left,right) = if raised_left {(0.10,0.0)} else {(0.0,0.10)};
+            let (left, right) = if raised_left {
+                (0.10, 0.0)
+            } else {
+                (0.0, 0.10)
+            };
             input.position[0] = n as f32 * 0.17;
             input.delta_seconds = 0.16;
-            let sounds = runtime.sample(&input, Some(&clip(n as f32 * 0.12,left,right)));
+            let sounds = runtime.sample(&input, Some(&clip(n as f32 * 0.12, left, right)));
             contacts += sounds.len();
             assert!(sounds.len() <= 1, "duplicate foot contact");
-            let _=i;
+            let _ = i;
         }
-        assert!(contacts >= 6, "expected multiple strides within one long clip, got {contacts}");
+        assert!(
+            contacts >= 6,
+            "expected multiple strides within one long clip, got {contacts}"
+        );
     }
 
     #[test]
     fn gait_pacing_does_not_depend_on_clip_length() {
-        assert_eq!(Gait::Walk.playback_rate(1.5,2.4), Some(1.0));
-        assert_eq!(Gait::Run.playback_rate(3.0,2.4), Some(1.0));
-        assert_eq!(Gait::Sprint.playback_rate(4.6,2.4), Some(1.0));
-        assert!(Gait::Walk.playback_rate(1.2,2.4).unwrap()
-            < Gait::Walk.playback_rate(1.8,2.4).unwrap());
-        assert!(Gait::Run.playback_rate(2.5,2.4).unwrap()
-            < Gait::Run.playback_rate(3.5,2.4).unwrap());
-        for gait in [Gait::Walk,Gait::Run,Gait::Sprint] {
-            assert!((0.70..=1.30).contains(&gait.playback_rate(15.0,100.0).unwrap()));
+        assert_eq!(Gait::Walk.playback_rate(1.5, 2.4), Some(1.0));
+        assert_eq!(Gait::Run.playback_rate(3.0, 2.4), Some(1.0));
+        assert_eq!(Gait::Sprint.playback_rate(4.6, 2.4), Some(1.0));
+        assert!(
+            Gait::Walk.playback_rate(1.2, 2.4).unwrap()
+                < Gait::Walk.playback_rate(1.8, 2.4).unwrap()
+        );
+        assert!(
+            Gait::Run.playback_rate(2.5, 2.4).unwrap() < Gait::Run.playback_rate(3.5, 2.4).unwrap()
+        );
+        for gait in [Gait::Walk, Gait::Run, Gait::Sprint] {
+            assert!((0.70..=1.30).contains(&gait.playback_rate(15.0, 100.0).unwrap()));
         }
     }
 
@@ -410,70 +526,87 @@ mod tests {
         let mut runtime = CharacterAudioRuntime::default();
         let mut input = sample(2.8, true, Gait::Run, 0.0);
         let clip = |time| ClipPhase {
-            name: "abby-run-loop".into(), time, duration: 2.4,
+            name: "abby-run-loop".into(),
+            time,
+            duration: 2.4,
             feet: Some([[0.0, 0.005, 0.0], [0.2, 0.0, 0.0]]),
         };
         // Presentable but planted, no new foot lift. The old fallback would
         // fire after every 1.3 strides at arbitrary mesh positions.
         for frame in 0..160 {
             input.position[0] = frame as f32 * 2.8 / 60.0;
-            assert!(runtime.sample(&input, Some(&clip(frame as f32 / 60.0))).is_empty());
+            assert!(runtime
+                .sample(&input, Some(&clip(frame as f32 / 60.0)))
+                .is_empty());
         }
     }
 
     #[test]
     fn first_foot_plant_after_lift_emits_once() {
         let mut runtime = CharacterAudioRuntime::default();
-        let input = sample(1.5,true,Gait::Walk,0.0);
-        let pose = |time,left,right| ClipPhase{
-            name: "abby-walk-loop".into(), time, duration:2.5,
-            feet:Some([[0.0,left,0.0],[0.2,right,0.0]])};
-        assert!(runtime.sample(&input,Some(&pose(0.0,0.1,0.0))).is_empty());
-        assert_eq!(runtime.sample(&input,Some(&pose(0.1,0.0,0.1))).len(),1);
-        assert!(runtime.sample(&input,Some(&pose(0.12,0.0,0.1))).is_empty());
+        let input = sample(1.5, true, Gait::Walk, 0.0);
+        let pose = |time, left, right| ClipPhase {
+            name: "abby-walk-loop".into(),
+            time,
+            duration: 2.5,
+            feet: Some([[0.0, left, 0.0], [0.2, right, 0.0]]),
+        };
+        assert!(runtime
+            .sample(&input, Some(&pose(0.0, 0.1, 0.0)))
+            .is_empty());
+        assert_eq!(runtime.sample(&input, Some(&pose(0.1, 0.0, 0.1))).len(), 1);
+        assert!(runtime
+            .sample(&input, Some(&pose(0.12, 0.0, 0.1)))
+            .is_empty());
     }
 
     #[test]
     fn no_startup_landing_or_idle_footsteps() {
-        let mut runtime=CharacterAudioRuntime::default();
+        let mut runtime = CharacterAudioRuntime::default();
         for _ in 0..3 {
-            assert!(runtime.sample(&sample(0.0,false,Gait::Idle,0.0),None).is_empty());
+            assert!(runtime
+                .sample(&sample(0.0, false, Gait::Idle, 0.0), None)
+                .is_empty());
         }
-        let mut landed=sample(0.0,true,Gait::Idle,0.0);
-        landed.landed=true;
-        assert!(runtime.sample(&landed,None).is_empty());
-        assert!(runtime.sample(&landed,None).is_empty());
+        let mut landed = sample(0.0, true, Gait::Idle, 0.0);
+        landed.landed = true;
+        assert!(runtime.sample(&landed, None).is_empty());
+        assert!(runtime.sample(&landed, None).is_empty());
     }
 
     #[test]
     fn jump_and_real_landing_only_once() {
-        let mut runtime=CharacterAudioRuntime::default();
-        runtime.sample(&sample(0.0,true,Gait::Idle,0.0),None);
-        let mut air=sample(3.0,false,Gait::Run,0.0);
-        air.jumped=true;
-        assert_eq!(runtime.sample(&air,None).len(),1);
-        air.jumped=false;
-        assert!(runtime.sample(&air,None).is_empty());
-        let mut landed=sample(0.0,true,Gait::Idle,0.0);
-        landed.landed=true;
-        assert_eq!(runtime.sample(&landed,None).len(),1);
-        assert!(runtime.sample(&landed,None).is_empty());
+        let mut runtime = CharacterAudioRuntime::default();
+        runtime.sample(&sample(0.0, true, Gait::Idle, 0.0), None);
+        let mut air = sample(3.0, false, Gait::Run, 0.0);
+        air.jumped = true;
+        assert_eq!(runtime.sample(&air, None).len(), 1);
+        air.jumped = false;
+        assert!(runtime.sample(&air, None).is_empty());
+        let mut landed = sample(0.0, true, Gait::Idle, 0.0);
+        landed.landed = true;
+        assert_eq!(runtime.sample(&landed, None).len(), 1);
+        assert!(runtime.sample(&landed, None).is_empty());
     }
 
     #[test]
     fn teleport_does_not_emit_catchup_sounds() {
-        let mut runtime=CharacterAudioRuntime::default();
-        runtime.sample(&sample(1.5,true,Gait::Walk,0.0),None);
-        assert!(runtime.sample(&sample(1.5,true,Gait::Walk,1000.0),None).is_empty());
+        let mut runtime = CharacterAudioRuntime::default();
+        runtime.sample(&sample(1.5, true, Gait::Walk, 0.0), None);
+        assert!(runtime
+            .sample(&sample(1.5, true, Gait::Walk, 1000.0), None)
+            .is_empty());
     }
 
     #[test]
     fn a_lost_single_physics_contact_is_not_landing() {
-        let mut runtime=CharacterAudioRuntime::default();
-        runtime.sample(&sample(0.0,true,Gait::Idle,0.0),None);
-        assert!(runtime.sample(&sample(0.0,false,Gait::Idle,0.0),None).is_empty());
-        let mut landed=sample(0.0,true,Gait::Idle,0.0);
-        landed.landed=true;
-        assert!(runtime.sample(&landed,None).is_empty());
+        let mut runtime = CharacterAudioRuntime::default();
+        runtime.sample(&sample(0.0, true, Gait::Idle, 0.0), None);
+        assert!(runtime
+            .sample(&sample(0.0, false, Gait::Idle, 0.0), None)
+            .is_empty());
+        let mut landed = sample(0.0, true, Gait::Idle, 0.0);
+        landed.landed = true;
+        assert!(runtime.sample(&landed, None).is_empty());
     }
 }

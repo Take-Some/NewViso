@@ -25,28 +25,6 @@ impl WaterPhysics {
     }
 }
 
-pub(super) fn volume_and_extent(shape: CollisionShape) -> (f32, f32) {
-    match shape {
-        CollisionShape::Box { half_extents: h } => {
-            ((8.0 * h[0] * h[1] * h[2]).max(0.0), (2.0 * h[1]).max(0.0))
-        }
-        CollisionShape::Sphere { radius: r } => {
-            (4.0 * std::f32::consts::PI * r.powi(3) / 3.0, r * 2.0)
-        }
-        CollisionShape::Cylinder {
-            radius: r,
-            half_height: h,
-        } => (std::f32::consts::PI * r * r * (2.0 * h), 2.0 * h),
-        CollisionShape::Capsule {
-            radius: r,
-            half_height: h,
-        } => (
-            std::f32::consts::PI * r * r * (2.0 * h) + 4.0 * std::f32::consts::PI * r.powi(3) / 3.0,
-            2.0 * (h + r),
-        ),
-    }
-}
-
 /// Newton-seconds over one fixed dt; always applied at the body's buoyancy
 /// centre, never as a teleport / unconditional velocity overwrite.
 #[cfg(test)]

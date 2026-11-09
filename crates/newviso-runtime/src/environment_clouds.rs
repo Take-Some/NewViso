@@ -3,6 +3,7 @@ use super::*;
 pub(super) fn load_environment_atmospheric_clouds(
     config: &ProjectAtmosphericClouds,
 ) -> Result<AtmosphericCloudResources, String> {
+    let defaults=ProjectSkyEnvironment::default();
     let assets = AssetClient::new();
     let mut resources = builtin_resource_manager();
     let mut layers = Vec::with_capacity(config.layers.len());
@@ -96,7 +97,7 @@ pub(super) fn load_environment_atmospheric_clouds(
             .density_texture
             .as_deref()
             .or(layer.texture.as_deref())
-            .unwrap_or("textures/skydome.ytd@baseperlinnoise3channel");
+            .or(defaults.base_noise_texture.as_deref()).ok_or("sky defaults lack base noise texture")?;
         let density = load_cached_cloud_texture(&assets, &mut texture_cache, density_ref, false)?;
 
         let normal = if let Some(reference) = layer.normal_texture.as_deref() {

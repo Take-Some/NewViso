@@ -1,0 +1,87 @@
+import * as Game from './main.ysc';
+import {createRuntimeSnapshotDecoder} from './newviso/snapshot_delta.ysc';
+import {sceneDoorCommands} from './newviso/world/doors.ysc';
+const decode=createRuntimeSnapshotDecoder();
+let stage=0,since=0,leaf='',anchor='',q0:number[]=[],normal:number[]=[],hinge:number[]=[],oldCount=0,peak=0,peakAnchor=0,captured:any={},evidence:any={},hadContact=false,contactRadius=0;
+const encode=(v:any)=>JSON.stringify(v,(_k:string,v:any)=>typeof v==='bigint'?String(v):v);
+const rotate=([x,y,z,w]:number[],v:number[]):number[]=>{const t=[2*(y*v[2]-z*v[1]),2*(z*v[0]-x*v[2]),2*(x*v[1]-y*v[0])];return[v[0]+w*t[0]+y*t[2]-z*t[1],v[1]+w*t[1]+z*t[0]-x*t[2],v[2]+w*t[2]+x*t[1]-y*t[0]];};
+const mul=([x,y,z,w]:number[],[a,b,c,d]:number[]):number[]=>[w*a+x*d+y*c-z*b,w*b-x*c+y*d+z*a,w*c+x*b-y*a+z*d,w*d-x*a-y*b-z*c];
+function check(ok:any,msg:string):void{if(!ok)throw new Error('SCENE_HINGE '+msg);}
+function next(n:number,now:number,c:any[]):void{stage=n;since=now;c.push({op:'console.write',message:'SCENE_HINGE_STAGE '+n});}
+function capture(name:string,p:any,c:any[]):void{if(p.project.runtime.variables.scene_door_verify.capture&&!captured[name]){captured[name]=true;c.push({op:'console.write',message:'SCENE_HINGE_CAPTURE '+name});}}
+export function on_start(raw:any):any{return Game.on_start(decode(raw));}
+export function on_frame(raw:any):any {
+ const p=decode(raw);p.frame={...p.frame,platform:{...p.frame.platform,focused:false}};
+ const result:any=Game.on_frame(p),c=result.commands??(result.commands=[]),r=p.runtime,v=p.project.runtime.variables,probe=v.scene_door_verify;
+ const now=Number(r?.peds?.world_seconds??p.elapsed_seconds),settings=v.engine_doors,spec=settings.scene_doors.find((s:any)=>s.id.includes(probe.door));
+ const bindings=r?.physics?.scene_hinges?.bindings??[],record=bindings.find((b:any)=>b.name===spec.id),bodies=r?.physics?.bodies??[];
+ const body=bodies.find((b:any)=>String(b.entity_key)===leaf),player=bodies.find((b:any)=>Number(b.entity)===probe.player_body);
+ if(!since)since=now;
+ for(const b of bindings)check(!b.error,'binding failed '+encode(b));
+ if(record?.geometry){
+  const g=record.geometry;
+  normal=rotate(g.rotation,[0,0,Number(probe.side)]);
+  if(hinge.length===0)hinge=[...g.hinge_position];
+  const target=g.center;
+  c.push({op:'scene.camera.set',position:[target[0]+normal[0]*3+1,Math.max(target[1]+.7,1.8),target[2]+normal[2]*3+1],target:[target[0],target[1],target[2]],fov_y_degrees:55});
+ }
+ if(body&&q0.length){
+  const rel=mul([-q0[0],-q0[1],-q0[2],q0[3]],body.rotation),angle=2*Math.atan2(rel[1],rel[3]);
+  peak=Math.max(peak,Math.abs(angle));peakAnchor=Math.max(peakAnchor,Number(record?.anchor_separation??0));
+  check(peakAnchor<.03,'hinge separation '+peakAnchor+' '+encode({position:body.position,rotation:body.rotation,geometry:record.geometry}));
+ }
+ if(stage===0&&now>1){
+  check(r?.physics?.scene_hinges,'engine scene hinge binding is unavailable');
+  if(bindings.length===settings.scene_doors.length&&bindings.every((b:any)=>b.status==='active')&&player){
+   oldCount=bindings.length;leaf=String(record.entity_key);anchor=String(record.anchor_entity);q0=[...record.geometry.rotation];
+   evidence.count=oldCount;evidence.original_entity=leaf;evidence.original_asset=record.asset;evidence.original_position=record.source_position;
+   c.push({op:'console.write',message:'SCENE_HINGE_GEOMETRY '+encode(bindings)});next(1,now,c);
+  }
+ }else if(stage===1&&body&&now-since>.2){
+  check(peak<.08,'authored leaves should remain closed without contact '+peak);
+  capture('closed',p,c);
+  if(now-since>.7){
+   const g=record.geometry,local=g.child_pivot,half=g.half_extents;
+   const edge=local[0]<0?half[0]*.5:-half[0]*.5,point=rotate(q0,[edge,0,0]);
+   contactRadius=Math.hypot(edge-local[0],local[2]);
+   const contact=g.center.map((x:number,i:number)=>x+point[i]),floorY=g.center[1]-half[1];
+   c.push({op:'physics.body.pose.set',entity:probe.player_body,position:[contact[0]+normal[0]*1.1,floorY+.92,contact[2]+normal[2]*1.1],rotation:[0,0,0,1]},
+    {op:'physics.body.velocity.set',entity:probe.player_body,velocity:normal.map(x=>-x*1.8)});
+   evidence.resting=true;next(2,now,c);
+  }
+ }else if(stage===2&&body&&player){
+  c.push({op:'physics.body.velocity.set',entity:probe.player_body,velocity:normal.map(x=>-x*1.8)});
+  for(const e of r?.physics?.events??[]){const contact=e.ContactBegin??e.ContactPersist;if(contact&&[String(contact.a),String(contact.b)].includes(leaf)&&[Number(contact.a),Number(contact.b)].includes(probe.player_body))hadContact=true;}
+  const radius=Math.min(player.bounds_max[0]-player.bounds_min[0],player.bounds_max[2]-player.bounds_min[2])/2;
+  const cleared=contactRadius*Math.sin(Math.min(peak,Math.PI/2))>radius;
+  const crossed=player.position.reduce((s:number,x:number,i:number)=>s+(x-hinge[i])*normal[i],0);
+  if(hadContact&&cleared&&crossed<-radius){
+   evidence.native_leaf_contact=true;evidence.actor_radius=radius;evidence.contact_radius=contactRadius;
+   evidence.player_contact_opens=true;evidence.walked_through=true;
+   c.push({op:'physics.body.velocity.set',entity:probe.player_body,velocity:[0,0,0]});next(3,now,c);
+  }
+ }else if(stage===3&&now-since>.4){
+  capture('open',p,c);
+  if(now-since>1){
+   check(bodies.filter((b:any)=>String(b.entity_key)===leaf).length===1,'only one original leaf body');
+   evidence.maximum_angle_radians=peak;evidence.maximum_anchor_separation=peakAnchor;
+   c.push({op:'physics.hinge.unbind_scene',id:spec.id});next(4,now,c);
+  }
+ }else if(stage===4&&now-since>.15){
+  check(!bodies.some((b:any)=>String(b.entity_key)===leaf||String(b.entity_key)===anchor),'unbind removes only owned body and anchor');
+  check(!bindings.some((b:any)=>String(b.entity_key)===leaf),'unbind retires binding');
+  c.push(...sceneDoorCommands(spec,settings.profiles));next(5,now,c);
+ }else if(stage===5&&record?.status==='active'&&now-since>.3){
+  check(String(record.entity_key)===leaf&&record.asset===evidence.original_asset,'rebind retains original scene identity and model');
+  check(bindings.length===oldCount,'rebind creates no duplicate assembly');
+  evidence.rebind_preserves_original=true;
+  capture('restored',p,c);
+  c.push({op:'console.write',message:'SCENE_HINGE_VERIFY_EVIDENCE '+encode(evidence)},
+   {op:'console.write',message:'SCENE_HINGE_VERIFY_PASS original_models native_contact walk_through identity rebind'});
+  result.exit_requested=true;next(6,now,c);
+ }
+ if(stage!==6&&now-since>=25)check(false,'stage timeout '+stage+' '+encode({record,leaf_body:body,hadContact,contactRadius,player,bindings:bindings.map((b:any)=>({name:b.name,status:b.status,error:b.error})),peak,contacts:r?.physics?.events?.filter((e:any)=>String((e.ContactBegin??e.ContactPersist??e.ContactEnd)?.a)===leaf||String((e.ContactBegin??e.ContactPersist??e.ContactEnd)?.b)===leaf||encode(e).includes(String(probe.player_body))).slice(-12)}));
+ return result;
+}
+export function on_event(p:any):any{return Game.on_event(p);}
+export function on_shutdown(p:any):any{return Game.on_shutdown(p);}

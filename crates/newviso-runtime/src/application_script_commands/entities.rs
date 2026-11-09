@@ -211,7 +211,14 @@ impl EngineApplication {
                     })?;
                 let _ = self.scene.clear_mass_instance_layer(layer)?;
             }
+            "scene.character.configure" => {
+                let entity=self.resolve_script_scene_entity(command,index,op)?;
+                let binding=newviso_scene::SceneCharacterBinding::parse(
+                    command.get("character").ok_or("scene.character.configure needs character (or null to remove)")?)?;
+                self.scene.set_entity_character_binding(entity,binding)?;
+            }
             "scene.dynamic_entity.upsert" => {
+                let character=command.get("character").map(newviso_scene::SceneCharacterBinding::parse).transpose()?;
                 let id = command.get("id").and_then(Value::as_str).ok_or_else(|| {
                     format!(
                         "script command[{index}] scene.dynamic_entity.upsert requires string 'id'"
@@ -245,7 +252,7 @@ impl EngineApplication {
                     .get("solid")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-                self.scene.upsert_runtime_dynamic_entity(
+                let entity=self.scene.upsert_runtime_dynamic_entity(
                     id,
                     SceneRuntimeEntityDesc {
                         visual,
@@ -262,6 +269,7 @@ impl EngineApplication {
                         fade_range: command_number(command, "fade_range", index)?,
                     },
                 )?;
+                if let Some(character)=character {self.scene.set_entity_character_binding(entity,character)?;}
             }
             "scene.entity.damage" => {
                 let id = command.get("id").and_then(Value::as_str).ok_or_else(|| {

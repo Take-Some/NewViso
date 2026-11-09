@@ -5,9 +5,35 @@ impl PhysicsRuntime {
         self.supports_joints
     }
 
-    pub(crate) fn upsert_joint(&mut self, joint: PhysicsJointSnapshot) -> Result<(), String> {
+    pub(crate) fn supports_articulated_drives(&self) -> bool {
+        self.supports_articulation
+    }
+
+    pub(crate) fn joint_state(&self, id: u64) -> Option<&PhysicsJointSnapshot> {
+        self.joints.get(&id)
+    }
+
+    pub(crate) fn set_joint_motor(
+        &mut self,
+        id: u64,
+        motor: Option<newviso_physics_client::PhysicsJointMotor>,
+    ) {
+        if let Some(j) = self.joints.get_mut(&id) {
+            j.motor = if self.supports_articulation {
+                motor
+            } else {
+                None
+            };
+        }
+    }
+
+    pub(crate) fn upsert_joint(&mut self, mut joint: PhysicsJointSnapshot) -> Result<(), String> {
         if !self.supports_joints {
             return Err("physics provider does not support JointConstraints".into());
+        }
+        if !self.supports_articulation {
+            joint.angular_limits = None;
+            joint.motor = None;
         }
         self.joints.insert(joint.id, joint);
         Ok(())
@@ -41,41 +67,47 @@ impl PhysicsRuntime {
         rotation: [f32; 4],
         velocity: [f32; 3],
     ) -> Result<(), String> {
+        let stairs = self.character_stairs.remove(&entity);
+        let intent = self.script_character_drives.remove(&entity);
         self.set_body_pose_from_script(
             &json!({"entity": entity, "position": position, "rotation": rotation}),
             0,
         )?;
         self.set_body_velocity_from_script(&json!({"entity": entity, "velocity": velocity}), 0)?;
+        if let Some(stairs) = stairs {
+            self.character_stairs.insert(entity, stairs);
+        }
+        if let Some(intent) = intent {
+            self.script_character_drives.insert(entity, intent);
+        }
         self.set_character_angular_velocity(entity, [0.0; 3]);
         Ok(())
     }
 
-    pub(crate) fn release_character_body(&mut self, entity: u64) -> Result<(), String> {
-        self.release_character_body_towards(entity, [0.25, 0.0, 1.0])
-    }
-
-    pub(crate) fn release_character_body_towards(
+    /// Remove upright control without replacing the motion produced by contacts.
+    pub(crate) fn release_character_body(
         &mut self,
         entity: u64,
-        direction: [f32; 3],
+        angular_damping: f32,
     ) -> Result<(), String> {
+        self.script_character_drives.remove(&entity);
+        self.release_character_stairs(entity);
+        if !angular_damping.is_finite() || !(0.0..=1.0).contains(&angular_damping) {
+            return Err("invalid released character damping".into());
+        }
         let body = self
             .bodies
             .get_mut(&entity)
             .ok_or_else(|| format!("missing ped body {entity}"))?;
-        body.angular_damping = Some(0.35);
-        // Physical capsule fall. Skeletal ragdoll is a separate animation system.
-        let length = direction[0].hypot(direction[2]);
-        let angular = if length > 0.01 {
-            [
-                direction[2] / length * 4.0,
-                0.0,
-                -direction[0] / length * 4.0,
-            ]
-        } else {
-            [2.5, 0.0, 1.0]
-        };
-        self.set_character_angular_velocity(entity, angular);
+        body.angular_damping = Some(angular_damping);
+        // Commands from the old upright authority must not overwrite a new
+        // pelvis body at the next fixed step. External force commands survive.
+        self.pending_commands.retain(|c| {
+            !matches!(c.kind,
+            PhysicsCommandKind::SetBodyPose {entity:e,..}
+            |PhysicsCommandKind::SetLinearVelocity {entity:e,..}
+            |PhysicsCommandKind::SetAngularVelocity {entity:e,..} if e==entity)
+        });
         Ok(())
     }
 
@@ -350,6 +382,8 @@ impl PhysicsRuntime {
         let (bounds_min, bounds_max) = shape_bounds(shape, position);
 
         let replacing = self.bodies.contains_key(&entity);
+        self.script_character_drives.remove(&entity);
+        self.release_character_stairs(entity);
         self.bodies.insert(
             entity,
             PhysicsBodySnapshot {
@@ -425,6 +459,8 @@ impl PhysicsRuntime {
         command_index: usize,
     ) -> Result<(), String> {
         let entity = command_u64(command, "entity", command_index)?;
+        self.script_character_drives.remove(&entity);
+        self.release_character_stairs(entity);
         self.joints
             .retain(|_, j| j.parent != entity && j.child != entity);
         self.bodies.remove(&entity);
@@ -443,12 +479,18 @@ impl PhysicsRuntime {
         command_index: usize,
     ) -> Result<(), String> {
         let entity = command_u64(command, "entity", command_index)?;
+        self.script_character_drives.remove(&entity);
+        self.release_character_stairs(entity);
         if !self.bodies.contains_key(&entity) {
             return Err(format!(
                 "script command[{command_index}] physics.body.velocity.set references unknown body {entity}"
             ));
         }
         let velocity = command_vec3(command, "velocity", command_index)?;
+        self.bodies
+            .get_mut(&entity)
+            .expect("body checked")
+            .linear_velocity = velocity;
         let seq = self.next_command_seq;
         self.next_command_seq = self.next_command_seq.wrapping_add(1).max(1);
         self.pending_commands.push(PhysicsCommand {
@@ -464,16 +506,17 @@ impl PhysicsRuntime {
         command_index: usize,
     ) -> Result<(), String> {
         let entity = command_u64(command, "entity", command_index)?;
-        if !self.bodies.contains_key(&entity) {
-            return Err(format!(
-                "script command[{command_index}] physics.body.pose.set references unknown body {entity}"
-            ));
-        }
         let shape = self
             .bodies
             .get(&entity)
-            .map(|body| body.shape)
-            .expect("body existence checked above");
+            .ok_or_else(|| {
+                format!(
+            "script command[{command_index}] physics.body.pose.set references unknown body {entity}"
+        )
+            })?
+            .shape;
+        self.script_character_drives.remove(&entity);
+        self.release_character_stairs(entity);
         let mut position = command_vec3(command, "position", command_index)?;
         if let Some(ground_snap) = command.get("ground_snap") {
             let required = optional_bool(ground_snap, "required", false)?;
@@ -504,6 +547,12 @@ impl PhysicsRuntime {
                 rotation,
             },
         });
+        // Subsequent controllers and ownership transfers in this same frame
+        // must see the requested pose, before the next native fixed step.
+        let body = self.bodies.get_mut(&entity).expect("body checked");
+        body.position = position;
+        body.rotation = rotation;
+        refresh_bounds(body);
         Ok(())
     }
 

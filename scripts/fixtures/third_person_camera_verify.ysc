@@ -1,0 +1,79 @@
+import * as Game from "./default_game_base.ysc";
+import * as FPS from "../fps/game.ysc";
+import { CFG } from "../fps/config.ysc";
+import { GameplayCamera } from "./gameplay/gameplay_camera.ysc";
+import { PlayerPresentation } from "./gameplay/player_presentation.ysc";
+import { WEAPON_CAMERA_REFERENCE as Reference } from "./gameplay/weapon_camera_reference.ysc";
+import { cameraMetadata } from "./gameplay/camera_dynamics.ysc";
+import { Events } from "./events.ysc";
+import { createRuntimeSnapshotDecoder } from "./snapshot_delta.ysc";
+const decode=createRuntimeSnapshotDecoder(),camera=new GameplayCamera(),presentation=new PlayerPresentation(true);
+let settings:any,adapter="",elapsed=0,toggled=false,shook=false,kicked=false,captured=false;
+let previous:any=null,samples=0,blocked=0,turned=false,peakPitch=0;
+const norm=(v:number[])=>{const n=Math.hypot(...v);return v.map(x=>x/n);};
+const sub=(a:number[],b:number[])=>a.map((v,i)=>v-b[i]);
+const check=(v:any,m:string)=>{if(!v)throw new Error("THIRD_CAMERA "+m);};
+export function on_event(e:any):any{return Game.on_event(e);}
+export function on_start(raw:any):any{
+ const p=decode(raw);settings=p.project.runtime.variables.engine_player;adapter=p.project.runtime.variables.camera_verification_adapter;
+ const r:any=Game.on_start(p);
+ if(adapter==="FirstFPS"){(CFG as any).physicsWorld.requiredStreamedMeshColliders=0;(CFG as any).physicsWorld.sceneColliders.enabled=true;r.commands.push(...FPS.startGame(p).commands);}
+ if(adapter==="direct"){
+  presentation.configure(settings);
+  r.commands.push({op:"physics.world.configure",fixed_hz:120,max_steps_per_frame:8,gravity:9.81,contact_skin:.002,scene_colliders:{enabled:true,friction:.72,restitution:0,density:1,participates_in_queries:true,casts_contacts:true}});
+ }
+ return r;
+}
+export function on_frame(raw:any):any{
+ const p=decode(raw),dt=Number(p.delta_seconds);elapsed+=dt;
+ if(previous&&elapsed>.8){
+  const c=p.runtime.scene?.camera;
+  const position=Array.isArray(c?.position)?c.position:[c?.position?.x,c?.position?.y,c?.position?.z];
+  const target=Array.isArray(c?.target)?c.target:[c?.target?.x,c?.target?.y,c?.target?.z];
+  check(position.every(Number.isFinite)&&target.every(Number.isFinite),"missing native camera");
+  const direction=norm(sub(target,position)),dot=direction.reduce((s,v,i)=>s+v*previous.direction[i],0);
+  check(dot>.9999,"collision changed viewing direction "+JSON.stringify({t:elapsed,dot,actual:c,expected:previous}));
+  if(Math.hypot(...sub(position,previous.requested))>.1)blocked++;
+  samples++;peakPitch=Math.max(peakPitch,Math.abs(direction[1]));
+ }
+ let pressed:number[]=[];
+ if(adapter!=="direct"&&elapsed>.25&&!toggled){pressed=[40];toggled=true;}
+ const forward=elapsed>1.2&&elapsed<3.4,strafe=elapsed>2.2&&elapsed<3.1;
+ const mouseY=elapsed>1.4&&elapsed<1.9?-60*dt:elapsed>2.0&&elapsed<2.5?60*dt:0;
+ const mouseX=elapsed>4.5&&elapsed<5.0?90*dt:0;
+ p.frame={...p.frame,platform:{...p.frame.platform,focused:true,cursor_captured:true},
+ input:{state:{keys:{down:[...(forward?[41]:[]),...(strafe?[22]:[])],pressed},
+ mouse:{down:[],pressed:elapsed<.15?[1]:[],delta:{x:mouseX,y:mouseY},wheel:{y:0}}}}};
+ const r:any=Game.on_frame(p);
+ if(adapter==="FirstFPS")r.commands.push(...FPS.frameGame(p).commands);
+ if(adapter==="direct"){
+  const eye:[number,number,number]=[elapsed>2?.25*(elapsed-2):0,1.7,elapsed>2?-.5*(elapsed-2):0];
+  const yaw=elapsed>4.5?.1*(Math.min(elapsed,5)-4.5):0,pitch=elapsed>1.4&&elapsed<2.5?.1:0;
+  const view=camera.begin(p,settings,{eye,yaw,pitch,mode:"third_person",distance:3.25,physics_entity:settings.physics_entity,actor_id:settings.scene_id,aiming:false,armed:true,moving:elapsed>2});
+  r.commands.push(...presentation.frame(eye,yaw,"third_person",view.position,view.direction,view.up,"",elapsed,false,p,false,false,true));
+  if(elapsed>1&&!kicked){kicked=true;camera.recoil({Name:"test",RecoilShakeAmplitude:0},1,{recoil_pitch_radians:.06,recoil_yaw_radians:.04});}
+  r.commands.push(camera.sample().command);
+ }
+ if(elapsed>1.1&&!shook){
+  shook=true;Events.emit("game.camera.shake",{actor_id:settings.scene_id,ref:cameraMetadata(Reference.fps).VehicleImpactShakeRef,amplitude:2});
+ }
+ const request=r.commands.filter((c:any)=>c.op==="scene.camera.set").slice(-1)[0];
+ if(request){
+  // The direct probe also reproduces old engines ignoring this new contract.
+  request.collision.preserve_direction=true;
+  const direction=norm(sub(request.target,request.position)),heading=Math.atan2(direction[0],-direction[2]);
+  if(elapsed>.8&&elapsed<4.4)check(Math.abs(heading)<.00002,"unrequested horizontal camera rotation "+heading);
+  if(elapsed>5.3&&Math.abs(heading)>.02)turned=true;
+  previous={direction,requested:request.position};
+ }else{
+  previous=null;
+  check(elapsed<.8,"third-person mode did not produce an absolute camera");
+ }
+ if(elapsed>2&&!captured){captured=true;r.commands.push({op:"console.write",message:"THIRD_CAMERA_CAPTURE stable"});}
+ if(elapsed>6.0){
+  check(samples>20&&blocked>5&&turned&&peakPitch>.02,"missing camera coverage "+JSON.stringify({samples,blocked,turned,peakPitch}));
+  r.commands.push({op:"console.write",message:"THIRD_CAMERA_VERIFY_PASS "+JSON.stringify({adapter,samples,blocked,turned,peakPitch})});r.exit_requested=true;
+ }
+ check(elapsed<9,"timeout");return r;
+}
+export function on_shutdown(p:any):any{camera.shutdown();const r:any=Game.on_shutdown(p);r.commands.push(...presentation.shutdown());if(adapter==="FirstFPS")r.commands.push(...FPS.shutdownGame().commands);return r;}

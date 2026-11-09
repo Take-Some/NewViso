@@ -1,6 +1,13 @@
 //! Ped state and event decisions; locomotion stays in the generic agent task stack.
 use super::*;
 use std::collections::BTreeSet;
+pub mod combat;
+pub mod director;
+pub mod grip;
+pub mod melee;
+use combat::{CombatProfile, CombatState};
+use grip::{GripImpact, WeaponGripProfile, WeaponGripState};
+use melee::{MeleeProfile, MeleeState};
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -24,6 +31,7 @@ pub struct PedProfile {
     pub max_health: f32,
     pub armour: f32,
     pub armed: bool,
+    pub weapon_grip: WeaponGripProfile,
     pub invulnerable: bool,
     pub block_events: bool,
     pub hearing_radius: f32,
@@ -36,6 +44,10 @@ pub struct PedProfile {
     pub capsule_radius: f32,
     pub capsule_height: f32,
     pub death_clip: Option<String>,
+    /// An externally controlled body (e.g. player); this runtime owns only its vitals.
+    pub damage_entity: Option<u64>,
+    pub combat: Option<CombatProfile>,
+    pub melee: Option<MeleeProfile>,
 }
 
 impl Default for PedProfile {
@@ -48,6 +60,7 @@ impl Default for PedProfile {
             max_health: 200.0,
             armour: 0.0,
             armed: false,
+            weapon_grip: WeaponGripProfile::default(),
             invulnerable: false,
             block_events: false,
             hearing_radius: 45.0,
@@ -60,6 +73,9 @@ impl Default for PedProfile {
             capsule_radius: 0.3,
             capsule_height: 1.8,
             death_clip: None,
+            damage_entity: None,
+            combat: None,
+            melee: None,
         }
     }
 }
@@ -71,6 +87,10 @@ pub struct PedState {
     pub armour: f32,
     pub dead: bool,
     pub last_damage_source: Option<String>,
+    pub combat: Option<CombatState>,
+    pub melee: Option<MeleeState>,
+    pub stunned_until: f64,
+    pub weapon_grip: WeaponGripState,
     #[serde(skip)]
     handled_events: BTreeMap<String, f64>,
     #[serde(skip)]
@@ -79,6 +99,7 @@ pub struct PedState {
 
 #[derive(Clone, Debug, Default)]
 pub struct PedRuntime {
+    director: director::DirectorRuntime,
     records: BTreeMap<String, PedState>,
     relationships: BTreeMap<(String, String), PedRelationship>,
     events: Vec<Value>,
@@ -87,7 +108,28 @@ pub struct PedRuntime {
 impl PedRuntime {
     pub fn upsert(&mut self, profile: PedProfile, reset: bool) -> Result<(), String> {
         validate_id("ped actor", &profile.actor_id)?;
-        validate_id("ped agent", &profile.agent_id)?;
+        if profile.damage_entity.is_none() {
+            validate_id("ped agent", &profile.agent_id)?;
+        }
+        if profile
+            .damage_entity
+            .is_some_and(|id| id == 0 || id > ((1u64 << 53) - 1))
+        {
+            return Err("invalid damage entity".into());
+        }
+        if profile.damage_entity.is_some() && profile.combat.is_some() {
+            return Err("external combatant cannot own AI".into());
+        }
+        profile.weapon_grip.validate()?;
+        if let Some(melee) = &profile.melee {
+            melee.validate()?;
+        }
+        if let Some(combat) = &profile.combat {
+            combat.validate()?;
+            if combat.melee_only && profile.melee.is_none() {
+                return Err("melee-only combat requires a melee profile".into());
+            }
+        }
         validate_id("ped relationship group", &profile.group)?;
         for (name, n, min, max) in [
             ("health", profile.max_health, 1.0, 1.0e6),
@@ -123,6 +165,12 @@ impl PedRuntime {
         }
         if let Some(state) = self.records.get_mut(&profile.actor_id).filter(|_| !reset) {
             state.health = state.health.min(profile.max_health);
+            if profile.combat.is_some() != state.combat.is_some() {
+                state.combat = profile.combat.as_ref().map(CombatState::new);
+            }
+            if profile.melee.is_some() != state.melee.is_some() {
+                state.melee = profile.melee.as_ref().map(MeleeState::new);
+            }
             state.profile = profile;
         } else {
             self.records.insert(
@@ -130,6 +178,10 @@ impl PedRuntime {
                 PedState {
                     health: profile.max_health,
                     armour: profile.armour,
+                    combat: profile.combat.as_ref().map(CombatState::new),
+                    melee: profile.melee.as_ref().map(MeleeState::new),
+                    stunned_until: 0.0,
+                    weapon_grip: WeaponGripState::default(),
                     profile,
                     dead: false,
                     last_damage_source: None,
@@ -192,6 +244,18 @@ impl PedRuntime {
         origin: [f32; 3],
         agents: &mut AgentRuntime,
     ) -> Result<Option<AgentCommand>, String> {
+        self.damage_with_impact(actor_id, source, amount, origin, GripImpact::Body, agents)
+    }
+
+    pub fn damage_with_impact(
+        &mut self,
+        actor_id: &str,
+        source: String,
+        amount: f32,
+        origin: [f32; 3],
+        impact: GripImpact,
+        agents: &mut AgentRuntime,
+    ) -> Result<Option<AgentCommand>, String> {
         tasks::finite_range("ped damage", amount, 0.0, 1.0e6)?;
         tasks::validate_position(origin)?;
         validate_id("damage source", &source)?;
@@ -202,6 +266,7 @@ impl PedRuntime {
         if state.dead || state.profile.invulnerable || amount == 0.0 {
             return Ok(None);
         }
+        let health_before = state.health;
         let absorbed = amount.min(state.armour);
         state.armour -= absorbed;
         state.health = (state.health - (amount - absorbed)).max(0.0);
@@ -210,10 +275,23 @@ impl PedRuntime {
         state.dead = state.health <= 0.0;
         self.events.push(json!({"kind": "ped.damage", "actor_id": actor_id, "source": source,
             "amount": amount, "absorbed": absorbed, "health": state.health, "armour": state.armour}));
+        // Damage changes continuous hand support. Actual equipped load is evaluated by the host.
+        if state.profile.damage_entity.is_none() && !state.profile.invulnerable {
+            if let Some(model) = &state.profile.weapon_grip.model {
+                state.weapon_grip.damage(
+                    model,
+                    state.profile.max_health,
+                    health_before - state.health,
+                    impact,
+                );
+            }
+        }
         if state.dead {
             self.events
                 .push(json!({"kind": "ped.death", "actor_id": actor_id, "source": source}));
-            return agents.clear_tasks(&state.profile.agent_id);
+            if state.profile.damage_entity.is_none() {
+                return agents.clear_tasks(&state.profile.agent_id);
+            }
         }
         Ok(None)
     }
@@ -240,7 +318,11 @@ impl PedRuntime {
             .filter(|(_, p)| p.dead)
             .map(|(id, _)| id.clone())
             .collect::<BTreeSet<_>>();
-        for state in self.records.values_mut().filter(|p| !p.dead) {
+        for state in self
+            .records
+            .values_mut()
+            .filter(|p| !p.dead && p.profile.damage_entity.is_none() && p.profile.combat.is_none())
+        {
             let Some(actor) = live.get(state.profile.actor_id.as_str()) else {
                 continue;
             };
@@ -318,6 +400,7 @@ impl PedRuntime {
                 continue;
             }
             let combat = state.profile.armed
+                && !state.weapon_grip.lost
                 && live.contains_key(source.as_str())
                 && !dead.contains(&source);
             let task = if combat {

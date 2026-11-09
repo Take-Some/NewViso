@@ -1,3 +1,4 @@
+use super::bootstrap_configuration::load_effective_runtime_settings;
 use super::bootstrap_support::*;
 use super::*;
 
@@ -186,14 +187,22 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
             ),
         );
 
-        let resolved_capabilities = if let Some(project) = &project {
+        let mut effective_configuration = if let Some(project) = &project {
             mount_project_files(project, &bootstrap.assets_dir)?;
-            let effective_runtime =
-                load_effective_runtime_settings(project, &bootstrap.assets_dir)?;
+            Some(load_effective_runtime_settings(project, &bootstrap)?)
+        } else {
+            None
+        };
+        let resolved_capabilities = if let Some(project) = &project {
+            let effective_runtime = &effective_configuration
+                .as_ref()
+                .expect("project configuration")
+                .settings;
             let resolved = resolve_project_capabilities(
                 project,
                 &providers,
                 bootstrap.safe_mode,
+                bootstrap.editor_mode,
                 &effective_runtime,
             )?;
             activate_project_capabilities(&resolved, &mut bootstrap_providers)?;
@@ -203,12 +212,18 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
         };
 
         let loaded_project = if let Some(project) = &project {
-            Some(load_project_files(project, &bootstrap.assets_dir)?)
+            Some(load_project_files(
+                project,
+                &bootstrap.assets_dir,
+                effective_configuration
+                    .take()
+                    .expect("project configuration"),
+            )?)
         } else {
             None
         };
 
-        let ui_template = if bootstrap.safe_mode {
+        let ui_template = if bootstrap.safe_mode || bootstrap.editor_mode {
             None
         } else {
             loaded_project
@@ -232,10 +247,54 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
             .then(PhysicsRuntime::connect)
             .transpose()?;
 
-        let content_manager = if ui_backend_active && !bootstrap.safe_mode {
+        let content_manager = if ui_backend_active
+            && (!bootstrap.safe_mode || bootstrap.editor_mode)
+        {
             project
                 .as_ref()
-                .map(|project| ContentManager::open(&project.root))
+                .map(|project| {
+                    let mut manager = ContentManager::open(&project.root)?;
+                    manager.set_project_workspace(newviso_content_manager::ProjectWorkspaceView {
+                        id: project.manifest.project.id.clone(),
+                        name: project.manifest.project.name.clone(),
+                        version: project.manifest.project.version.clone(),
+                        manifest: "project.json".into(),
+                        runtime: project.manifest.files.runtime.clone(),
+                        environment: project.manifest.files.environment.clone(),
+                        scene: project.manifest.files.scene.clone(),
+                        scripts: project
+                            .manifest
+                            .scripts
+                            .as_ref()
+                            .map(|s| s.entrypoint.clone())
+                            .or_else(|| project.manifest.files.scripts.clone()),
+                        ui: project.manifest.files.ui.clone(),
+                        capabilities: resolved_capabilities
+                            .iter()
+                            .map(|item| newviso_content_manager::ProjectCapabilityView {
+                                id: item.need.id.clone(),
+                                min_version: item.need.min_version,
+                                required: item.need.required,
+                                requested_provider: item.need.provider.clone(),
+                                resolved_provider: item
+                                    .candidate
+                                    .as_ref()
+                                    .map(|c| c.provider_id.clone()),
+                                gateway: item
+                                    .candidate
+                                    .as_ref()
+                                    .and_then(|c| c.engine_gateway.clone()),
+                                available: item.candidate.is_some(),
+                            })
+                            .collect(),
+                    });
+                    let (settings_document, settings_path) =
+                        super::bootstrap_configuration::load_settings_authoring(
+                            project, &bootstrap,
+                        )?;
+                    manager.set_runtime_settings(settings_document, settings_path)?;
+                    Ok::<_, String>(manager)
+                })
                 .transpose()?
         } else {
             None
@@ -256,10 +315,10 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
 
         log_resolved_capabilities(&resolved_capabilities);
 
-        let mut scripts = if bootstrap.safe_mode {
+        let mut scripts = if bootstrap.safe_mode || bootstrap.editor_mode {
             host::warn(
                 "newviso.scripting",
-                "project scripting suppressed by safe mode",
+                "project scripting suppressed by authoring/safe mode",
             );
             None
         } else if let Some(files) = &loaded_project {
@@ -277,7 +336,7 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
             "NewViso runtime is project-driven; launch with --project <project-root>".to_owned()
         })?;
         let mut runtime_settings = loaded_files.runtime.clone();
-        if bootstrap.safe_mode {
+        if bootstrap.safe_mode || bootstrap.editor_mode {
             runtime_settings.startup_commands.clear();
             runtime_settings.scheduling.native_navigation_enabled = true;
             runtime_settings.world_persistence.load_on_start = false;
@@ -289,9 +348,12 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
         let project_ref = project.as_ref().ok_or_else(|| {
             "NewViso runtime is project-driven; launch with --project <project-root>".to_owned()
         })?;
-        let (mut scene, scene_report) =
+        let (mut scene, scene_report) = (if bootstrap.editor_mode {
+            Scene3dRuntime::load_for_authoring_from_asset(&project_ref.manifest.files.scene)
+        } else {
             Scene3dRuntime::load_from_asset(&project_ref.manifest.files.scene)
-                .map_err(|error| format!("startup scene load failed: {error}"))?;
+        })
+        .map_err(|error| format!("startup scene load failed: {error}"))?;
 
         if let Some(files) = loaded_project.as_ref() {
             scene
@@ -389,6 +451,7 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
                 ui_template,
                 content_manager,
                 runtime_settings.clone(),
+                bootstrap.editor_mode,
                 WorldStartup::open(
                     &project_ref.root,
                     &project_ref.manifest.project.id,

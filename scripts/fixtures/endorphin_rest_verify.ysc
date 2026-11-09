@@ -1,0 +1,51 @@
+import * as Game from './default_game_base.ysc';
+import { createRuntimeSnapshotDecoder } from './snapshot_delta.ysc';
+const decode=createRuntimeSnapshotDecoder(),foe='endorphin.test.enemy';
+const encode=(v:any)=>JSON.stringify(v,(_k:string,v:any)=>typeof v==='bigint'?String(v):v);
+let stage=0,since=0,initial:any=null,maximumSpin=0,maximumDrift=0,sawFilter=false,sawMotor=false;
+function check(ok:any,message:string):void {if(!ok)throw new Error('ENDORPHIN_REST '+message);}
+function next(n:number,t:number,cmd:any[]):void{stage=n;since=t;cmd.push({op:'console.write',message:'ENDORPHIN_REST_STAGE '+n});}
+export function on_start(raw:any):any{return Game.on_start(decode(raw));}
+export function on_frame(raw:any):any{
+ const p=decode(raw);p.frame={...p.frame,platform:{...p.frame.platform,focused:false}};
+ const out:any=Game.on_frame(p),cmd=out.commands,r=p.runtime,now=Number(r?.peds?.world_seconds??r?.living_world?.clock?.world_seconds??p.elapsed_seconds);
+ const npc=r?.peds?.peds?.find((v:any)=>v.profile.actor_id===foe),body=r?.peds?.physics?.bodies?.find((v:any)=>v.actor_id===foe),rig=body?.ragdoll;
+ const gravity=p.project.runtime.variables.endorphin_rest_gravity??0;
+ if(!since)since=now;
+ if(stage===0&&body?.controlled&&now>1){
+  cmd.push({op:'ped.upsert',profile:{...npc.profile,combat:null,melee:null,armed:false,block_events:true,max_health:100,armour:0},reset:true},
+   {op:'agent.tasks.clear',agent_id:foe+'.ai'},{op:'physics.world.configure',gravity});next(1,now,cmd);
+ }else if(stage===1&&body.controlled&&now-since>.5){
+  cmd.push({op:'ped.endorphin.activate',actor_id:foe});next(2,now,cmd);
+ }else if(stage===2&&rig?.active){
+  initial=rig.parts.map((p:any)=>({key:p.entity_key,position:p.position}));
+  check(npc.weapon_grip.held_generation>0,'real equipped generation exists');
+  cmd.push({op:'ped.weapon.release',actor_id:foe,item_id:npc.weapon_grip.held_item,equipment_generation:npc.weapon_grip.held_generation});
+  next(3,now,cmd);
+ }else if(stage===3&&rig?.active){
+  sawMotor=sawMotor||rig.joints.some((j:any)=>j.motor?.max_torque>0);
+  for(const part of rig.parts){
+   const old=initial.find((v:any)=>v.key===part.entity_key);
+   maximumSpin=Math.max(maximumSpin,Math.hypot(...part.angular_velocity));
+   maximumDrift=Math.max(maximumDrift,Math.hypot(...part.position.map((v:number,i:number)=>v-old.position[i])));
+  }
+  sawFilter=sawFilter||(r.physics.disabled_collision_pairs??[]).length>0;
+  if(maximumSpin>=.02||maximumDrift>=.002)check(false,'stationary transfer/release invents no body motion '+encode({maximumSpin,maximumDrift,control:body.endorphin.control,parts:rig.parts,joints:rig.joints}));
+  if(now-since>1){
+   const drops=r.items.pickups.filter((v:any)=>v.origin?.owner_id===foe);
+   check(drops.length===1,'one explicit generation transfer');
+   const drop=drops[0];
+   check(drop.origin.pose_source==='weapon_attachment','owner limbs do not project the released weapon into the pelvis '+encode(drop.origin));
+   check(Math.hypot(...drop.origin.initial_pose.linear_velocity)<.02,'COM transfer does not invent hand velocity '+encode(drop.origin));
+   check(sawFilter,'released weapon suppresses initial owner overlap');
+   if(gravity>0)check(sawMotor,'active pose drives were exercised');
+   check(npc.health===100&&!npc.dead,'rest proof preserves vitality');
+   cmd.push({op:'console.write',message:'ENDORPHIN_VERIFY_EVIDENCE '+encode({stationary_transfer:true,active_muscles:sawMotor,maximumSpin,maximumDrift,owner_overlap_filtered:sawFilter,drop_pose_source:drop.origin.pose_source})},
+    {op:'console.write',message:'ENDORPHIN_VERIFY_PASS stationary_transfer weapon_release no_artificial_energy'});
+   out.exit_requested=true;next(4,now,cmd);
+  }
+ }
+ check(stage===4||now-since<12,'stage timeout '+stage);return out;
+}
+export function on_event(p:any):any{return Game.on_event(p);}
+export function on_shutdown(p:any):any{return Game.on_shutdown(p);}

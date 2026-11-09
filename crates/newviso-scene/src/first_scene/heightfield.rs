@@ -1,5 +1,7 @@
 //! Continuous indexed terrain heightfield for project-owned scene primitives.
 //! CPU vertices and the triangle collision mesh share exactly the same heights.
+#[cfg(test)]
+use std::io::Write as _;
 use super::*;
 use std::sync::Arc;
 mod expansion;
@@ -787,7 +789,7 @@ mod tests {
             if patch.render_subdivisions>1 {detailed+=elapsed;}else{coarse+=elapsed;}
             count+=patch.vertices.len()/FLOATS_PER_VERTEX;
         }
-        eprintln!("authored terrain: coarse_ms={coarse:.3} detailed_ms={detailed:.3} total_ms={:.3} render_vertices={count}",coarse+detailed);
+        let _ = writeln!(std::io::stderr().lock(),"authored terrain: coarse_ms={coarse:.3} detailed_ms={detailed:.3} total_ms={:.3} render_vertices={count}",coarse+detailed);
     }
 
     #[test]

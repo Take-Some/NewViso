@@ -32,6 +32,7 @@ impl WorldPersistence {
             ItemsRuntime,
             Value,
             Value,
+            Value,
             Vec<u8>,
         ),
         String,
@@ -63,7 +64,15 @@ impl WorldPersistence {
             }
         }
         let items = ItemsRuntime::from_checkpoint(payload.items)?;
-        Ok((world, payload.presentations, items, payload.climate, payload.cold, bytes))
+        Ok((
+            world,
+            payload.presentations,
+            items,
+            payload.climate,
+            payload.cold,
+            payload.doors,
+            bytes,
+        ))
     }
 
     pub(super) fn atomic_write(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -90,6 +99,7 @@ impl WorldPersistence {
         result
     }
 
+    #[cfg(test)]
     pub(super) fn save(
         &mut self,
         world: &LivingWorldRuntime,
@@ -98,12 +108,24 @@ impl WorldPersistence {
         climate: &Value,
         cold: &Value,
     ) -> Result<(), String> {
+        self.save_with_doors(world, presentations, items, climate, cold, &Value::Null)
+    }
+    pub(super) fn save_with_doors(
+        &mut self,
+        world: &LivingWorldRuntime,
+        presentations: &BTreeMap<String, WorldActorPresentationBinding>,
+        items: &ItemsRuntime,
+        climate: &Value,
+        cold: &Value,
+        doors: &Value,
+    ) -> Result<(), String> {
         let payload = serde_json::to_string(&SavePayload {
             world: world.checkpoint()?,
             presentations: presentations.clone(),
             items: items.checkpoint()?,
             climate: climate.clone(),
             cold: cold.clone(),
+            doors: doors.clone(),
         })
         .map_err(|e| e.to_string())?;
         let envelope = SaveEnvelope {
@@ -131,5 +153,4 @@ impl WorldPersistence {
         self.save_count += 1;
         Ok(())
     }
-
 }

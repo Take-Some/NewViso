@@ -8,6 +8,7 @@ pub struct NavBuildConfig {
     pub max_slope_degrees: f32,
     pub weld_epsilon: f32,
     pub max_snap_distance: f32,
+    pub max_step_height: f32,
 }
 
 impl Default for NavBuildConfig {
@@ -16,6 +17,7 @@ impl Default for NavBuildConfig {
             max_slope_degrees: 50.0,
             weld_epsilon: 0.02,
             max_snap_distance: 4.0,
+            max_step_height: 0.35,
         }
     }
 }
@@ -26,6 +28,8 @@ impl NavBuildConfig {
             || !(0.0..89.0).contains(&self.max_slope_degrees)
             || !self.weld_epsilon.is_finite()
             || !(0.0001..=2.0).contains(&self.weld_epsilon)
+            || !self.max_step_height.is_finite()
+            || !(0.0..=2.0).contains(&self.max_step_height)
             || !self.max_snap_distance.is_finite()
             || !(0.01..=1000.0).contains(&self.max_snap_distance)
         {
@@ -141,6 +145,12 @@ pub struct PathRequest {
     pub start: Vec3,
     pub end: Vec3,
     pub agent_radius: f32,
+    #[serde(default)]
+    pub gate_access: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    pub agent_height: f32,
+    #[serde(default = "default_step_height")]
+    pub max_step_height: f32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -159,4 +169,7 @@ pub struct PathResult {
     pub corridor: Vec<u64>,
     pub waypoints: Vec<Vec3>,
     pub visited_polygons: usize,
+}
+fn default_step_height() -> f32 {
+    NavBuildConfig::default().max_step_height
 }

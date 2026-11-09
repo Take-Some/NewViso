@@ -43,18 +43,19 @@ pub(super) fn load_environment_sky(
         .collect::<Result<Vec<_>, String>>()?;
     let (index_format, indices) = decode_sky_indices(&mesh.index_buffer)?;
 
+    let defaults=ProjectSkyEnvironment::default();
     let base_noise_ref = config
         .base_noise_texture
         .as_deref()
-        .unwrap_or("textures/skydome.ytd@baseperlinnoise3channel");
+        .or(defaults.base_noise_texture.as_deref()).ok_or("sky defaults lack base_noise_texture")?;
     let starfield_ref = config
         .starfield_texture
         .as_deref()
-        .unwrap_or("textures/skydome.ytd@starfield");
+        .or(defaults.starfield_texture.as_deref()).ok_or("sky defaults lack starfield_texture")?;
     let detail_noise_ref = config
         .detail_noise_texture
         .as_deref()
-        .unwrap_or("textures/skydome.ytd@noise16_p");
+        .or(defaults.detail_noise_texture.as_deref()).ok_or("sky defaults lack detail_noise_texture")?;
 
     let base_noise = load_sky_texture(&assets, base_noise_ref, false)?;
     let starfield = load_sky_texture(&assets, starfield_ref, true)?;

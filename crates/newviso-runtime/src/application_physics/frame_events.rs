@@ -50,6 +50,86 @@ pub(super) fn compact_frame_events(events: &[PhysicsEvent]) -> Vec<PhysicsEvent>
     output
 }
 
+impl PhysicsRuntime {
+    /// Raw post-Bullet contact observations for sound; independent from
+    /// health/damage filtering. Coalesce fixed-step manifolds to their highest
+    /// normal impulse per body pair and surface within the rendered frame.
+    pub(crate) fn audio_contacts(
+        &self,
+        seconds: f64,
+    ) -> Vec<newviso_audio_client::PhysicsAudioContact> {
+        use newviso_audio_client::{ImpactMaterial, PhysicsAudioContact};
+        // Resolve only the strongest contact per body/surface before paying
+        // for mass lookups and contact velocity transforms. Bullet emits many
+        // persistent manifold samples per render frame.
+        let mut peaks = std::collections::HashMap::<
+            (u64, u64, u32),
+            newviso_physics_client::PhysicsContactEvent,
+        >::with_capacity(self.last_output.events.len().min(256));
+        for event in &self.last_output.events {
+            let contact = match event {
+                PhysicsEvent::ContactBegin(c) | PhysicsEvent::ContactPersist(c) => c,
+                _ => continue,
+            };
+            if !contact.impulse.is_finite() || contact.impulse <= 0.0 {
+                continue;
+            }
+            let a = contact.a.min(contact.b);
+            let b = contact.a.max(contact.b);
+            let key = (a, b, contact.surface_id.unwrap_or(0));
+            peaks
+                .entry(key)
+                .and_modify(|previous| {
+                    if contact.impulse > previous.impulse {
+                        *previous = *contact;
+                    }
+                })
+                .or_insert(*contact);
+        }
+
+        // Keep stable ordering for tests, diagnostics and playback seeds.
+        let mut strongest = peaks.into_iter().collect::<Vec<_>>();
+        strongest.sort_unstable_by_key(|(key, _)| *key);
+        let mut output = Vec::with_capacity(strongest.len());
+        for ((a, b, contact_group), contact) in strongest {
+            // Friction/density are not an acoustic material taxonomy.
+            let material = ImpactMaterial::Generic;
+            let mass_for = |id| {
+                self.bodies
+                    .get(&id)
+                    .and_then(|body| body.mass_properties.as_ref())
+                    .map(|mass| mass.mass)
+                    .filter(|mass| mass.is_finite() && *mass > 0.0)
+            };
+            let effective_mass_kg = match (mass_for(a), mass_for(b)) {
+                (Some(x), Some(y)) => x * y / (x + y),
+                (Some(m), None) | (None, Some(m)) => m,
+                (None, None) => 1.0,
+            };
+            let normal_speed_mps = contact.relative_velocity.map(|velocity| {
+                velocity
+                    .iter()
+                    .zip(contact.normal)
+                    .map(|(x, n)| x * n)
+                    .sum::<f32>()
+                    .abs()
+            });
+            output.push(PhysicsAudioContact {
+                body_a: a,
+                body_b: b,
+                contact_group,
+                position: contact.point,
+                normal_impulse: contact.impulse,
+                effective_mass_kg,
+                normal_speed_mps,
+                material,
+                seconds,
+            });
+        }
+        output
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,6 +148,54 @@ mod tests {
             surface_entity: Some(8),
             surface_triangle: None,
         }
+    }
+
+    #[test]
+    fn undamaged_bullet_contacts_are_visible_to_audio_pipeline() {
+        let mut runtime = PhysicsRuntime::empty_for_tests();
+        runtime.last_output.events = vec![
+            PhysicsEvent::ContactBegin(contact(40.0, [0.0, 1.0, 0.0])),
+            PhysicsEvent::ContactPersist(contact(60.0, [0.0, 1.0, 0.0])),
+        ];
+        // Nothing is marked as damage source, yet a physical event exists.
+        assert!(runtime.damage_sources.is_empty());
+        let contacts = runtime.audio_contacts(0.5);
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].normal_impulse, 60.0);
+        assert_eq!(contacts[0].body_a, 7);
+        assert_eq!(contacts[0].body_b, 8);
+    }
+
+    #[test]
+    fn repeated_manifolds_emit_one_stable_peak_per_body_pair_and_surface() {
+        let mut runtime = PhysicsRuntime::empty_for_tests();
+        let mut events = Vec::new();
+        for id in (1..=32).rev() {
+            let mut event = contact(10.0, [0.0, 1.0, 0.0]);
+            event.a = 100;
+            event.b = id;
+            event.surface_id = Some(id as u32);
+            events.push(PhysicsEvent::ContactBegin(event));
+            for impulse in [2.0, 80.0, 20.0] {
+                event.impulse = impulse;
+                events.push(PhysicsEvent::ContactPersist(event));
+            }
+        }
+        runtime.last_output.events = events;
+        let contacts = runtime.audio_contacts(0.75);
+        assert_eq!(contacts.len(), 32);
+        assert!(contacts.iter().all(|c| c.normal_impulse == 80.0));
+        assert!(contacts.windows(2).all(|p| {
+            (p[0].body_a, p[0].body_b, p[0].contact_group)
+                < (p[1].body_a, p[1].body_b, p[1].contact_group)
+        }));
+        let again = runtime.audio_contacts(0.75);
+        assert!(contacts.iter().zip(again).all(|(x, y)| {
+            x.body_a == y.body_a
+                && x.body_b == y.body_b
+                && x.contact_group == y.contact_group
+                && x.normal_impulse == y.normal_impulse
+        }));
     }
 
     #[test]
@@ -196,3 +324,6 @@ mod tests {
         assert!(!damaging["damage_contacts"].as_array().unwrap().is_empty());
     }
 }
+
+#[cfg(test)]
+mod benchmarks;

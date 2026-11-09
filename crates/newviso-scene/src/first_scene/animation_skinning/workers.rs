@@ -78,7 +78,6 @@ impl Drop for SkinningWorkerPool {
     }
 }
 
-
 fn run_skinning_job(job: SkinningJob) -> Result<SkinningResult, String> {
     let mut palette = if let Some(transition) = job.transition_from.as_ref() {
         build_blended_skin_palette(
@@ -102,7 +101,7 @@ fn run_skinning_job(job: SkinningJob) -> Result<SkinningResult, String> {
             job.model_to_source,
         )?
     };
-    let physical = job.pose_layers.is_physical();
+    let physical = job.pose_layers.requires_rigid_presentation();
     palette = pose_layers::apply_layers(
         palette,
         &job.pose_layers,
@@ -120,11 +119,12 @@ fn run_skinning_job(job: SkinningJob) -> Result<SkinningResult, String> {
             &job.arm_ik,
         )?;
     }
-    let feet = job.foot_joint_indices
-        .and_then(|indices| skin_palette_feet_positions(
-            &job.skeleton, &palette, job.source_to_model, indices,
-        ));
-    let packed = if job.gpu_skinning { Vec::new() } else {
+    let feet = job.foot_joint_indices.and_then(|indices| {
+        skin_palette_feet_positions(&job.skeleton, &palette, job.source_to_model, indices)
+    });
+    let packed = if job.gpu_skinning {
+        Vec::new()
+    } else {
         skin_vertices_to_packed(&job.bind_vertices, &palette)?
     };
     if !job.gpu_skinning && packed.len() != job.expected_vertex_count * FLOATS_PER_VERTEX {
@@ -144,6 +144,7 @@ fn run_skinning_job(job: SkinningJob) -> Result<SkinningResult, String> {
         packed,
         palette,
         gpu_skinning: job.gpu_skinning,
+        physical,
         feet,
     })
 }

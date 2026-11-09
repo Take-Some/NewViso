@@ -1,5 +1,7 @@
 mod connectivity;
+mod gates;
 mod geometry;
+pub use gates::TraversalGate;
 mod search;
 mod spatial;
 mod tiles;
@@ -19,6 +21,7 @@ struct Portal {
     right: Vec3,
     cost_scale: f32,
     off_mesh: bool,
+    step_height: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -56,6 +59,7 @@ pub struct NavigationRuntime {
     edges: BTreeMap<EdgeKey, Vec<(u64, Vec3, Vec3)>>,
     links: BTreeMap<String, OffMeshLink>,
     obstacles: BTreeMap<String, DynamicObstacle>,
+    gates: BTreeMap<String, TraversalGate>,
     requests: VecDeque<PathRequest>,
     results: BTreeMap<u64, PathResult>,
     next_polygon_id: u64,
@@ -81,6 +85,7 @@ impl NavigationRuntime {
             edges: BTreeMap::new(),
             links: BTreeMap::new(),
             obstacles: BTreeMap::new(),
+            gates: BTreeMap::new(),
             requests: VecDeque::new(),
             results: BTreeMap::new(),
             next_polygon_id: 1,
@@ -152,6 +157,7 @@ impl NavigationRuntime {
             "spatial_cells": self.spatial_index.cell_count(),
             "oversized_polygons": self.spatial_index.oversized_count(),
             "off_mesh_links": self.links.len(),
+            "traversal_gates": self.gates.len(),
             "dynamic_obstacles": self.obstacles.len(),
             "queued_requests": self.requests.len(),
             "ready_results": self.results.len(),

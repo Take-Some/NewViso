@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn rotate_camera_vector(v: [f32; 3], q: [f32; 4]) -> [f32; 3] {
+pub(crate) fn rotate_camera_vector(v: [f32; 3], q: [f32; 4]) -> [f32; 3] {
     let norm = q.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm < 1.0e-8 {
         return v;
@@ -18,7 +18,7 @@ pub(super) fn rotate_camera_vector(v: [f32; 3], q: [f32; 4]) -> [f32; 3] {
     ]
 }
 
-pub(super) fn inverse_rotate_camera_vector(v: [f32; 3], q: [f32; 4]) -> [f32; 3] {
+pub(crate) fn inverse_rotate_camera_vector(v: [f32; 3], q: [f32; 4]) -> [f32; 3] {
     let norm = q.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm < 1.0e-8 {
         return v;
@@ -65,7 +65,7 @@ pub(super) fn normalize_vec3(value: [f32; 3]) -> [f32; 3] {
     std::array::from_fn(|axis| value[axis] / length)
 }
 
-pub(super) fn euler_degrees_to_quaternion(rotation_degrees: [f32; 3]) -> [f32; 4] {
+pub(crate) fn euler_degrees_to_quaternion(rotation_degrees: [f32; 3]) -> [f32; 4] {
     let [rx, ry, rz] = rotation_degrees.map(|value| value.to_radians() * 0.5);
     let (sx, cx) = rx.sin_cos();
     let (sy, cy) = ry.sin_cos();
@@ -184,11 +184,11 @@ pub(super) fn shape_bounds(shape: CollisionShape, position: [f32; 3]) -> ([f32; 
         CollisionShape::Capsule {
             radius,
             half_height,
-        }
-        | CollisionShape::Cylinder {
+        } => [radius, radius + half_height, radius],
+        CollisionShape::Cylinder {
             radius,
             half_height,
-        } => [radius, radius + half_height, radius],
+        } => [radius, half_height, radius],
     };
     (
         [
@@ -206,9 +206,32 @@ pub(super) fn shape_bounds(shape: CollisionShape, position: [f32; 3]) -> ([f32; 
 
 pub(super) fn refresh_bounds(body: &mut PhysicsBodySnapshot) {
     if body.convex_hulls.is_empty() {
-        let (min, max) = shape_bounds(body.shape, body.position);
-        body.bounds_min = min;
-        body.bounds_max = max;
+        let axis = rotate_camera_vector([0.0, 1.0, 0.0], body.rotation);
+        let norm = axis
+            .iter()
+            .map(|v| v * v)
+            .sum::<f32>()
+            .sqrt()
+            .max(f32::EPSILON);
+        let axis = axis.map(|v| v / norm);
+        let extent = match body.shape {
+            CollisionShape::Sphere { radius } => [radius; 3],
+            CollisionShape::Capsule {
+                radius,
+                half_height,
+            } => axis.map(|v| radius + v.abs() * half_height),
+            CollisionShape::Cylinder {
+                radius,
+                half_height,
+            } => axis.map(|v| v.abs() * half_height + radius * (1.0 - v * v).max(0.0).sqrt()),
+            CollisionShape::Box { half_extents } => {
+                let columns = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+                    .map(|v| rotate_camera_vector(v, body.rotation));
+                std::array::from_fn(|i| (0..3).map(|j| columns[j][i].abs() * half_extents[j]).sum())
+            }
+        };
+        body.bounds_min = std::array::from_fn(|i| body.position[i] - extent[i]);
+        body.bounds_max = std::array::from_fn(|i| body.position[i] + extent[i]);
     } else {
         let mut min = [f32::INFINITY; 3];
         let mut max = [f32::NEG_INFINITY; 3];
@@ -222,5 +245,96 @@ pub(super) fn refresh_bounds(body: &mut PhysicsBodySnapshot) {
         }
         body.bounds_min = min;
         body.bounds_max = max;
+    }
+}
+
+pub(super) fn volume_and_extent(shape: CollisionShape) -> (f32, f32) {
+    match shape {
+        CollisionShape::Box { half_extents: h } => {
+            ((8.0 * h[0] * h[1] * h[2]).max(0.0), (2.0 * h[1]).max(0.0))
+        }
+        CollisionShape::Sphere { radius: r } => {
+            (4.0 * std::f32::consts::PI * r.powi(3) / 3.0, r * 2.0)
+        }
+        CollisionShape::Cylinder {
+            radius: r,
+            half_height: h,
+        } => (std::f32::consts::PI * r * r * (2.0 * h), 2.0 * h),
+        CollisionShape::Capsule {
+            radius: r,
+            half_height: h,
+        } => (
+            std::f32::consts::PI * r * r * (2.0 * h) + 4.0 * std::f32::consts::PI * r.powi(3) / 3.0,
+            2.0 * (h + r),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod articulation_bounds_tests {
+    use super::*;
+    #[test]
+    fn rotated_primitive_bounds_keep_owner_overlap_until_real_separation() {
+        let mut physics = PhysicsRuntime::empty_for_tests();
+        physics.supports_collision_filters = true;
+        physics
+            .upsert_body_from_script(
+                &json!({"entity":2,"body_kind":"dynamic",
+            "shape":{"kind":"capsule","radius":0.1,"half_height":1.0},"position":[0,1,0],
+            "rotation":[0,0,0.70710677,0.70710677]}),
+                0,
+            )
+            .unwrap();
+        let limb = &physics.bodies[&2];
+        assert!((limb.bounds_max[0] - 1.1).abs() < 1e-5);
+        assert!((limb.bounds_max[1] - 1.1).abs() < 1e-5);
+        physics
+            .upsert_body_from_script(
+                &json!({"entity":3,"body_kind":"dynamic",
+            "shape":{"kind":"box","half_extents":[0.1,0.1,0.1]},"position":[0.8,1,0]}),
+                0,
+            )
+            .unwrap();
+        physics.ignore_collision_until_separated(2, 3);
+        physics.refresh_separation_pairs();
+        assert_eq!(
+            physics.separation_pairs.len(),
+            1,
+            "a rotated owner's limb still overlaps the released object"
+        );
+        let item = physics.bodies.get_mut(&3).unwrap();
+        item.position[0] = 3.0;
+        refresh_bounds(item);
+        physics.refresh_separation_pairs();
+        assert!(physics.separation_pairs.is_empty());
+    }
+    #[test]
+    fn rotated_box_and_cylinder_have_shape_correct_world_extents() {
+        let mut physics = PhysicsRuntime::empty_for_tests();
+        for (entity, shape, rotation, expected) in [
+            (
+                7,
+                json!({"kind":"box","half_extents":[0.1,0.2,1.0]}),
+                [0.0, 0.70710677, 0.0, 0.70710677],
+                [1.0, 0.2, 0.1],
+            ),
+            (
+                8,
+                json!({"kind":"cylinder","radius":0.2,"half_height":1.0}),
+                [0.0, 0.0, 0.70710677, 0.70710677],
+                [1.0, 0.2, 0.2],
+            ),
+        ] {
+            physics
+                .upsert_body_from_script(
+                    &json!({"entity":entity,"body_kind":"dynamic",
+                "shape":shape,"position":[0,0,0],"rotation":rotation}),
+                    0,
+                )
+                .unwrap();
+            for i in 0..3 {
+                assert!((physics.bodies[&entity].bounds_max[i] - expected[i]).abs() < 1e-5);
+            }
+        }
     }
 }

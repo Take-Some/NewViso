@@ -1,5 +1,13 @@
+mod drive;
+mod feet;
+mod foot_motion;
+pub use feet::{FootLeg, MAX_SUPPORT_LIMBS, validate_foot_profile};
+pub use foot_motion::{FootMotionInput, FootMotionOutput, FootMotionProfile, FootMotionState};
+mod stairs;
+pub use drive::GroundDrive;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
+pub use stairs::{StairAdjustment, StairController};
 
 pub type Vec3 = [f32; 3];
 
@@ -26,6 +34,8 @@ pub struct CharacterConfig {
     pub skin: f32,
     pub max_slope_degrees: f32,
     pub step_height: f32,
+    pub step_speed: f32,
+    pub ground_snap_speed: f32,
     pub ground_snap_distance: f32,
     pub max_iterations: u32,
 }
@@ -38,7 +48,9 @@ impl Default for CharacterConfig {
             skin: 0.015,
             max_slope_degrees: 50.0,
             step_height: 0.35,
-            ground_snap_distance: 0.18,
+            step_speed: 1.2,
+            ground_snap_speed: 1.5,
+            ground_snap_distance: 0.35,
             max_iterations: 5,
         }
     }
@@ -56,6 +68,10 @@ impl CharacterConfig {
             || !(0.0..89.0).contains(&self.max_slope_degrees)
             || !self.step_height.is_finite()
             || !(0.0..=2.0).contains(&self.step_height)
+            || !self.step_speed.is_finite()
+            || !(0.01..=10.0).contains(&self.step_speed)
+            || !self.ground_snap_speed.is_finite()
+            || !(0.01..=10.0).contains(&self.ground_snap_speed)
             || !self.ground_snap_distance.is_finite()
             || !(0.0..=2.0).contains(&self.ground_snap_distance)
             || !(1..=16).contains(&self.max_iterations)
@@ -277,6 +293,7 @@ impl CharacterController {
         origins
             .into_iter()
             .filter_map(|origin| world.sweep_sphere(origin, delta, self.config.radius))
+            .filter(|h| length(delta) <= 1e-6 || dot(delta, h.normal) < -1e-6)
             .min_by(|a, b| a.fraction.total_cmp(&b.fraction))
     }
 

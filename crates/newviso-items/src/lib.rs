@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
+mod transfers;
+pub use transfers::{EquipmentDrop, PickupOrigin};
+
 pub const CHECKPOINT_SCHEMA: &str = "newviso.items.checkpoint.v1";
 pub const RUNTIME_SCHEMA: &str = "newviso.items.runtime.v1";
 
@@ -132,6 +135,14 @@ impl PickupBodyPose {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct ItemsCheckpoint {
+    #[serde(default)]
+    equipment_generations: BTreeMap<String, BTreeMap<String, u64>>,
+    #[serde(default)]
+    item_states: BTreeMap<String, BTreeMap<String, Value>>,
+    #[serde(default)]
+    pickup_states: BTreeMap<String, Value>,
+    #[serde(default)]
+    pickup_origins: BTreeMap<String, PickupOrigin>,
     schema: String,
     revision: u64,
     definitions: Vec<ItemDefinition>,
@@ -147,6 +158,10 @@ struct ItemsCheckpoint {
 
 #[derive(Clone, Debug, Default)]
 pub struct ItemsRuntime {
+    equipment_generations: BTreeMap<String, BTreeMap<String, u64>>,
+    item_states: BTreeMap<String, BTreeMap<String, Value>>,
+    pickup_states: BTreeMap<String, Value>,
+    pickup_origins: BTreeMap<String, PickupOrigin>,
     definitions: BTreeMap<String, ItemDefinition>,
     inventories: BTreeMap<String, BTreeMap<String, u32>>,
     pickups: BTreeMap<String, WorldPickup>,
@@ -238,6 +253,10 @@ impl ItemsRuntime {
                 .or_default()
                 .insert(slot.into(), item_id.into());
             self.bump_revision();
+            self.equipment_generations
+                .entry(owner_id.into())
+                .or_default()
+                .insert(slot.into(), self.revision);
         }
         Ok(())
     }
@@ -312,6 +331,9 @@ impl ItemsRuntime {
         let remaining = current - removed;
         if remaining == 0 {
             inventory.remove(item_id);
+            if let Some(states) = self.item_states.get_mut(owner_id) {
+                states.remove(item_id);
+            }
             if let Some(slots) = self.equipment.get_mut(owner_id) {
                 slots.retain(|_, equipped| equipped != item_id);
             }
@@ -356,8 +378,16 @@ impl ItemsRuntime {
         Ok(())
     }
 
+    pub fn pickup_origin(&self, id: &str) -> Option<&PickupOrigin> {
+        self.pickup_origins.get(id)
+    }
+
     pub fn pickup_body(&self, id: &str) -> Option<u64> {
         self.body_bindings.get(id).copied()
+    }
+    /// Borrow native pickup bindings without cloning item identifiers.
+    pub fn pickup_body_entities(&self) -> impl Iterator<Item = u64> + '_ {
+        self.body_bindings.values().copied()
     }
     pub fn pickup_bodies(&self) -> Vec<(String, u64)> {
         self.body_bindings
@@ -412,7 +442,11 @@ impl ItemsRuntime {
         if !self.definitions.contains_key(item) || self.inventory_quantity(owner, item) < quantity {
             return Err("cannot drop an unowned item or excessive quantity".into());
         }
+        let state = self.item_state(owner, item).cloned();
         self.remove_inventory(owner, item, quantity)?;
+        if let Some(state) = state {
+            self.pickup_states.insert(id.into(), state);
+        }
         self.pickups.insert(id.into(), pickup);
         self.bump_revision();
         Ok(())
@@ -421,6 +455,8 @@ impl ItemsRuntime {
     pub fn remove_pickup(&mut self, pickup_id: &str) -> bool {
         self.body_bindings.remove(pickup_id);
         self.body_poses.remove(pickup_id);
+        self.pickup_states.remove(pickup_id);
+        self.pickup_origins.remove(pickup_id);
         let removed = self.pickups.remove(pickup_id).is_some();
         if removed {
             self.bump_revision();
@@ -522,6 +558,12 @@ impl ItemsRuntime {
         pickup.quantity = remaining;
         pickup.collected = remaining == 0;
 
+        if let Some(state) = self.pickup_states.remove(pickup_id) {
+            self.item_states
+                .entry(owner_id.into())
+                .or_default()
+                .insert(snapshot.item_id.clone(), state);
+        }
         self.bump_revision();
         let status = if remaining == 0 {
             CollectionStatus::Collected
@@ -550,11 +592,13 @@ impl ItemsRuntime {
                     "capacity": self.capacities.get(owner_id),
                     "used_slots": self.used_slots(owner_id),
                     "equipped": self.equipment.get(owner_id).cloned().unwrap_or_default(),
+                    "equipment_generations": self.equipment_generations.get(owner_id),
                     "entries": entries
                         .iter()
                         .map(|(item_id, quantity)| json!({
                             "item_id": item_id,
-                            "quantity": quantity
+                            "quantity": quantity,
+                            "state": self.item_state(owner_id,item_id)
                         }))
                         .collect::<Vec<_>>()
                 })
@@ -567,6 +611,8 @@ impl ItemsRuntime {
             "inventories": inventories,
             "pickups": self.pickups.values().map(|pickup| {
                 let mut value = serde_json::to_value(pickup).expect("valid pickup");
+                value["origin"] = serde_json::to_value(self.pickup_origins.get(&pickup.id)).expect("valid pickup origin");
+                value["state"] = self.pickup_states.get(&pickup.id).cloned().unwrap_or(Value::Null);
                 value["physical_pose"] = serde_json::to_value(self.body_poses.get(&pickup.id)).expect("valid body pose");
                 value["body_entity"] = self.body_bindings.get(&pickup.id).map(|entity|Value::String(entity.to_string())).unwrap_or(Value::Null);
                 value
@@ -585,6 +631,10 @@ impl ItemsRuntime {
             capacities: self.capacities.clone(),
             body_poses: self.body_poses.clone(),
             equipment: self.equipment.clone(),
+            equipment_generations: self.equipment_generations.clone(),
+            item_states: self.item_states.clone(),
+            pickup_states: self.pickup_states.clone(),
+            pickup_origins: self.pickup_origins.clone(),
         })
         .map_err(|error| error.to_string())
     }
@@ -658,6 +708,12 @@ impl ItemsRuntime {
                 runtime.equip(&owner, &slot, &item)?;
             }
         }
+        runtime.restore_transfer_state(
+            checkpoint.equipment_generations,
+            checkpoint.item_states,
+            checkpoint.pickup_states,
+            checkpoint.pickup_origins,
+        )?;
         runtime.revision = checkpoint.revision;
         Ok(runtime)
     }

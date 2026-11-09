@@ -1,14 +1,20 @@
 use super::*;
 
 mod frame;
+mod performance;
 
 impl PlatformApplication for EngineApplication {
     fn on_window_ready(&mut self, ready: PlatformWindowReadyV1) -> Result<(), String> {
         // Platform has already created the permanent game HWND. Present the
         // optional startup movie directly on it, before Vulkan or map loading.
         // Missing/broken media is not fatal to the project.
-        if let Err(error) = application_startup_intro::play_if_present(ready.handles.window) {
-            host::warn("newviso.intro", format!("same-window intro unavailable: {error}"));
+        if !self.editor_mode {
+            if let Err(error) = application_startup_intro::play_if_present(ready.handles.window) {
+                host::warn(
+                    "newviso.intro",
+                    format!("same-window intro unavailable: {error}"),
+                );
+            }
         }
         bugtrap::checkpoint("render.provider.load");
         bugtrap::set_context(

@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::io::Write as _;
 use super::*;
 #[test]
 fn separable_sampling_preserves_f32_clamping_and_interpolation_exactly() {
@@ -146,6 +148,6 @@ fn full_frostline_grid_has_bounded_step_cost() {
     let mut f=field(257);f.spec.depth.fill(0.5);
     let start=std::time::Instant::now();
     let report=f.advance_dynamics(2.0,28.0,drift([0.6,0.8]),&vec![0.0;257*257],policy()).unwrap();
-    eprintln!("snow 257x257 / 2 seconds: {:?}, cells={}",start.elapsed(),report.changed_cells);
+    let _ = writeln!(std::io::stderr().lock(),"snow 257x257 / 2 seconds: {:?}, cells={}",start.elapsed(),report.changed_cells);
     assert_eq!(report.substeps,2);f.validate().unwrap();
 }

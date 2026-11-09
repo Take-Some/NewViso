@@ -11,7 +11,10 @@ impl EngineApplication {
             "scene.entity.animation.preload" => {
                 let clips = animation_preload_requests(command, index)?;
                 let stable_id = self.resolve_script_scene_entity(command, index, op)?;
-                let planar_root_lock = command.get("planar_root_lock").and_then(Value::as_bool).unwrap_or(false);
+                let planar_root_lock = command
+                    .get("planar_root_lock")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 self.queue_scene_animation_preloads(stable_id, clips, planar_root_lock);
             }
             "scene.entity.main_view_meshes.set" => {
@@ -104,13 +107,26 @@ impl EngineApplication {
                                 format!("script command[{index}] arm IK requires '{key}'")
                             })
                     };
+                    let origin = if let Some(joint) =
+                        arm.get("target_origin_joint").and_then(Value::as_str)
+                    {
+                        let Ok(point) = self.scene.entity_joint_world_position(stable_id, joint)
+                        else {
+                            continue;
+                        };
+                        point
+                    } else {
+                        [0.0; 3]
+                    };
+                    let relative_target = command_vec3(arm, "target", index)?;
+                    let relative_pole = command_vec3(arm, "pole", index)?;
                     constraints.push(newviso_scene::SceneArmIkConstraint {
                         upper_joint: name("upper_joint")?,
                         lower_joint: name("lower_joint")?,
                         hand_joint: name("hand_joint")?,
                         tip_joint: name("tip_joint")?,
-                        target: command_vec3(arm, "target", index)?,
-                        pole: command_vec3(arm, "pole", index)?,
+                        target: std::array::from_fn(|i| origin[i] + relative_target[i]),
+                        pole: std::array::from_fn(|i| origin[i] + relative_pole[i]),
                         rotation_degrees: command_vec3(arm, "rotation_degrees", index)?,
                         weight: command_number(arm, "weight", index)?,
                         hand_pose_weight: arm
@@ -346,13 +362,30 @@ impl EngineApplication {
 }
 
 fn animation_preload_requests(command: &Value, index: usize) -> Result<Vec<String>, String> {
-    let clips = command.get("clip_refs").and_then(Value::as_array)
-        .ok_or_else(|| format!("script command[{index}] animation.preload requires clip_refs array"))?;
+    let clips = command
+        .get("clip_refs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            format!("script command[{index}] animation.preload requires clip_refs array")
+        })?;
     if clips.is_empty() || clips.len() > 32 {
-        return Err(format!("script command[{index}] animation.preload requires 1..32 clip references"));
+        return Err(format!(
+            "script command[{index}] animation.preload requires 1..32 clip references"
+        ));
     }
-    clips.iter().map(|clip| clip.as_str().filter(|value| !value.trim().is_empty())
-        .map(str::to_owned).ok_or_else(|| format!("script command[{index}] animation.preload requires nonempty string clips"))).collect()
+    clips
+        .iter()
+        .map(|clip| {
+            clip.as_str()
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    format!(
+                        "script command[{index}] animation.preload requires nonempty string clips"
+                    )
+                })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -360,11 +393,18 @@ mod preload_tests {
     use super::*;
     #[test]
     fn malformed_or_unbounded_preloads_are_rejected_before_queueing() {
-        for value in [json!({}), json!({"clip_refs":[]}), json!({"clip_refs":[""]}),
-            json!({"clip_refs":[7]}), json!({"clip_refs":vec!["clip";33]})] {
+        for value in [
+            json!({}),
+            json!({"clip_refs":[]}),
+            json!({"clip_refs":[""]}),
+            json!({"clip_refs":[7]}),
+            json!({"clip_refs":vec!["clip";33]}),
+        ] {
             assert!(animation_preload_requests(&value, 0).is_err());
         }
-        assert_eq!(animation_preload_requests(&json!({"clip_refs":["walk","idle"]}), 0).unwrap(),
-            vec!["walk", "idle"]);
+        assert_eq!(
+            animation_preload_requests(&json!({"clip_refs":["walk","idle"]}), 0).unwrap(),
+            vec!["walk", "idle"]
+        );
     }
 }

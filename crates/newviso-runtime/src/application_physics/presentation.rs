@@ -89,6 +89,13 @@ impl PhysicsRuntime {
         }
     }
 
+    pub(crate) fn gravity_magnitude(&self) -> f32 {
+        self.settings.gravity.abs()
+    }
+    pub(crate) fn contact_skin(&self) -> f32 {
+        self.settings.contact_skin
+    }
+
     pub(crate) fn vehicle_body_state(
         &self,
         entity: u64,
@@ -211,6 +218,10 @@ impl PhysicsRuntime {
                     "convex_hull_count":body.convex_hulls.len(),
                     "participates_in_queries":body.flags.participates_in_queries,
                     "casts_contacts":body.flags.casts_contacts,
+                    "stair_support": self.character_stair_support(body.entity).map(|s| json!({
+                        "lifting":s.lifting,"normal":s.normal,"entity_key":s.entity.map(|e|e.to_string()),
+                        "height":s.y - match body.shape {CollisionShape::Capsule{radius,half_height}=>radius+half_height,_=>0.0}
+                    })),
                 })
             })
             .collect::<Vec<_>>();
@@ -278,7 +289,10 @@ impl PhysicsRuntime {
 
         json!({
             "enabled": true,
+            "scene_hinges":self.scene_hinges_snapshot(),
+            "doors":self.doors_snapshot(),
             "fixed_hz": self.settings.fixed_hz,
+            "fixed_seconds":self.fixed_seconds,
             "max_steps_per_frame": self.settings.max_steps_per_frame,
             "presentation_lead_seconds": presentation_lead_seconds,
             "presentation_alpha": presentation_alpha,

@@ -4,15 +4,19 @@ use serde_json::Value;
 use std::{
     collections::BTreeSet,
     fs,
-    io::Write,
     path::{Component, Path, PathBuf},
     sync::OnceLock,
 };
 
+pub use scene_editor::{ViewportEntity, ViewportOptions, ViewportVisual};
+mod context_input;
 mod dispatch;
+mod scene_editor;
+mod settings_editor;
 mod surfaces;
 mod workspace;
 
+const MAX_SCENE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_EDIT_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_VFS_ENTRIES: usize = 4096;
 pub const CONTENT_MANAGER_SURFACE_ID: &str = "newviso.content_manager";
@@ -28,6 +32,10 @@ pub struct ContentEntry {
 
 #[derive(Clone, Debug)]
 pub enum ContentEffect {
+    RuntimeSettingsApply {
+        patch: Value,
+        expected: std::collections::BTreeMap<String, Value>,
+    },
     ScriptChanged {
         logical_path: String,
         bytes: Vec<u8>,
@@ -74,11 +82,19 @@ pub struct ContentManager {
     saved_text: String,
     status: String,
     surface_revision: u64,
+    scene_editor: Option<scene_editor::SceneEditor>,
+    scene_cache: std::collections::BTreeMap<String, (scene_editor::SceneEditor, String)>,
+    settings_editor: Option<settings_editor::SettingsEditor>,
+    settings_visible: bool,
 }
 
 impl ContentManager {
-    pub fn surface_revision(&self)->u64{self.surface_revision}
-    fn invalidate_surfaces(&mut self){self.surface_revision=self.surface_revision.wrapping_add(1);}
+    pub fn surface_revision(&self) -> u64 {
+        self.surface_revision
+    }
+    fn invalidate_surfaces(&mut self) {
+        self.surface_revision = self.surface_revision.wrapping_add(1);
+    }
 }
 
 fn collect_files(root: &Path, current: &Path, out: &mut Vec<ContentEntry>) -> Result<(), String> {
@@ -115,7 +131,7 @@ fn collect_files(root: &Path, current: &Path, out: &mut Vec<ContentEntry>) -> Re
 
         out.push(ContentEntry {
             kind: kind_for_path(&logical).to_owned(),
-            editable: metadata.len() <= MAX_EDIT_BYTES && is_editable_path(&logical),
+            editable: metadata.len() <= edit_limit(&logical) && is_editable_path(&logical),
             path: logical,
             size_bytes: metadata.len(),
         });
@@ -348,6 +364,14 @@ fn is_script_path(path: &str) -> bool {
         .is_some_and(|segment| segment.eq_ignore_ascii_case("scripts"))
 }
 
+fn edit_limit(path: &str) -> u64 {
+    if normalize(path).split('/').any(|s| s == "scenes") {
+        MAX_SCENE_BYTES
+    } else {
+        MAX_EDIT_BYTES
+    }
+}
+
 fn is_editable_path(_path: &str) -> bool {
     true
 }
@@ -414,6 +438,10 @@ mod tests {
             saved_text: String::new(),
             status: String::new(),
             surface_revision: 0,
+            scene_editor: None,
+            scene_cache: Default::default(),
+            settings_editor: None,
+            settings_visible: false,
         };
         assert!(manager.resolve("../outside.txt").is_err());
     }
@@ -464,6 +492,10 @@ mod tests {
             saved_text: String::new(),
             status: String::new(),
             surface_revision: 0,
+            scene_editor: None,
+            scene_cache: Default::default(),
+            settings_editor: None,
+            settings_visible: false,
         };
 
         manager
@@ -495,6 +527,7 @@ mod tests {
         assert!(!manager.is_dirty());
         assert_eq!(effects.len(), 1);
         match &effects[0] {
+            ContentEffect::RuntimeSettingsApply { .. } => panic!("unexpected runtime effect"),
             ContentEffect::ScriptChanged {
                 logical_path,
                 bytes,
@@ -508,24 +541,46 @@ mod tests {
     }
 
     #[test]
-    fn surface_revision_changes_only_for_content_state_updates(){
-        let mut manager=ContentManager{
-            root:PathBuf::new(),project:None,entries:Vec::new(),vfs_entries:Vec::new(),
-            selected:None,vfs_selected:None,vfs_preview:String::new(),vfs_directory:String::new(),
-            vfs_search:String::new(),editor_text:String::new(),saved_text:String::new(),
-            status:String::new(),surface_revision:0,
+    fn surface_revision_changes_only_for_content_state_updates() {
+        let mut manager = ContentManager {
+            root: PathBuf::new(),
+            project: None,
+            entries: Vec::new(),
+            vfs_entries: Vec::new(),
+            selected: None,
+            vfs_selected: None,
+            vfs_preview: String::new(),
+            vfs_directory: String::new(),
+            vfs_search: String::new(),
+            editor_text: String::new(),
+            saved_text: String::new(),
+            status: String::new(),
+            surface_revision: 0,
+            scene_editor: None,
+            scene_cache: Default::default(),
+            settings_editor: None,
+            settings_visible: false,
         };
-        let before=manager.surfaces();
-        manager.apply_dispatch(&json!({"state_patches":[],"actions":[]})).unwrap();
-        manager.apply_dispatch(&json!({"actions":[{"action_id":"other.action"}]})).unwrap();
-        assert_eq!(manager.surface_revision(),0);assert_eq!(manager.surfaces(),before);
+        let before = manager.surfaces();
+        manager
+            .apply_dispatch(&json!({"state_patches":[],"actions":[]}))
+            .unwrap();
+        manager
+            .apply_dispatch(&json!({"actions":[{"action_id":"other.action"}]}))
+            .unwrap();
+        assert_eq!(manager.surface_revision(), 0);
+        assert_eq!(manager.surfaces(), before);
         manager.apply_dispatch(&json!({"state_patches":[{"changes":[{"path":"content.vfs.search","value":"snow"}]}]})).unwrap();
-        let edited=manager.surface_revision();assert!(edited>0);
+        let edited = manager.surface_revision();
+        assert!(edited > 0);
         manager.apply_dispatch(&json!({"state_patches":[{"changes":[{"path":"content.vfs.search","value":"snow"}]}]})).unwrap();
-        assert_eq!(manager.surface_revision(),edited);
-        manager.report_status("Ready");let changed=manager.surface_revision();
-        assert!(changed>edited);manager.report_status("Ready");assert_eq!(manager.surface_revision(),changed);
+        assert_eq!(manager.surface_revision(), edited);
+        manager.report_status("Ready");
+        let changed = manager.surface_revision();
+        assert!(changed > edited);
+        manager.report_status("Ready");
+        assert_eq!(manager.surface_revision(), changed);
         manager.apply_dispatch(&json!({"actions":[{"action_id":"content.vfs.open_dir","payload":{"path":"models"}}]})).unwrap();
-        assert!(manager.surface_revision()>changed);
+        assert!(manager.surface_revision() > changed);
     }
 }

@@ -1,157 +1,11 @@
-use super::recovery::ped_body_settled;
 use super::*;
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
-pub(crate) struct ReactionClip {
-    pub clip_ref: String,
-    pub duration_seconds: f32,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
-pub(crate) struct DirectionalClips {
-    front: ReactionClip,
-    back: ReactionClip,
-    left: ReactionClip,
-    right: ReactionClip,
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
-pub(crate) struct PedReactionClips {
-    knockdown: DirectionalClips,
-    // Each entry matches the FINAL pose of its corresponding knockdown clip.
-    // A front impact may finish on the back, so names are impact directions.
-    get_up: DirectionalClips,
-    airborne: ReactionClip,
-    landing: ReactionClip,
-    hard_landing: ReactionClip,
-    #[serde(default)]
-    pub(super) hit: Option<DirectionalClips>,
-}
-
-impl PedReactionClips {
-    pub(crate) fn validate(&self) -> Result<(), String> {
-        if let Some(hit) = &self.hit {
-            for c in [&hit.front, &hit.back, &hit.left, &hit.right] {
-                if c.clip_ref.trim().is_empty()
-                    || !c.duration_seconds.is_finite()
-                    || !(0.05..=60.0).contains(&c.duration_seconds)
-                {
-                    return Err("invalid hit reaction clip".into());
-                }
-            }
-        }
-        for clip in [
-            &self.knockdown.front,
-            &self.knockdown.back,
-            &self.knockdown.left,
-            &self.knockdown.right,
-            &self.get_up.front,
-            &self.get_up.back,
-            &self.get_up.left,
-            &self.get_up.right,
-            &self.airborne,
-            &self.landing,
-            &self.hard_landing,
-        ] {
-            if clip.clip_ref.trim().is_empty()
-                || clip.clip_ref.len() > 256
-                || !clip.clip_ref.contains('@')
-                || !clip.duration_seconds.is_finite()
-                || !(0.05..=60.0).contains(&clip.duration_seconds)
-            {
-                return Err("invalid pedestrian reaction clip or duration".into());
-            }
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum FallDirection {
-    Front,
-    Back,
-    Left,
-    Right,
-}
-
-impl DirectionalClips {
-    pub(super) fn select(&self, direction: FallDirection) -> ReactionClip {
-        match direction {
-            FallDirection::Front => &self.front,
-            FallDirection::Back => &self.back,
-            FallDirection::Left => &self.left,
-            FallDirection::Right => &self.right,
-        }
-        .clone()
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ReactionPhase {
-    Airborne,
-    Knockdown,
-    Down,
-    GetUp,
-    Landing,
-}
-
-impl ReactionPhase {
-    pub(super) fn as_str(self) -> &'static str {
-        match self {
-            Self::Airborne => "airborne",
-            Self::Knockdown => "fall",
-            Self::Down => "down",
-            Self::GetUp => "get_up",
-            Self::Landing => "land",
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(super) struct PedReactionState {
-    pub phase: ReactionPhase,
-    pub cause: &'static str,
-    pub direction: FallDirection,
-    pub clip: ReactionClip,
-    pub elapsed: f32,
-    pub minimum_vertical_speed: f32,
-    pub generation: u64,
-}
-
-impl PedReactionState {
-    pub(super) fn clip_time(&self) -> f32 {
-        if self.phase == ReactionPhase::Down {
-            self.clip.duration_seconds
-        } else {
-            self.elapsed.min(self.clip.duration_seconds)
-        }
-    }
-}
-
-pub(super) fn impact_direction(push: [f32; 3], heading: f32) -> FallDirection {
-    let (s, c) = heading.to_radians().sin_cos();
-    let front = -push[0] * s - push[2] * c;
-    let right = -push[0] * c + push[2] * s;
-    if front.abs() >= right.abs() {
-        if front >= 0.0 {
-            FallDirection::Front
-        } else {
-            FallDirection::Back
-        }
-    } else if right >= 0.0 {
-        FallDirection::Right
-    } else {
-        FallDirection::Left
-    }
-}
-
-pub(super) fn capsule_vertical_extent(rotation: [f32; 4], radius: f32, half_height: f32) -> f32 {
-    let [x, _, z, _] = rotation;
-    radius + half_height * (1.0 - 2.0 * (x * x + z * z)).abs().min(1.0)
-}
+pub(crate) use newviso_endorphin::{
+    capsule_vertical_extent, impact_direction, FallDirection, ReactionClips as PedReactionClips,
+    ReactionPhase, ReactionState as PedReactionState,
+};
 
 impl EngineApplication {
-    pub(super) fn ped_reaction_clips(&self, id: &str) -> Option<PedReactionClips> {
+    pub(crate) fn ped_reaction_clips(&self, id: &str) -> Option<PedReactionClips> {
         self.world_actor_presentations
             .get(id)?
             .locomotion
@@ -226,7 +80,8 @@ impl EngineApplication {
         // A second impact (or death) must not make a lying ped stand up just
         // to play the first frame of a standing KO. Seek toward its down pose.
         let start_time = clip.duration_seconds * (1.0 - uprightness);
-        body.recovery_seconds = VEHICLE_FALL_SECONDS + clip.duration_seconds - start_time;
+        body.endorphin.recovery.reset();
+        body.recovery_seconds = clip.duration_seconds - start_time;
         body.reaction = Some(PedReactionState {
             phase: ReactionPhase::Knockdown,
             cause,
@@ -283,6 +138,9 @@ impl EngineApplication {
             return Ok(());
         };
         let entity = self.ped_physics.bodies[id].entity;
+        if !self.advance_ped_recovery_support(id)? {
+            return Ok(());
+        }
         let Some(pose) = self
             .physics
             .as_ref()
@@ -290,10 +148,13 @@ impl EngineApplication {
         else {
             return Ok(());
         };
-        let ground = self
-            .physics
-            .as_ref()
-            .and_then(|p| p.character_ground_contact_height(entity));
+        let ground = if self.ped_physical_getup_active(id) {
+            self.ped_getup_observed_ground(id)
+        } else {
+            self.physics
+                .as_ref()
+                .and_then(|p| p.character_ground_contact_height(entity))
+        };
         let phase = self.ped_physics.bodies[id]
             .reaction
             .as_ref()
@@ -301,11 +162,14 @@ impl EngineApplication {
         if dead && !matches!(phase, Some(ReactionPhase::Knockdown | ReactionPhase::Down)) {
             self.start_ped_fall_animation(id, [0.0, 0.0, -1.0], "death");
         } else if !dead && phase.is_none() {
-            let tilted = capsule_vertical_extent(pose.rotation, 0.0, 1.0) < 0.70;
+            let physical_response = &self.ped_physics.bodies[id].endorphin.recovery;
+            let tilted = physical_response.tipped;
             if tilted {
                 let direction = [pose.rotation[2], 0.0, -pose.rotation[0]];
                 self.start_ped_fall_animation(id, direction, "tipped");
-            } else if ground.is_none() && pose.linear_velocity[1] < -2.0 {
+                self.enter_ped_physical_fall(id, direction)?;
+                return Ok(());
+            } else if physical_response.falling {
                 let body = self.ped_physics.bodies.get_mut(id).expect("ped body");
                 body.death_heading = self
                     .world_presentation_states
@@ -337,14 +201,28 @@ impl EngineApplication {
                 reaction.minimum_vertical_speed.min(pose.linear_velocity[1]);
             reaction.clone()
         };
-        if reaction.phase == ReactionPhase::Airborne && ground.is_some() && reaction.elapsed > 0.08
+        if !dead
+            && reaction.phase == ReactionPhase::Airborne
+            && reaction.cause != "high_fall"
+            && ground.is_none()
+            && self.ped_physics.bodies[id].endorphin.recovery.high_fall
         {
-            if reaction.minimum_vertical_speed < -5.0 {
+            self.ped_physics
+                .bodies
+                .get_mut(id)
+                .expect("airborne ped")
+                .reaction
+                .as_mut()
+                .expect("airborne reaction")
+                .cause = "high_fall";
+            // Transfer the current momentum in mid-air. No additional launch impulse.
+            self.enter_ped_physical_fall(id, [0.0; 3])?;
+            return Ok(());
+        }
+        if reaction.phase == ReactionPhase::Airborne && ground.is_some() {
+            if self.ped_physics.bodies[id].endorphin.recovery.hard_landing {
                 self.start_ped_fall_animation(id, [0.0, 0.0, 1.0], "hard_landing");
-                self.physics
-                    .as_mut()
-                    .expect("physics")
-                    .release_character_body(entity)?;
+                self.enter_ped_physical_fall(id, [0.0, 0.0, 1.0])?;
             } else {
                 let body = self.ped_physics.bodies.get_mut(id).expect("ped body");
                 let reaction = body.reaction.as_mut().expect("airborne reaction");
@@ -372,9 +250,9 @@ impl EngineApplication {
             && reaction.phase == ReactionPhase::Down
             && self.ped_physics.bodies[id].recovery_seconds <= 0.0
         {
-            if let Some(_ground) = ground.filter(|_| {
-                self.ped_getup_space_clear(id) && ped_body_settled(pose.linear_velocity)
-            }) {
+            if let Some(_ground) =
+                ground.filter(|_| self.ped_physics.bodies[id].endorphin.recovery.ready)
+            {
                 let body = self.ped_physics.bodies.get_mut(id).expect("ped body");
                 let reaction = body.reaction.as_mut().expect("down reaction");
                 reaction.clip = clips.get_up.select(reaction.direction);
@@ -389,13 +267,26 @@ impl EngineApplication {
                     json!({"actor_id": id, "clip_ref": reaction.clip.clip_ref}),
                 )?;
             }
+        } else if !dead
+            && reaction.phase == ReactionPhase::GetUp
+            && self.ped_physics.bodies[id].endorphin.recovery.falling
+            && reaction.cause != "physical_recovery"
+        {
+            // A real loss of support invalidates the animated recovery. Transfer
+            // the latest blended pose and native momentum without another push.
+            self.start_ped_fall_animation(id, [0.0; 3], "recovery_support_lost");
+            self.enter_ped_physical_fall(id, [0.0; 3])?;
         } else if !dead && reaction.phase == ReactionPhase::GetUp && !self.ped_getup_space_clear(id)
         {
+            let obstruction = self.ped_getup_clearance(id);
+            self.ped_physics
+                .bodies
+                .get_mut(id)
+                .expect("recovering ped")
+                .endorphin
+                .last_getup_block = Some(obstruction);
             self.start_ped_fall_animation(id, [0.0, 0.0, 1.0], "blocked_getup");
-            self.physics
-                .as_mut()
-                .expect("physics")
-                .release_character_body(entity)?;
+            self.enter_ped_physical_fall(id, [0.0, 0.0, 1.0])?;
         } else if !dead
             && matches!(
                 reaction.phase,
@@ -404,7 +295,11 @@ impl EngineApplication {
             && reaction.elapsed >= reaction.clip.duration_seconds
         {
             if reaction.phase == ReactionPhase::GetUp {
-                if let Some(ground) = ground {
+                if let Some(ground) = self
+                    .ped_getup_support_sample(id)
+                    .map(|s| s.ground_point[1])
+                    .or(ground)
+                {
                     self.stand_ped_body(id, ground)?;
                 }
             }
@@ -413,35 +308,5 @@ impl EngineApplication {
             self.drive_ped_getup_body(id)?;
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn impact_directions_follow_actor_heading_and_incoming_force() {
-        assert_eq!(
-            impact_direction([0.0, 0.0, -5.0], 0.0),
-            FallDirection::Front
-        );
-        assert_eq!(impact_direction([0.0, 0.0, 5.0], 0.0), FallDirection::Back);
-        assert_eq!(impact_direction([5.0, 0.0, 0.0], 0.0), FallDirection::Left);
-        assert_eq!(
-            impact_direction([-5.0, 0.0, 0.0], 0.0),
-            FallDirection::Right
-        );
-        assert_eq!(
-            impact_direction([-5.0, 0.0, 0.0], 90.0),
-            FallDirection::Front
-        );
-    }
-    #[test]
-    fn presentation_anchor_accounts_for_tipped_capsule_extent() {
-        assert!((capsule_vertical_extent([0.0, 0.0, 0.0, 1.0], 0.3, 0.6) - 0.9).abs() < 1e-5);
-        assert!(
-            (capsule_vertical_extent([0.70710677, 0.0, 0.0, 0.70710677], 0.3, 0.6) - 0.3).abs()
-                < 1e-5
-        );
     }
 }

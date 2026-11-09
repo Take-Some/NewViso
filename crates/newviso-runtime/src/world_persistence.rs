@@ -35,6 +35,8 @@ struct SavePayload {
     climate: Value,
     #[serde(default)]
     cold: Value,
+    #[serde(default)]
+    doors: Value,
 }
 
 pub(super) struct WorldStartup {
@@ -43,6 +45,7 @@ pub(super) struct WorldStartup {
     pub(super) items: ItemsRuntime,
     pub(super) climate: Value,
     pub(super) cold: Value,
+    pub(super) doors: Value,
     pub(super) persistence: Option<WorldPersistence>,
 }
 
@@ -73,6 +76,7 @@ impl WorldStartup {
             items: ItemsRuntime::default(),
             climate: Value::Null,
             cold: Value::Null,
+            doors: Value::Null,
             persistence: None,
         };
         let Some(relative) = settings.save_path.as_deref() else {
@@ -96,7 +100,7 @@ impl WorldStartup {
         store.check_path(&store.path)?;
         if settings.load_on_start && (store.path.exists() || store.backup_path().exists()) {
             let primary = store.read_valid(&store.path);
-            let (world, presentations, items, climate, cold, bytes) = match primary {
+            let (world, presentations, items, climate, cold, doors, bytes) = match primary {
                 Ok(value) => value,
                 Err(primary_error) => {
                     let result = store.read_valid(&store.backup_path()).map_err(|backup_error| {
@@ -116,6 +120,7 @@ impl WorldStartup {
             startup.items = items;
             startup.climate = climate;
             startup.cold = cold;
+            startup.doors = doors;
         }
         startup.persistence = Some(store);
         Ok(startup)
@@ -124,11 +129,15 @@ impl WorldStartup {
 
 impl WorldPersistence {
     /// Admit a save attempt before building any potentially large snapshots.
-    fn autosave_due(&mut self,dt:f32)->bool{
-        if dt.is_finite()&&dt>0.0{self.elapsed_since_attempt+=f64::from(dt);}
-        let interval=self.settings.autosave_interval_seconds;
-        if interval<=0.0||self.elapsed_since_attempt<interval{return false;}
-        self.elapsed_since_attempt=0.0;
+    fn autosave_due(&mut self, dt: f32) -> bool {
+        if dt.is_finite() && dt > 0.0 {
+            self.elapsed_since_attempt += f64::from(dt);
+        }
+        let interval = self.settings.autosave_interval_seconds;
+        if interval <= 0.0 || self.elapsed_since_attempt < interval {
+            return false;
+        }
+        self.elapsed_since_attempt = 0.0;
         true
     }
     pub(super) fn runtime_state(&self) -> Value {
@@ -143,18 +152,29 @@ impl EngineApplication {
         if !self.world_save_allowed {
             return;
         }
-        let Some(store)=self.world_persistence.as_mut() else{return;};
-        if !store.autosave_due(dt){return;}
+        let Some(store) = self.world_persistence.as_mut() else {
+            return;
+        };
+        if !store.autosave_due(dt) {
+            return;
+        }
         // Climate and the full cold field are materialized only for an admitted save.
-        let climate=self.climate_checkpoint();
-        let cold=self.cold.checkpoint();
-        let Some(store)=self.world_persistence.as_mut() else{return;};
-        if let Err(error) = store.save(
+        let climate = self.climate_checkpoint();
+        let cold = self.cold.checkpoint();
+        let doors = self
+            .physics
+            .as_ref()
+            .map_or(Value::Null, PhysicsRuntime::door_checkpoint);
+        let Some(store) = self.world_persistence.as_mut() else {
+            return;
+        };
+        if let Err(error) = store.save_with_doors(
             &self.living_world,
             &self.world_actor_presentations,
             &self.items,
             &climate,
             &cold,
+            &doors,
         ) {
             host::warn("newviso.world", format!("world autosave failed: {error}"));
             store.last_error = Some(error);
@@ -165,18 +185,29 @@ impl EngineApplication {
         if !self.ready || !self.world_save_allowed {
             return;
         }
-        if !self.world_persistence.as_ref().is_some_and(|store|store.settings.save_on_shutdown){
+        if !self
+            .world_persistence
+            .as_ref()
+            .is_some_and(|store| store.settings.save_on_shutdown)
+        {
             return;
         }
-        let climate=self.climate_checkpoint();
-        let cold=self.cold.checkpoint();
-        let Some(store)=self.world_persistence.as_mut() else{return;};
-        if let Err(error) = store.save(
+        let climate = self.climate_checkpoint();
+        let cold = self.cold.checkpoint();
+        let doors = self
+            .physics
+            .as_ref()
+            .map_or(Value::Null, PhysicsRuntime::door_checkpoint);
+        let Some(store) = self.world_persistence.as_mut() else {
+            return;
+        };
+        if let Err(error) = store.save_with_doors(
             &self.living_world,
             &self.world_actor_presentations,
             &self.items,
             &climate,
             &cold,
+            &doors,
         ) {
             host::warn(
                 "newviso.world",

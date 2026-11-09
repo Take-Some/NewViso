@@ -3,18 +3,35 @@ use super::*;
 impl PhysicsRuntime {
     #[cfg(test)]
     pub(crate) fn step(
-        &mut self, dt: f32, scene_solids: &[(u64,[f32;3],[f32;3])], vehicles: &mut VehicleRuntime,
+        &mut self,
+        dt: f32,
+        scene_solids: &[(u64, [f32; 3], [f32; 3])],
+        vehicles: &mut VehicleRuntime,
     ) -> Result<(), String> {
-        self.step_with_water(dt,scene_solids,vehicles,None)
+        self.step_with_water(dt, scene_solids, vehicles, None)
     }
 
+    #[cfg(test)]
     pub(crate) fn step_with_water(
         &mut self,
         dt: f32,
         scene_solids: &[(u64, [f32; 3], [f32; 3])],
         vehicles: &mut VehicleRuntime,
-        mut water_simulation: Option<&mut newviso_scene::water::WaterSimulation>,
+        water_simulation: Option<&mut newviso_scene::water::WaterSimulation>,
     ) -> Result<(), String> {
+        self.step_with_water_and_controls(dt, scene_solids, vehicles, water_simulation, |_, _| {})
+    }
+
+    pub(crate) fn step_with_water_and_controls(
+        &mut self,
+        dt: f32,
+        scene_solids: &[(u64, [f32; 3], [f32; 3])],
+        vehicles: &mut VehicleRuntime,
+        mut water_simulation: Option<&mut newviso_scene::water::WaterSimulation>,
+        mut control: impl FnMut(&mut Self, f32),
+    ) -> Result<(), String> {
+        self.frame_perf = PhysicsFramePerf::default();
+        let trace = performance_trace_enabled();
         if let Some(simulation) = water_simulation.as_deref_mut() {
             simulation.driven_by_physics = self.water.is_some();
         }
@@ -33,6 +50,16 @@ impl PhysicsRuntime {
         self.ballistic_impacts.clear();
         while self.accumulator + 1.0e-7 >= fixed_dt && steps < max_steps {
             self.fixed_tick = self.fixed_tick.wrapping_add(1);
+            self.fixed_seconds += fixed_dt as f64;
+            self.update_script_character_drives(fixed_dt)?;
+            self.update_door_controls(fixed_dt)?;
+            let control_start = trace.then(std::time::Instant::now);
+            control(self, fixed_dt);
+            self.update_character_stairs(fixed_dt, scene_solids)?;
+            if let Some(start) = control_start {
+                self.frame_perf.endorphin_ms += start.elapsed().as_secs_f64() * 1000.0;
+            }
+            let prepare_start = trace.then(std::time::Instant::now);
 
             let mut bodies = if self.settings.scene_colliders_enabled {
                 static_scene_bodies(scene_solids, self.settings)
@@ -71,11 +98,8 @@ impl PhysicsRuntime {
             let vehicle_plan =
                 vehicles.prepare_frame(fixed_dt, self.settings.gravity.abs(), &vehicle_states);
 
-            let mut commands = if steps == 0 {
-                std::mem::take(&mut self.pending_commands)
-            } else {
-                Vec::new()
-            };
+            // Fixed-step controllers can issue commands during any substep.
+            let mut commands = std::mem::take(&mut self.pending_commands);
             // Ocean impulses use the same Bullet fixed-step timeline as
             // vehicle suspension, avoiding frame-rate dependent buoyancy.
             if self.water.is_some() {
@@ -157,6 +181,12 @@ impl PhysicsRuntime {
                 commands,
                 queries,
             };
+            self.frame_perf.submitted_bodies += input.bodies.len();
+            self.frame_perf.submitted_joints += input.joints.len();
+            if let Some(start) = prepare_start {
+                self.frame_perf.frame_build_ms += start.elapsed().as_secs_f64() * 1000.0;
+            }
+            let provider_start = trace.then(std::time::Instant::now);
             let mut output = match self.client.step_frame_ref(&input) {
                 Ok(output) => output,
                 Err(error) => {
@@ -174,6 +204,11 @@ impl PhysicsRuntime {
                 }
             };
 
+            if let Some(start) = provider_start {
+                self.frame_perf.provider_ms += start.elapsed().as_secs_f64() * 1000.0;
+            }
+            let post_start = trace.then(std::time::Instant::now);
+            self.frame_perf.returned_events += output.events.len();
             self.enrich_contact_surfaces(&mut output);
             self.apply_output(&output);
             let mut completed_ballistic = BTreeSet::new();
@@ -235,8 +270,13 @@ impl PhysicsRuntime {
             vehicles.accept_probe_hits(&vehicle_hits);
             frame_events.extend(output.events.iter().cloned());
             self.last_output = output;
+            self.observe_door_contacts(fixed_dt);
             self.accumulator -= fixed_dt;
             steps += 1;
+            self.frame_perf.fixed_steps += 1;
+            if let Some(start) = post_start {
+                self.frame_perf.post_step_ms += start.elapsed().as_secs_f64() * 1000.0;
+            }
         }
 
         self.last_output.events = frame_events;

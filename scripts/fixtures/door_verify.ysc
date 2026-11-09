@@ -1,0 +1,86 @@
+import * as Game from './default_game_base.ysc';
+import {createRuntimeSnapshotDecoder} from './snapshot_delta.ysc';
+const decode=createRuntimeSnapshotDecoder(),doorId='verify.push_door';
+const encode=(v:any)=>JSON.stringify(v,(_k:string,v:any)=>typeof v==='bigint'?String(v):v);
+let stage=0,since=0,playerBody=0,peakAngle=0,peakAnchor=0,evidence:any={},first:number[]=[],reversePeak=0,captured=false;
+function check(ok:any,message:string):void{if(!ok)throw new Error('PHYSICAL_DOOR '+message);}
+function rotate(q:any,v:any):number[]{
+ const [x,y,z,w]=q,t=[2*(y*v[2]-z*v[1]),2*(z*v[0]-x*v[2]),2*(x*v[1]-y*v[0])];
+ return [v[0]+w*t[0]+y*t[2]-z*t[1],v[1]+w*t[1]+z*t[0]-x*t[2],v[2]+w*t[2]+x*t[1]-y*t[0]];
+}
+function next(n:number,now:number,cmd:any[]):void{stage=n;since=now;cmd.push({op:'console.write',message:'DOOR_STAGE '+n});}
+export function on_start(raw:any):any{
+ const p=decode(raw);playerBody=p.project.runtime.variables.engine_player.physics_entity;return Game.on_start(p);
+}
+export function on_frame(raw:any):any{
+ const p=decode(raw);p.frame={...p.frame,platform:{...p.frame.platform,focused:false}};
+ const result:any=Game.on_frame(p),cmd=result.commands,r=p.runtime,now=Number(r?.peds?.world_seconds??p.elapsed_seconds);
+ const scene=r?.scene?.entities?.find((x:any)=>x.name===doorId||x.key===doorId||x.id===doorId);
+ const physics=r?.physics;
+ const entity=scene?.stable_id??scene?.entity??scene?.entity_key??scene?.id;
+ const leaf=physics?.bodies?.find((b:any)=>String(b.entity_key??b.entity)===String(entity));
+ const player=physics?.bodies?.find((b:any)=>Number(b.entity)===playerBody);
+ if(!since)since=now;
+ // The shared module gives the door a unique mass, allowing lookup even when the
+ // compact scene snapshot does not publish its symbolic entity table.
+ const door=leaf??physics?.bodies?.find((b:any)=>b.mass_properties?.mass===25&&b.position?.[0]<2);
+ const candidate=door;
+ const reverse=physics?.bodies?.find((b:any)=>b.mass_properties?.mass===25&&b.position?.[0]>2);
+ const npc=r?.peds?.physics?.bodies?.find((b:any)=>b.actor_id==='endorphin.test.enemy');
+ if(p.project.runtime.variables.endorphin_capture&&stage>0)cmd.push({op:'scene.camera.set',position:[2.4,2.1,-2.4],target:[.5,1.1,-5],fov_y_degrees:50});
+ if(candidate){
+  const q=candidate.rotation,angle=2*Math.atan2(q[1],q[3]);peakAngle=Math.max(peakAngle,Math.abs(angle));
+  const pivot=rotate(q,[-.5,0,0]),actual=pivot.map((v:number,i:number)=>v+candidate.position[i]);
+  peakAnchor=Math.max(peakAnchor,Math.hypot(actual[0],actual[1]-1.06,actual[2]+5));
+  check(peakAnchor<.03,'hinge anchors separated '+peakAnchor);
+ }
+ if(reverse){
+  const q=reverse.rotation,angle=2*Math.atan2(q[1],q[3]);reversePeak=Math.min(reversePeak,angle);
+  const pivot=rotate(q,[-.5,0,0]),actual=pivot.map((v:number,i:number)=>v+reverse.position[i]);
+  peakAnchor=Math.max(peakAnchor,Math.hypot(actual[0]-4,actual[1]-1.06,actual[2]+5));
+  check(peakAnchor<.03,'reverse hinge anchors separated '+peakAnchor);
+ }
+ if(stage===0&&candidate&&player&&now>1){first=[...candidate.position];next(1,now,cmd);
+ }else if(stage===1&&now-since>.3){
+  check(peakAngle<.02,'unforced door cannot open by scripted motion');
+  evidence.resting=true;
+  cmd.push({op:'physics.body.pose.set',entity:playerBody,position:[.8,.95,-3.8],rotation:[0,0,0,1]},
+   {op:'physics.body.velocity.set',entity:playerBody,velocity:[0,0,-2.5]});next(2,now,cmd);
+ }else if(stage===2&&candidate){
+  cmd.push({op:'physics.body.velocity.set',entity:playerBody,velocity:[0,0,-2.5]});
+  if(peakAngle>.4){
+   evidence.player_contact_opens=true;
+   cmd.push({op:'physics.body.velocity.set',entity:playerBody,velocity:[0,0,0]},
+    {op:'physics.body.pose.set',entity:playerBody,position:[3,.95,-3],rotation:[0,0,0,1]});
+   next(3,now,cmd);
+  }
+ }else if(stage===3&&candidate){
+  if(p.project.runtime.variables.endorphin_capture&&!captured&&now-since>.4){captured=true;cmd.push({op:'console.write',message:'INTERACTION_CAPTURE door'});}
+  if(now-since<=1)return result;
+  check(peakAngle<2.2,'authored stops must limit the swing '+peakAngle);
+  check(Math.hypot(...candidate.position.map((v:number,i:number)=>v-first[i]))>.1,'leaf must translate around its pivot');
+  evidence.max_angle_radians=peakAngle;evidence.maximum_anchor_separation=peakAnchor;evidence.native_stops=true;
+  check(reverse&&Math.abs(reversePeak)<.02,'unforced reverse door remains at rest');
+  if(npc?.controlled){
+   cmd.push({op:'physics.body.pose.set',id:'endorphin.test.enemy',position:[4.8,.95,-6.2],rotation:[0,0,0,1]},
+    {op:'physics.body.velocity.set',id:'endorphin.test.enemy',velocity:[0,0,2.5]});next(4,now,cmd);
+  }
+ }else if(stage===4&&reverse){
+  cmd.push({op:'physics.body.velocity.set',id:'endorphin.test.enemy',velocity:[0,0,2.5]});
+  if(reversePeak<-.4){
+   evidence.npc_reverse_contact_opens=true;
+   cmd.push({op:'physics.body.velocity.set',id:'endorphin.test.enemy',velocity:[0,0,0]},
+    {op:'physics.body.pose.set',id:'endorphin.test.enemy',position:[7,.95,-7],rotation:[0,0,0,1]});next(5,now,cmd);
+  }
+ }else if(stage===5&&now-since>1){
+  check(Math.abs(reversePeak)<2.2,'reverse stop limits the swing '+reversePeak);
+  evidence.reverse_angle_radians=reversePeak;evidence.maximum_anchor_separation=peakAnchor;
+  cmd.push({op:'console.write',message:'ENDORPHIN_VERIFY_EVIDENCE '+encode(evidence)},
+   {op:'console.write',message:'ENDORPHIN_VERIFY_PASS shared_physical_door native_contact pivot stops resting'});
+  result.exit_requested=true;next(6,now,cmd);
+ }
+ check(stage===6||now-since<8,'stage timeout '+stage+' '+encode({bodies:physics?.bodies,scene}));
+ return result;
+}
+export function on_event(p:any):any{return Game.on_event(p);}
+export function on_shutdown(p:any):any{return Game.on_shutdown(p);}

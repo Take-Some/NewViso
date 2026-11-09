@@ -22,60 +22,14 @@ impl Scene3dRuntime {
         id: u64,
         constraints: Vec<SceneArmIkConstraint>,
     ) -> Result<(), String> {
-        if self.world.entity(SceneEntityId(id)).is_none() {
-            return Err(format!("arm IK entity {id} does not exist"));
-        }
-        if constraints.iter().any(|c| {
-            c.joint_rotations.len() > 32
-                || c.joint_rotations
-                    .iter()
-                    .any(|(name, r)| name.trim().is_empty() || r.iter().any(|v| !v.is_finite()))
-        }) {
-            return Err("arm IK contains invalid hand pose joints".into());
-        }
-        if constraints.len() > 2 {
-            return Err("arm IK supports at most two arms".into());
-        }
-        for c in &constraints {
-            if [&c.upper_joint, &c.lower_joint, &c.hand_joint, &c.tip_joint]
-                .iter()
-                .any(|s| s.trim().is_empty())
-                || c.target
-                    .iter()
-                    .chain(c.pole.iter())
-                    .chain(c.rotation_degrees.iter())
-                    .any(|v| !v.is_finite())
-                || !c.hand_pose_weight.is_finite()
-                || !(0.0..=1.0).contains(&c.hand_pose_weight)
-                || !c.weight.is_finite()
-                || !(0.0..=1.0).contains(&c.weight)
-            {
-                return Err(
-                    "arm IK requires finite targets, valid joint names and weight in 0..1".into(),
-                );
-            }
-        }
-        if constraints.is_empty() {
-            self.arm_ik_constraints.remove(&id);
-        } else {
-            let entity = self.world.entity(SceneEntityId(id)).unwrap();
-            let transform = entity.transform;
-            let bounds = extend_bounds(entity.bounds, &constraints);
-            self.world.update_spatial_from(
-                SceneEntityId(id),
-                transform,
-                bounds,
-                SceneMutationSource::Animation,
-            )?;
-            self.arm_ik_constraints.insert(id, constraints);
-        }
-        Ok(())
+        self.set_arm_ik_channel(id, constraints, false)
     }
 
     pub(super) fn model_arm_ik(&self, id: u64) -> Result<Vec<SceneArmIkConstraint>, String> {
-        let Some(constraints) = self.arm_ik_constraints.get(&id) else {
+        let constraints = self.combined_arm_ik(id);
+        if constraints.is_empty() {
             return Ok(Vec::new());
-        };
+        }
         let e = self
             .world
             .entity(SceneEntityId(id))
@@ -113,8 +67,9 @@ impl Scene3dRuntime {
     }
 
     pub fn entity_arm_ik_snapshot(&self) -> serde_json::Value {
-        serde_json::Value::Array(self.arm_ik_constraints.iter().map(|(id, constraints)| {
-            serde_json::json!({"entity": id, "arms": constraints.iter().map(|c| {
+        serde_json::Value::Array(self.arm_ik_constraints.keys().chain(self.protective_arm_ik_constraints.keys()).copied().collect::<std::collections::BTreeSet<_>>().into_iter().map(|entity| {
+            let id=&entity;let constraints=layers::merge_arm_channels(self.arm_ik_constraints.get(id).map(Vec::as_slice).unwrap_or(&[]),self.protective_arm_ik_constraints.get(id).map(Vec::as_slice).unwrap_or(&[]));
+            serde_json::json!({"entity": id, "entity_key":id.to_string(), "arms": constraints.iter().map(|c| {
                 let tip_result = self.entity_joint_world_position(*id, &c.tip_joint);
                 let tip = tip_result.as_ref().ok().copied();
                 let shoulder = self.entity_joint_world_position(*id, &c.upper_joint).ok();
@@ -126,7 +81,7 @@ impl Scene3dRuntime {
                 });
                 let rotation = self.entity_joint_world_pose(*id, &c.tip_joint).ok().map(|p| p.1);
                 serde_json::json!({"hand":c.hand_joint,"tip":c.tip_joint,"target":c.target,
-                    "position":tip,"rotation_degrees":rotation,"wrist":wrist,"reach":reach,"shoulder":shoulder,"weight":c.weight,"hand_pose_weight":c.hand_pose_weight,
+                    "position":tip,"rotation_degrees":rotation,"wrist":wrist,"elbow":elbow,"reach":reach,"shoulder":shoulder,"weight":c.weight,"hand_pose_weight":c.hand_pose_weight,
                     "pose_error":tip_result.err(),
                     "error":tip.map(|p| ((p[0]-c.target[0]).powi(2)+(p[1]-c.target[1]).powi(2)+(p[2]-c.target[2]).powi(2)).sqrt())})
             }).collect::<Vec<_>>()})
@@ -205,10 +160,13 @@ pub(super) fn apply_to_globals(
         let lower = index(&c.lower_joint)?;
         let hand = index(&c.hand_joint)?;
         let tip = index(&c.tip_joint)?;
-        if skeleton.joints[lower].parent != Some(upper as u16)
-            || skeleton.joints[hand].parent != Some(lower as u16)
+        if !descends_from(skeleton, lower, upper)
+            || !descends_from(skeleton, hand, lower)
+            || (tip != hand && !descends_from(skeleton, tip, hand))
         {
-            return Err("arm IK requires an upper-arm -> forearm -> hand chain".into());
+            return Err(
+                "arm IK requires ordered upper-arm, forearm, hand and socket descendants".into(),
+            );
         }
         if c.weight > 0.0001 {
             let desired_socket = geometry::instance_model_matrix(
@@ -337,6 +295,18 @@ pub(super) fn apply_to_globals(
     Ok(())
 }
 
+fn descends_from(skeleton: &ModelSkeleton, mut child: usize, ancestor: usize) -> bool {
+    for _ in 0..skeleton.joints.len() {
+        let Some(parent) = skeleton.joints[child].parent else {
+            return false;
+        };
+        if parent as usize == ancestor {
+            return true;
+        }
+        child = parent as usize;
+    }
+    false
+}
 fn pos(m: [f32; 16]) -> Vec3 {
     Vec3::new(m[12], m[13], m[14])
 }
@@ -364,7 +334,7 @@ fn qmul(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
         a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
     ])
 }
-fn rotation_quat(m: [f32; 16]) -> [f32; 4] {
+pub(super) fn rotation_quat(m: [f32; 16]) -> [f32; 4] {
     let sx = Vec3::new(m[0], m[1], m[2]).length().max(1.0e-8);
     let sy = Vec3::new(m[4], m[5], m[6]).length().max(1.0e-8);
     let sz = Vec3::new(m[8], m[9], m[10]).length().max(1.0e-8);
@@ -420,133 +390,6 @@ fn rotate_branch(
     }
 }
 
+pub(super) mod layers;
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use newviso_model::ModelJoint;
-    #[test]
-    fn arm_reaches_tip_without_stretching_and_preserves_other_bones() {
-        let mut joints = Vec::new();
-        let translations = [
-            [0.0, 0.0, 0.0],
-            [0.4, 0.0, 0.0],
-            [0.35, 0.0, 0.0],
-            [0.04, 0.0, 0.0],
-            [0.0, -1.0, 0.0],
-        ];
-        let mut globals = Vec::new();
-        for (i, t) in translations.into_iter().enumerate() {
-            let parent = match i {
-                0 | 4 => None,
-                _ => Some((i - 1) as u16),
-            };
-            let rotation = if i == 3 {
-                [
-                    0.0,
-                    std::f32::consts::FRAC_1_SQRT_2,
-                    0.0,
-                    std::f32::consts::FRAC_1_SQRT_2,
-                ]
-            } else {
-                [0.0, 0.0, 0.0, 1.0]
-            };
-            let local = trs_matrix(t, rotation, [1.0; 3]);
-            let global = parent.map_or(local, |p| mul_mat4(globals[p as usize], local));
-            globals.push(global);
-            joints.push(ModelJoint {
-                name: format!("j{i}"),
-                tag: i as u32,
-                parent,
-                inverse_bind_matrix: inverse_affine(global).unwrap(),
-                bind_translation: t,
-                bind_rotation: rotation,
-                bind_scale: [1.0; 3],
-            });
-        }
-        let skeleton = ModelSkeleton {
-            name: "test".into(),
-            joints,
-        };
-        let other = globals[4];
-        let c = SceneArmIkConstraint {
-            upper_joint: "j0".into(),
-            lower_joint: "j1".into(),
-            hand_joint: "j2".into(),
-            tip_joint: "j3".into(),
-            target: [0.3, 0.4, -0.3],
-            pole: [0.0, -1.0, 0.0],
-            rotation_degrees: [0.0; 3],
-            weight: 1.0,
-            hand_pose_weight: 1.0,
-            joint_rotations: Vec::new(),
-        };
-        apply_to_globals(&mut globals, &skeleton, &vec![None; 5], &[c]).unwrap();
-        assert!(pos(globals[3]).sub(Vec3::new(0.3, 0.4, -0.3)).length() < 1.0e-4);
-        assert!((pos(globals[1]).sub(pos(globals[0])).length() - 0.4).abs() < 1.0e-4);
-        assert!((pos(globals[2]).sub(pos(globals[1])).length() - 0.35).abs() < 1.0e-4);
-        assert_eq!(globals[4], other);
-        assert!(
-            Vec3::new(globals[3][8], globals[3][9], globals[3][10])
-                .sub(Vec3::new(0.0, 0.0, 1.0))
-                .length()
-                < 1.0e-4
-        );
-    }
-    #[test]
-    fn equipped_fingers_hold_grip_after_arms_return_to_locomotion() {
-        let translations = [
-            [0.0; 3],
-            [0.3, 0.0, 0.0],
-            [0.25, 0.0, 0.0],
-            [0.04, 0.0, 0.0],
-            [0.08, 0.0, 0.0],
-            [0.04, 0.0, 0.0],
-        ];
-        let parents = [None, Some(0), Some(1), Some(2), Some(2), Some(4)];
-        let mut globals = Vec::new();
-        let mut joints = Vec::new();
-        for (i, t) in translations.into_iter().enumerate() {
-            let local = trs_matrix(t, [0.0, 0.0, 0.0, 1.0], [1.0; 3]);
-            let global = parents[i].map_or(local, |p| mul_mat4(globals[p as usize], local));
-            globals.push(global);
-            joints.push(ModelJoint {
-                name: format!("j{i}"),
-                tag: i as u32,
-                parent: parents[i],
-                inverse_bind_matrix: inverse_affine(global).unwrap(),
-                bind_translation: t,
-                bind_rotation: [0.0, 0.0, 0.0, 1.0],
-                bind_scale: [1.0; 3],
-            });
-        }
-        let before = globals.clone();
-        let skeleton = ModelSkeleton {
-            name: "grip".into(),
-            joints,
-        };
-        let c = SceneArmIkConstraint {
-            upper_joint: "j0".into(),
-            lower_joint: "j1".into(),
-            hand_joint: "j2".into(),
-            tip_joint: "j3".into(),
-            target: [10.0; 3],
-            pole: [0.0, -1.0, 0.0],
-            rotation_degrees: [90.0; 3],
-            weight: 0.0,
-            hand_pose_weight: 1.0,
-            joint_rotations: vec![("j4".into(), [0.0, 60.0, 0.0])],
-        };
-        apply_to_globals(&mut globals, &skeleton, &vec![None; 6], &[c]).unwrap();
-        assert_eq!(
-            &globals[..4],
-            &before[..4],
-            "released arms and weapon socket keep their locomotion pose"
-        );
-        assert!(pos(globals[4]).sub(pos(before[4])).length() < 1e-6);
-        assert!((pos(globals[5]).sub(pos(globals[4])).length() - 0.04).abs() < 1e-6);
-        assert!(
-            pos(globals[5]).z < -0.03,
-            "finger curls around grip independently of arm IK"
-        );
-    }
-}
+mod tests;

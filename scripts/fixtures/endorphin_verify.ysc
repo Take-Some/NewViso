@@ -1,0 +1,247 @@
+import * as Game from './default_game_base.ysc';
+import { createRuntimeSnapshotDecoder } from './snapshot_delta.ysc';
+import { LivingWorldCommands as World } from './world/living_world.ysc';
+const encode=(v:any)=>JSON.stringify(v,(_k:string,v:any)=>typeof v==='bigint'?String(v):v);
+const decode=createRuntimeSnapshotDecoder(),foe='endorphin.test.enemy',ceiling=900070221,carryWall=900070223,supportFloor=900070222;
+let stage=0,since=0,profile:any=null,sawAir=false,sawGetup=false,oldParts:string[]=[],evidence:any={},peakAnchor=0,peakLength=0,peakScale=0;
+const movingMode=(s:string)=>s.startsWith('moving');
+const vadd=(a:any,b:any)=>a.map((v:number,i:number)=>v+b[i]);
+const vsub=(a:any,b:any)=>a.map((v:number,i:number)=>v-b[i]);
+const vcross=(a:any,b:any)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+function vrotate(q:any,v:any):any {const t=vcross(q.slice(0,3),v).map((v:number)=>2*v);return vadd(v,vadd(t.map((v:number)=>q[3]*v),vcross(q.slice(0,3),t)));}
+let moveGroundError=0,moveCapsuleError=0,moveVelocityError=0;
+let moveStart=0,moveSamples=0,movePeak=0,moveHeadingPeak=0,moveBlend=false,moveStopped=false,moveOrigin:any=null,moveHeading=0,blockX=0;
+let supportBase=0,contextMode='',interrupted=false,blendFrames=0,blendGeneration=-1,lastWeight=-1,sawMidBlend=false,sawCompleteBlend=false;
+let peakBlendAbsolute=0,peakBlendLength=0,peakBlendScale=0,peakBlendShear=0,peakRebase=0;
+function check(ok:any,message:string):void {if(!ok)throw new Error('ENDORPHIN_VERIFY '+message);}
+function intact(rig:any):void {
+ const s=rig?.skeleton_integrity;
+ check(s?.palette_interpolation_active===false&&s?.vertex_interpolation_active===false,
+  'physical presentation cannot interpolate matrices or packed vertices '+encode(s));
+ check(s&&s.constrained_bones>10,'physical skin must retain a connected skeleton '+encode(s));
+ check(s.max_bone_length_error<.00001&&s.max_relative_local_bone_length_error<.001&&s.max_relative_scale_error<.0001&&s.max_basis_shear<.0001,
+  'physical skin preserves bone lengths, scale and rigid bases '+encode(s));
+}
+function next(n:number,now:number,cmd:any[]):void {stage=n;since=now;cmd.push({op:'console.write',message:'ENDORPHIN_STAGE '+n});}
+function place(cmd:any[]):void {
+ cmd.push(World.upsertActor({id:foe,kind:'pedestrian',position:[0,supportBase+3,-5],group:'raiders',tags:['combatant']}),
+  {op:'physics.body.pose.set',id:foe,position:[0,supportBase+3.9,-5],rotation:[0,0,0,1]},
+  {op:'physics.body.velocity.set',id:foe,velocity:[0,0,0]});
+}
+export function on_start(raw:any):any {return Game.on_start(decode(raw));}
+export function on_frame(raw:any):any {
+ const p=decode(raw);p.frame={...p.frame,platform:{...p.frame.platform,focused:false}};
+ const result:any=Game.on_frame(p),cmd=result.commands,r=p.runtime,now=Number(r?.peds?.world_seconds??r?.living_world?.clock?.world_seconds??p.elapsed_seconds);
+ contextMode=p.project.runtime.variables.endorphin_recovery_context??'';
+ supportBase=contextMode==='support_loss'||movingMode(contextMode)?3:0;
+ const npc=r?.peds?.peds?.find((v:any)=>v.profile.actor_id===foe);
+ const record=r?.peds?.physics?.bodies?.find((v:any)=>v.actor_id===foe);
+ const body=r?.physics?.bodies?.find((v:any)=>String(v.entity_key??v.entity)===String(record?.entity_key));
+ const e=record?.endorphin,rig=record?.ragdoll,phase=record?.animation?.phase;
+ if(rig?.active){
+  intact(rig);
+  peakAnchor=Math.max(peakAnchor,...rig.joints.map((v:any)=>v.separation));
+  peakLength=Math.max(peakLength,rig.skeleton_integrity.max_relative_bone_length_error);
+  peakScale=Math.max(peakScale,rig.skeleton_integrity.max_relative_scale_error);
+  check(peakAnchor<.03,'physical joints retain their anchors '+peakAnchor);
+ }
+ const blend=e?.pose_blend;
+ if(phase==='get_up'&&blend) {
+  check(blend.initial_pose_committed&&blend.captured_joints>60&&blend.world_rebase_error<.0001,'captured world pose is rebased coherently '+encode(blend));
+  check(!blend.palette_interpolation_active&&!blend.vertex_interpolation_active,'recovery skinning never lerps matrices or packed vertices '+encode(blend));
+  check(!record.controlled,'blending does not restore voluntary movement early');
+  if(blend.started) {
+   const matchedTime=e.getup_match?.match_time_seconds;
+   check(Number.isFinite(blend.clip_time_seconds)&&blend.clip_time_seconds+1e-5>=matchedTime,
+    'recovery playback honors the matched start time '+encode({matchedTime,blend}));
+   check(!blend.measurement_error&&Number.isFinite(blend.max_relative_local_length_error),'recovery hierarchy is measured '+encode(blend));
+   check(blend.max_absolute_local_length_error<.00001&&blend.max_relative_local_length_error<.001&&blend.max_relative_scale_error<.0001&&blend.max_basis_shear<.0001,
+    'blended hierarchy preserves lengths, scale and rigid bases '+encode(blend));
+   if(blendGeneration!==record.animation.generation){blendGeneration=record.animation.generation;lastWeight=-1;}
+   check(blend.animation_weight>=lastWeight-1e-6&&blend.animation_weight<=1,'blend weight is monotonic within a recovery');
+   lastWeight=blend.animation_weight;blendFrames++;
+   sawMidBlend=sawMidBlend||(lastWeight>0&&lastWeight<1);sawCompleteBlend=sawCompleteBlend||blend.complete;
+   peakBlendAbsolute=Math.max(peakBlendAbsolute,blend.max_absolute_local_length_error);
+   peakBlendLength=Math.max(peakBlendLength,blend.max_relative_local_length_error);
+   peakBlendScale=Math.max(peakBlendScale,blend.max_relative_scale_error);
+   peakBlendShear=Math.max(peakBlendShear,blend.max_basis_shear);peakRebase=Math.max(peakRebase,blend.world_rebase_error);
+  }
+ }
+ const drops=(r?.items?.pickups??[]).filter((v:any)=>v.origin?.owner_id===foe);
+ if(!since)since=now;
+ check(!(stage===5&&record?.animation?.cause==='blocked_getup'),'unexpected getup obstruction '+encode({last:e?.last_getup_block,obstacles:(r.physics?.bodies??[]).map((v:any)=>({entity_key:v.entity_key,entity:v.entity,position:v.position,shape:v.shape}))}));
+ check(!(stage===5&&record?.animation?.cause==='recovery_support_lost'),'unexpected getup support loss '+encode({support:e?.getup_support,recovery:e?.recovery,body}));
+ if(stage===0&&npc&&body&&record?.joint_positions?.SKEL_R_Hand&&now>1){
+  check(e?.system==='Endorphin','native Endorphin adapter installed');
+  check(Math.abs(e.response_time_scale-p.project.runtime.variables.endorphin_expected_time_scale)<1e-5,'project VFS model is authoritative '+encode(e));
+  profile={...npc.profile,combat:null,melee:null,armed:false,block_events:true,max_health:100,armour:0};
+  cmd.push({op:'ped.upsert',profile,reset:true},{op:'agent.tasks.clear',agent_id:foe+'.ai'});
+  if(contextMode==='support_loss'||movingMode(contextMode))cmd.push({op:'physics.body.upsert',entity:supportFloor,body_kind:movingMode(contextMode)?'kinematic':'static',
+   position:[0,supportBase-.1,-5],shape:{kind:'box',half_extents:[4,.1,4]},participates_in_queries:true,casts_contacts:true});
+  next(1,now,cmd);place(cmd);
+ }else if(stage===1){
+  if(body?.position[1]>supportBase+3.5){next(2,now,cmd);}
+  else place(cmd);
+ }else if(stage===2){
+  sawAir=sawAir||phase==='airborne';
+  if(rig?.active&&!npc.dead){
+   check(sawAir,'fall begins from native unsupported motion');
+   check(rig.system==='Endorphin'&&rig.parts.length===15&&rig.physical_skeleton,'living fall owns fifteen articulated bodies');
+   check(!record.controlled,'AI cannot overwrite physical fall');
+   check(record.animation?.cause==='high_fall','descent energy activates physical control before landing');
+   check(Math.min(...rig.parts.map((v:any)=>v.position[1]))>supportBase+.25,'articulation starts while the whole body is above the floor');
+   evidence={living_articulation:true,airborne_articulation:true,parts:rig.parts.length,fall_health:npc.health,
+    model:e.model_asset,response_time_scale:e.response_time_scale};
+   next(21,now,cmd);
+  }
+ }else if(stage===21&&rig?.active&&Math.max(...rig.parts.map((v:any)=>v.position[1]))<supportBase+1.0){
+  // Insert clearance geometry only after every body part is below it.
+  // It must not become an artificial landing platform during the fall.
+  cmd.push({op:'physics.body.upsert',entity:ceiling,body_kind:'static',position:[body.position[0],supportBase+1.4,body.position[2]],
+   shape:{kind:'box',half_extents:[3,.08,3]},participates_in_queries:true,casts_contacts:true});
+  next(3,now,cmd);
+ }else if(stage===3&&now-since>1.8){
+  check(!npc.dead&&rig?.active&&!record.controlled,'blocked recovery remains physical and alive');
+  check(!e.recovery.space_clear&&!e.recovery.ready&&e.recovery.confidence===0,'overhead geometry invalidates recovery evidence '+encode({e,body:body.position,ceiling:r.physics.bodies.find((v:any)=>Number(v.entity)===ceiling)?.position,parts:rig.parts.map((v:any)=>v.position)}));
+  check(rig.parts.every((v:any)=>v.position?.every(Number.isFinite)&&v.angular_velocity?.every(Number.isFinite)),'articulation stays finite under blocked recovery');
+  check(rig.joints.every((v:any)=>v.separation<.02),'native constraints stay connected');
+  evidence.blocked_confidence=e.recovery.confidence;
+  cmd.push({op:'physics.body.destroy',entity:ceiling});next(4,now,cmd);
+ }else if(stage===4){
+  check(!npc.dead&&npc.health===100,'physical fall does not fabricate health damage');
+  if(phase==='get_up'&&!rig?.active){
+   const expected=p.project.runtime.variables.endorphin_expected_match;
+   const match=e.getup_match;
+   check(match?.status==='matched'&&match.unavailable===0,'get-up matching succeeds '+encode(match));
+   check(Number.isFinite(match.selected?.normalized_error),'finite pose-matching score');
+   if(expected){
+    check(match.authored&&match.evaluated===1&&match.filtered+match.duplicate_clips===3&&
+     match.marker_count===expected.marker_count&&
+     match.clip_ref===expected.clip_ref&&match.samples_tested===expected.times.length&&
+     expected.times.some((t:number)=>Math.abs(t-match.match_time_seconds)<1e-6),
+     'authored clip filter, markers and time samples are used '+encode(match));
+    check(Math.abs(match.selection_score-.5*match.selected.normalized_error)<1e-6,
+     'authored item score multiplier is applied '+encode(match));
+    check(Math.abs(blend?.duration_seconds-expected.blend_seconds)<1e-6,
+     'authored blend duration reaches the scene '+encode(blend));
+   }else{
+    check(!match.authored&&match.evaluated===4&&match.filtered===0,
+     'all four legacy get-up candidates are sampled '+encode(match));
+   }
+   check(match.samples_tested>match.evaluated&&Number.isFinite(match.match_time_seconds)&&
+    match.match_time_seconds>=0&&match.match_time_seconds<match.clip_duration_seconds,
+    'get-up search evaluates multiple admissible clip phases '+encode(match));
+   const placement=e.getup_match.placement,placed=placement?.selected;
+   check(placement&&!placement.invalid_input&&placement.tested>=1&&placed,
+    'recovery is admitted only after safe root placement '+encode(e.getup_match));
+   check([placed.model_origin,placed.capsule_center,placed.root_world].every((p:any)=>p?.length===3&&p.every(Number.isFinite)),
+    'placed model, capsule and root are finite');
+   check(Math.hypot(body.position[0]-placed.capsule_center[0],body.position[2]-placed.capsule_center[2])<.03,
+    'accepted placement moves the native capsule '+encode({actual:body.position,placed}));
+   evidence.safe_root_placement=true;evidence.getup_placement=placement;
+   evidence.pose_matched_getup=true;evidence.getup_match=e.getup_match;
+   check(blend&&blend.captured_joints>60,'get-up consumes the captured physical pose');
+   sawGetup=true;evidence.clearance_to_getup=now-since;
+   if(contextMode&&!movingMode(contextMode)&&!interrupted) {
+    interrupted=true;
+    if(contextMode==='support_loss')cmd.push({op:'physics.body.destroy',entity:supportFloor});
+    else cmd.push({op:'physics.body.upsert',entity:ceiling,body_kind:'static',
+     position:[body.position[0],1.4,body.position[2]],shape:{kind:'box',half_extents:[3,.08,3]},
+     participates_in_queries:true,casts_contacts:true});
+    next(41,now,cmd);
+   }else next(5,now,cmd);
+  }
+ }else if(stage===41&&rig?.active) {
+  const expected=contextMode==='support_loss'||contextMode==='moving_loss'?'recovery_support_lost':contextMode==='moving_blocked'?'recovery_support_blocked':'blocked_getup';
+  check(record.animation?.cause===expected&&!record.controlled&&!npc.dead,'context returns ownership to physics '+encode(record));
+  check(!e.pose_blend,'interrupted captured pose is retired');
+  evidence.context_interruption={kind:contextMode,cause:expected,physical:true,blend_cancelled:true};
+  if(movingMode(contextMode)) {
+   check(!e.getup_attachment,'lost or blocked support has no frozen fallback binding');
+   if(contextMode==='moving_blocked')check(body.position[0]<blockX-.2,'a carrier cannot teleport the actor through a wall');
+   cmd.push({op:'physics.body.destroy',entity:supportFloor});
+   if(contextMode==='moving_blocked')cmd.push({op:'physics.body.destroy',entity:carryWall});
+   evidence.moving_support={maximum_ground_error:moveGroundError,maximum_capsule_error:moveCapsuleError,maximum_point_velocity_error:moveVelocityError,samples:moveSamples,maximum_transport:movePeak,heading_change:moveHeadingPeak,during_blend:moveBlend,
+    interruption:contextMode,status:e.getup_support?.status};
+  }
+  if(contextMode==='obstructed')cmd.push({op:'physics.body.destroy',entity:ceiling});
+  next(4,now,cmd);
+ }else if(stage===5&&record.controlled&&!phase){
+  check(sawGetup&&!rig?.active,'physical ownership returns through a get-up clip');
+  const completed=contextMode==='moving'?e.getup_support?.current:null;
+  if(contextMode==='moving') {
+   check(e.getup_support?.status==='completed'&&completed,'moving get-up completes its admitted support binding');
+   check(moveSamples>=3&&movePeak>.1&&moveHeadingPeak>.1&&moveBlend&&moveStopped,'translation, yaw, stopping and physical-pose blending are exercised '+encode({moveSamples,movePeak,moveHeadingPeak,moveBlend,moveStopped}));
+   check(Math.hypot(...vsub(body.linear_velocity,completed.velocity))<.12,'final capsule receives support-point velocity '+encode({body,completed}));
+   evidence.moving_support={maximum_ground_error:moveGroundError,maximum_capsule_error:moveCapsuleError,maximum_point_velocity_error:moveVelocityError,samples:moveSamples,maximum_transport:movePeak,heading_change:moveHeadingPeak,during_blend:moveBlend,stopping:moveStopped,handoff_velocity:true};
+   cmd.push({op:'physics.body.upsert',entity:supportFloor,body_kind:'kinematic',position:r.physics.bodies.find((v:any)=>Number(v.entity)===supportFloor).position,
+    rotation:r.physics.bodies.find((v:any)=>Number(v.entity)===supportFloor).rotation,
+    linear_velocity:[0,0,0],angular_velocity:[0,0,0],shape:{kind:'box',half_extents:[4,.1,4]},friction:.8,participates_in_queries:true,casts_contacts:true});
+  }
+  const accepted=completed?.capsule_center??evidence.getup_placement.selected.capsule_center;
+  check(Math.hypot(body.position[0]-accepted[0],body.position[2]-accepted[2])<.1,
+   'completed recovery retains the accepted root instead of restoring the old actor position '+encode({actual:body.position,accepted}));
+  check(blendFrames>=2&&sawMidBlend&&sawCompleteBlend,'a live physical-to-animation blend reaches its destination');
+  evidence.physical_pose_blend={frames:blendFrames,intermediate:sawMidBlend,completed:sawCompleteBlend,
+   max_absolute_local_length_error:peakBlendAbsolute,max_relative_local_length_error:peakBlendLength,max_relative_scale_error:peakBlendScale,
+   max_basis_shear:peakBlendShear,world_rebase_error:peakRebase};
+  evidence.recovered=true;evidence.drop_count=drops.length;
+  cmd.push({op:'ped.damage',actor_id:foe,source:'endorphin.proof',amount:1000,origin:[0,1,0]});next(6,now,cmd);
+ }else if(stage===6&&npc?.dead&&rig?.active&&now-since>.4){
+  check(!record.controlled&&rig.parts.length===15,'death retains physical ownership');
+  check(drops.length===1,'living fall and later death transfer the weapon once');
+  oldParts=rig.parts.map((v:any)=>String(v.entity_key)).filter((v:string)=>v!==String(record.entity_key));
+  evidence.pose_updates=rig.pose_updates;evidence.pose_skips=rig.pose_skips;
+  evidence.skeleton_integrity=rig.skeleton_integrity;
+  evidence.max_anchor_separation=peakAnchor;
+  evidence.max_relative_bone_length_error=peakLength;evidence.max_relative_scale_error=peakScale;
+  cmd.push({op:'ped.upsert',profile,reset:true});next(7,now,cmd);
+ }else if(stage===7&&!npc?.dead&&!rig?.active&&record.controlled&&now-since>.2){
+  check(!r.physics.bodies.some((v:any)=>oldParts.includes(String(v.entity_key??v.entity))),'reset removes old articulated limb bodies');
+  check(drops.length===1,'physical reset does not manufacture another weapon');
+  check(e.getup_match?.status==='not_requested','reset retires the previous pose-selection decision');
+  evidence.reset_cleanup=true;
+  cmd.push({op:'console.write',message:'ENDORPHIN_VERIFY_EVIDENCE '+encode(evidence)},
+   {op:'console.write',message:'ENDORPHIN_VERIFY_PASS living_fall blocked_getup physical_recovery death reset no_duplicate'});
+  result.exit_requested=true;next(8,now,cmd);
+ }
+ if(movingMode(contextMode)&&!interrupted&&phase==='get_up'&&stage!==8) {
+  const platform=r.physics.bodies.find((v:any)=>Number(v.entity)===supportFloor),a=e.getup_attachment,state=e.getup_support;
+  check(platform&&a&&Number(a.entity)===supportFloor&&state?.current,'get-up is bound to the resident platform '+encode({platform,a,state}));
+  const contact=vadd(platform.position,vrotate(platform.rotation,a.local_ground)),sample=state.current;
+  moveGroundError=Math.max(moveGroundError,Math.hypot(...vsub(sample.ground_point,contact)));
+  check(Math.hypot(...vsub(sample.ground_point,contact))<.0002,'root follows the observed support transform');
+  const forward=vrotate(platform.rotation,a.local_forward),heading=Math.atan2(forward[0],forward[2]);
+  check(Math.abs(Math.sin(sample.heading_radians-heading))<.0002,'root heading follows platform yaw');
+  const velocity=vadd(platform.linear_velocity,vcross(platform.angular_velocity,vsub(contact,platform.position)));
+  moveVelocityError=Math.max(moveVelocityError,Math.hypot(...vsub(sample.velocity,velocity)));
+  check(Math.hypot(...vsub(sample.velocity,velocity))<.002,'root receives measured point velocity');
+  moveCapsuleError=Math.max(moveCapsuleError,Math.hypot(body.position[0]-contact[0],body.position[2]-contact[2]));
+  check(Math.hypot(body.position[0]-contact[0],body.position[2]-contact[2])<.04,'native capsule follows the transported root '+encode({body:body.position,contact,sample}));
+  if(!moveStart){moveStart=now;moveOrigin=contact;moveHeading=heading;}
+  const elapsed=now-moveStart;
+  moveSamples++;movePeak=Math.max(movePeak,Math.hypot(...vsub(contact,moveOrigin)));
+  moveHeadingPeak=Math.max(moveHeadingPeak,Math.abs(Math.atan2(Math.sin(heading-moveHeading),Math.cos(heading-moveHeading))));
+  moveBlend=moveBlend||(blend?.active&&state.transport_updates>0);
+  if(contextMode==='moving_loss'&&elapsed>.22&&moveSamples>=3&&movePeak>.01) {
+   interrupted=true;cmd.push({op:'physics.body.destroy',entity:supportFloor});next(41,now,cmd);
+  } else if(contextMode==='moving_blocked') {
+   interrupted=true;blockX=body.position[0]+1;
+   cmd.push({op:'physics.body.upsert',entity:carryWall,body_kind:'static',position:[blockX,supportBase+1,-5],
+    shape:{kind:'box',half_extents:[.02,2,4]},participates_in_queries:true,casts_contacts:true},
+    {op:'physics.body.pose.set',entity:supportFloor,position:[platform.position[0]+2,platform.position[1],platform.position[2]],rotation:platform.rotation});
+   next(41,now,cmd);
+  } else {
+   const stopped=elapsed>=.7&&elapsed<1.1,t=elapsed<.7?elapsed:elapsed<1.1?.7:elapsed-.4;
+   if(stopped)moveStopped=true;
+   cmd.push({op:'physics.body.upsert',entity:supportFloor,body_kind:'kinematic',
+    position:[.15*t,supportBase-.1+.05*Math.sin(t),-5+.1*t],rotation:[0,Math.sin(.1*t),0,Math.cos(.1*t)],
+    linear_velocity:stopped?[0,0,0]:[.15,.05*Math.cos(t),.1],angular_velocity:stopped?[0,0,0]:[0,.2,0],
+    shape:{kind:'box',half_extents:[4,.1,4]},friction:.8,participates_in_queries:true,casts_contacts:true});
+  }
+ }
+ check(stage===8||now-since<18,'stage timeout '+stage+' '+encode({npc,record,body,obstacles:(r.physics?.bodies??[]).map((v:any)=>({entity_key:v.entity_key,entity:v.entity,position:v.position,shape:v.shape}))}));
+ return result;
+}
+export function on_event(p:any):any {return Game.on_event(p);}
+export function on_shutdown(p:any):any {return Game.on_shutdown(p);}

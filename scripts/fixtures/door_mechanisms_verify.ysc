@@ -1,0 +1,150 @@
+import * as Game from './default_game_base.ysc';
+import {protectiveHandsReserved} from './gameplay/protection.ysc';
+import {Ped} from './world/peds.ysc';
+import {createRuntimeSnapshotDecoder} from './snapshot_delta.ysc';
+const decode=createRuntimeSnapshotDecoder(),encode=(v:any)=>JSON.stringify(v,(_k:string,x:any)=>typeof x==='bigint'?String(x):x);
+let uiUsed=false;
+let cfg:any,mode='',stage=0,since=-1,peakLocked=0,peakAnchor=0,seq=0,queued=false,pulling=false,passed:string[]=[],evidence:any={},lastTrace=-1;
+const ids=['door.npc.0','door.npc.1'];
+function check(v:any,s:string):void{if(!v)throw new Error('DOOR_MECHANISMS '+s);}
+function next(n:number,t:number,c:any[]):void{stage=n;since=t;c.push({op:'console.write',message:'DOOR_STAGE '+n});}
+const action=(c:any[],s:string,id='verify.locked')=>c.push({op:'door.interact',id,actor_id:cfg.scene_id,action:s});
+function place(c:any[],pos:number[]):void{c.push({op:'physics.body.pose.set',entity:cfg.physics_entity,position:pos,rotation:[0,0,0,1]},{op:'physics.body.velocity.set',entity:cfg.physics_entity,velocity:[0,0,0]});}
+function npcPlace(c:any[],i:number,pos:number[]):void{c.push(new Ped(ids[i]).clearTasks(),{op:'physics.body.pose.set',id:ids[i],position:pos,rotation:[0,0,0,1]},{op:'physics.body.velocity.set',id:ids[i],velocity:[0,0,0]});}
+export function on_start(raw:any):any{
+ const p=decode(raw);cfg=p.project.runtime.variables.engine_player;mode=p.project.runtime.variables.door_verification_mode;
+ const out:any=Game.on_start(p);
+
+ if(mode==='obstruction'){
+  out.commands.push({op:'items.inventory.add',owner_id:'player',item_id:'key.office',quantity:1},
+   {op:'physics.body.upsert',entity:910880006,body_kind:'static',position:[.65,1.06,-5.6],shape:{kind:'box',half_extents:[.6,1.05,.16]},friction:.6,restitution:0,casts_contacts:true,participates_in_queries:true});
+ }
+ return out;
+}
+export function on_frame(raw:any):any{
+ const p=decode(raw);
+ const shot=p.runtime.physics?.doors?.doors?.find((d:any)=>d.config.key_item==='key.office');
+ const clock=Number(p.runtime.physics?.fixed_seconds??0);
+ const use=stage===4&&!uiUsed&&clock-since>.3&&!protectiveHandsReserved(p,cfg.scene_id);
+ p.frame={...p.frame,platform:{...p.frame.platform,focused:use,cursor_captured:use},input:{state:{keys:{down:[],pressed:use?[23]:[]},mouse:{delta:{x:0,y:0},down:[],pressed:[]}}}};
+ if(use){uiUsed=true;p.runtime={...p.runtime,scene:{...p.runtime.scene,camera:{position:[.9,1.5,-4.1],target:shot.handle_position}}};}
+ const out:any=Game.on_frame(p),c=out.commands,r=p.runtime,ph=r.physics,t=Number(ph?.fixed_seconds??0);
+ const doors=ph?.doors?.doors??[],d=doors.find((x:any)=>x.config.key_item==='key.office'),pull=doors.find((x:any)=>x.config.key_item===null);
+ const player=ph?.bodies?.find((b:any)=>Number(b.entity)===Number(cfg.physics_entity));
+ const physical=r.peds?.physics?.bodies??[],npc=(id:string)=>physical.find((b:any)=>b.actor_id===id);
+ if(since<0)since=t;
+ for(const e of ph?.doors?.events??[]){if(Number(e.sequence)<=seq)continue;seq=Number(e.sequence);if(e.kind==='passed'&&ids.includes(e.actor_id)&&!passed.includes(e.actor_id))passed.push(e.actor_id);}
+ if(d?.ready){
+  const b=ph.bodies.find((b:any)=>String(b.entity_key??b.entity)===String(d.entity_key??d.entity)),q=b.rotation;
+  const x=q[0],y=q[1],z=q[2],w=q[3],v=[-.6,0,0],a=[2*(y*v[2]-z*v[1]),2*(z*v[0]-x*v[2]),2*(x*v[1]-y*v[0])];
+  const pivot=[v[0]+w*a[0]+y*a[2]-z*a[1],v[1]+w*a[1]+z*a[0]-x*a[2],v[2]+w*a[2]+x*a[1]-y*a[0]];
+  peakAnchor=Math.max(peakAnchor,Math.hypot(b.position[0]+pivot[0],b.position[1]+pivot[1]-1.06,b.position[2]+pivot[2]+5));
+  check(peakAnchor<.02,'hinge separation '+peakAnchor);
+ }
+ if(t-lastTrace>1){lastTrace=t;c.push({op:'console.write',message:'DOOR_TRACE '+encode({t,stage,d,player:player?.position,npcs:physical,characters:r.physical_characters})});}
+ if(mode==='restart'||mode==='broken_restart'){
+  if(d?.ready&&t>1){
+   check(mode==='restart'?d.state.locked&&d.state.latch_engaged:d.state.bolt_broken&&!d.state.locked,'restart lost hardware state');
+   check(d.queue.length===0&&!d.state.goal,'restart retained transient ownership');
+   check((ph.doors.events??[]).some((e:any)=>e.kind==='restored'),'no physical restore');
+   const inv=r.items?.inventories?.find((x:any)=>x.owner_id==='player');
+   if(mode==='restart')check(inv?.entries?.some((x:any)=>x.item_id==='key.office'&&x.quantity===1),'restart lost actual key');
+   c.push({op:'console.write',message:'DOOR_EVIDENCE '+encode({locked:d.state.locked,latched:d.state.latch_engaged,broken:d.state.bolt_broken,transient_queue_empty:true,key_persisted:mode==='restart',peakAnchor})},{op:'console.write',message:'DOOR_MECHANISMS_PASS '+mode});out.exit_requested=true;
+  }
+  return out;
+ }
+ if(mode==='egress'){
+  const body=npc(ids[1]),native=ph?.bodies?.find((b:any)=>String(b.entity_key??b.entity)===String(body?.entity_key??body?.entity));
+  if(stage===0&&d?.ready&&player&&body?.controlled&&t>1){
+   check(d.state.locked,'egress scenario did not start locked');place(c,[8,.95,-2]);npcPlace(c,1,[.84,.95,-6.2]);next(1,t,c);
+  }else if(stage===1&&t-since>.3){c.push(new Ped(ids[1]).goTo([.84,.05,-2],1.1));next(2,t,c);}
+  else if(stage===2&&native?.position?.[2]>-3.8){
+   const inv=r.items?.inventories?.find((x:any)=>x.owner_id===ids[1]);
+   check(!inv?.entries?.some((e:any)=>e.item_id==='key.office'&&e.quantity>0),'egress actor unexpectedly has a key');
+   check(!d.state.locked,'free egress did not release bolt');
+   c.push({op:'console.write',message:'DOOR_EVIDENCE '+encode({real_npc_free_egress:true,without_key:true,position:native.position,peakAnchor})},{op:'console.write',message:'DOOR_CAPTURE right'});next(3,t,c);
+  }
+  if(stage===3){
+   c.push({op:'scene.camera.set',position:[7.1,1.85,-2.7],target:[4.6,1.05,-5],fov_y_degrees:48});
+   if(t-since>2){c.push({op:'console.write',message:'DOOR_MECHANISMS_PASS egress'});out.exit_requested=true;}
+  }
+  check(t-since<12,'NPC free egress timeout '+encode({stage,d,native}));return out;
+ }
+ if(mode==='impact'){
+  for(const e of ph?.events??[]){if(encode(e).includes('910880007'))c.push({op:'console.write',message:'DOOR_IMPACT_CONTACT '+encode({t,event:e})});}
+  if(stage===0&&d?.ready&&player&&t>1){place(c,[8,.95,-2]);next(1,t,c);}
+  else if(stage===1&&t-since>.3){
+   c.push({op:'physics.body.upsert',entity:910880007,body_kind:'dynamic',position:[.95,1.15,-3.5],rotation:[0,0,0,1],
+    linear_velocity:[0,0,-7],shape:{kind:'sphere',radius:.22},mass_properties:{mass:80,center_of_mass:[0,0,0],inertia_diagonal:[1.5488,1.5488,1.5488]},
+    friction:.5,restitution:0,continuous_collision:true,casts_contacts:true,participates_in_queries:true});
+   next(2,t,c);
+  }else if(stage===2&&d.state.bolt_broken&&Math.abs(d.angle)>.35){
+   check(!d.state.locked,'broken bolt retained lock');
+   c.push({op:'console.write',message:'DOOR_EVIDENCE '+encode({native_impact_breaks_bolt:true,angle:d.angle,damage_joules:d.state.bolt_damage_joules,peakAnchor})},{op:'console.write',message:'DOOR_MECHANISMS_PASS impact'});out.exit_requested=true;
+  }
+  check(t-since<10,'impact did not break native hardware '+encode(d));return out;
+ }
+ if(mode==='obstruction'){
+  if(stage===0&&d?.ready&&t>1){action(c,'open');next(1,t,c);}
+  else if(stage===1&&d.state.last_result==='obstructed'){
+   check(!d.state.goal&&d.state.jammed_until>t,'obstruction did not expire operator authority');
+   check(Math.abs(d.angle)<.8,'operator forced through real obstacle');
+   check((ph.doors.events??[]).some((e:any)=>e.kind==='obstructed'),'no obstruction edge');
+   c.push({op:'console.write',message:'DOOR_EVIDENCE '+encode({native_obstacle_blocks:true,angle:d.angle,operator_released:true,cooldown:true,peakAnchor})},{op:'console.write',message:'DOOR_MECHANISMS_PASS obstruction'});out.exit_requested=true;
+  }
+  check(t-since<10,'obstructed native operation did not time out '+encode(d));return out;
+ }
+ if(stage===0&&d?.ready&&player&&t>1){check(d.state.locked,'authored bolt missing');action(c,'open');next(1,t,c);}
+ else if(stage===1&&t-since>.2){
+  check(d.state.last_result==='denied'&&d.state.locked,'outside opened without key');
+  c.push({op:'items.inventory.add',owner_id:'player',item_id:'key.other',quantity:1});action(c,'open');next(2,t,c);
+ }else if(stage===2&&t-since>.2){
+  check(d.state.last_result==='denied'&&d.state.locked,'wrong key accepted');evidence.access_denied=true;
+  place(c,[.9,.95,-4.2]);next(3,t,c);
+ }else if(stage===3){
+  c.push({op:'physics.character.drive',entity:cfg.physics_entity,horizontal_velocity:[0,-2]});peakLocked=Math.max(peakLocked,Math.abs(d.angle));
+  if(t-since>2){check(d.state.locked&&!d.state.bolt_broken&&peakLocked<.05,'finite walking defeated bolt '+encode({d,peakLocked}));
+   evidence.locked_walk_peak_radians=peakLocked;place(c,[.9,.95,-4.1]);c.push({op:'items.inventory.add',owner_id:'player',item_id:'key.office',quantity:1});next(4,t,c);}
+ }else if(stage===4&&Math.abs(d.angle)>1.25){
+  check(!d.state.locked&&!d.state.latch_engaged,'key did not retract hardware');evidence.key_opens=true;evidence.shared_input_64bit_identity=uiUsed;
+  place(c,[.84,.95,-5]);action(c,'close');next(5,t,c);
+ }else if(stage===5&&t-since>.25){
+  check(d.state.last_result==='busy'&&d.occupied,'occupied portal closed');
+  evidence.occupied_close_rejected=true;place(c,[-.9,.95,-5.9]);action(c,'close');next(6,t,c);
+ }else if(stage===6&&d.state.latch_engaged&&Math.abs(d.angle)<.02){
+  evidence.relatched=true;action(c,'release');place(c,[d.handle_position[0],.95,-4.5]);action(c,'lock');place(c,[8,.95,-2]);
+  c.push({op:'items.inventory.add',owner_id:ids[0],item_id:'key.office',quantity:1});
+  npcPlace(c,0,[.84,.95,-3.8]);npcPlace(c,1,[.84,.95,-2.8]);
+  next(7,t,c);
+ }else if(stage===7&&t-since>.5){
+  check(d.state.locked,'NPC key scenario did not start locked');
+  c.push(new Ped(ids[0]).goTo([.84,.05,-8],1.1),new Ped(ids[1]).goTo([.84,.05,-9],1.1));next(8,t,c);
+ }else if(stage===8){
+  queued ||= d.queue.length===2;
+  if(passed.length===2&&ids.every(id=>{const b=npc(id);const native=ph.bodies.find((x:any)=>String(x.entity)===String(b?.entity));return native?.position?.[2]<-6;})){
+   check(queued,'two real NPCs never queued');check(passed[0]===ids[0]&&passed[1]===ids[1],'FIFO order '+passed);
+   evidence.npc_passage_fifo=passed;
+   const holder=r.items?.inventories?.find((v:any)=>v.owner_id===ids[0]);check(holder?.entries?.some((e:any)=>e.item_id==='key.office'&&e.quantity===1),'NPC lost or consumed its real key');evidence.npc_inventory_key=true;place(c,[8,.95,-2]);
+   npcPlace(c,0,[4.84,.95,-6.6]);c.push(new Ped(ids[0]).goTo([4.84,.05,-2],1.1));next(9,t,c);
+  }
+ }else if(stage===9){
+  pulling ||= r.physical_characters?.bindings?.some((b:any)=>b.actor_id===ids[0]&&b.door_passage?.phase==='pulling');
+  // Trace the authoritative controller diagnostics as well as the physical crossing.
+  const q=pull?.queue??[];if(q.some((x:any)=>x.actor===ids[0])&&pull.angle>.2)pulling=true;
+  const b=npc(ids[0]),native=ph.bodies.find((x:any)=>String(x.entity)===String(b?.entity));
+  if(native?.position?.[2]>-3.8){check(pulling,'one-way door was not pulled open');evidence.one_way_pull=true;
+   npcPlace(c,0,[7,.95,-7]);npcPlace(c,1,[9,.95,-7]);place(c,[d.handle_position[0],.95,-4.5]);action(c,'close');next(10,t,c);}
+ }else if(stage===10&&d.state.latch_engaged&&Math.abs(d.angle)<.02){action(c,'lock');next(11,t,c);}
+ else if(stage===11&&t-since>.25){
+  check(d.state.locked&&!d.state.bolt_broken,'could not secure closed door');action(c,'release');evidence.peak_anchor_metres=peakAnchor;
+  c.push({op:'console.write',message:'DOOR_EVIDENCE '+encode(evidence)},{op:'console.write',message:'DOOR_CAPTURE textured'});next(12,t,c);
+ }
+ if(stage===12){
+  c.push({op:'scene.camera.set',position:[2.6,1.8,-2.7],target:[.6,1.05,-5],fov_y_degrees:48});
+  if(t-since>2){c.push({op:'console.write',message:'DOOR_MECHANISMS_PASS exercise'});out.exit_requested=true;}
+ }
+ check(t-since<(stage===8||stage===9?35:12),'stage timeout '+stage+' '+encode({d,pull,player,npcs:physical,passed}));
+ return out;
+}
+export function on_event(p:any):any{return Game.on_event(p);}
+export function on_shutdown(p:any):any{return Game.on_shutdown(p);}

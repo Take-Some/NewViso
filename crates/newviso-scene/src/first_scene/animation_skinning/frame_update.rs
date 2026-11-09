@@ -2,7 +2,10 @@
 use super::*;
 
 impl Scene3dRuntime {
-    pub(in crate::first_scene) fn update_skinned_animations(&mut self, dt: f32) -> Result<(), String> {
+    pub(in crate::first_scene) fn update_skinned_animations(
+        &mut self,
+        dt: f32,
+    ) -> Result<(), String> {
         if !dt.is_finite() || dt <= 0.0 || self.skinned_entities.is_empty() {
             return Ok(());
         }
@@ -134,23 +137,41 @@ impl Scene3dRuntime {
             if result.gpu_skinning {
                 let state = self.skinned_entities.get_mut(&result.stable_id).unwrap();
                 if result.palette.len() != state.presented_palette.len()
-                    || result.palette.iter().flatten().any(|value| !value.is_finite())
-                { return Err("GPU skin result has invalid bone palette".into()); }
+                    || result
+                        .palette
+                        .iter()
+                        .flatten()
+                        .any(|value| !value.is_finite())
+                {
+                    return Err("GPU skin result has invalid bone palette".into());
+                }
                 let first = state.last_skinning_result_elapsed_seconds.is_none();
-                let duration = state.last_skinning_result_elapsed_seconds
-                    .map(|last| (elapsed_seconds-last).max(0.) as f32).unwrap_or(0.)
-                    .clamp(MIN_SKIN_PRESENTATION_BLEND_SECONDS,MAX_SKIN_PRESENTATION_BLEND_SECONDS);
+                let duration = state
+                    .last_skinning_result_elapsed_seconds
+                    .map(|last| (elapsed_seconds - last).max(0.) as f32)
+                    .unwrap_or(0.)
+                    .clamp(
+                        MIN_SKIN_PRESENTATION_BLEND_SECONDS,
+                        MAX_SKIN_PRESENTATION_BLEND_SECONDS,
+                    );
                 state.last_skinning_result_elapsed_seconds = Some(elapsed_seconds);
                 state.presented_generation = Some(result.generation);
-                if first {
+                // Element-wise matrix blending scales/shears a rotating bone.
+                // Physical results are complete rigid hierarchies: hold/apply
+                // them intact instead of deforming them between worker results.
+                if first || result.physical {
+                    state.presentation_blend = None;
                     state.presented_palette = result.palette;
                     state.presented_feet = result.feet;
                     state.palette_blend = None;
                 } else {
                     state.palette_blend = Some(PalettePresentationBlend {
-                        from: state.presented_palette.clone(), to: result.palette,
-                        from_feet: state.presented_feet, to_feet: result.feet,
-                        elapsed_seconds: 0., duration_seconds: duration,
+                        from: state.presented_palette.clone(),
+                        to: result.palette,
+                        from_feet: state.presented_feet,
+                        to_feet: result.feet,
+                        elapsed_seconds: 0.,
+                        duration_seconds: duration,
                     });
                 }
                 applied = applied.saturating_add(1);
@@ -192,7 +213,8 @@ impl Scene3dRuntime {
                 .ok_or_else(|| format!("skinned entity {} disappeared", result.stable_id))?;
             // The first pose replaces bind data directly: no presentation blend
             // and no need to duplicate potentially megabytes of packed vertices.
-            let first_result = state.last_skinning_result_elapsed_seconds.is_none();
+            let first_result =
+                state.last_skinning_result_elapsed_seconds.is_none() || result.physical;
             let current_packed = if first_result {
                 Vec::new()
             } else {
@@ -214,6 +236,7 @@ impl Scene3dRuntime {
                 state.presented_feet = result.feet;
                 state.presented_generation = Some(result.generation);
                 state.presentation_blend = None;
+                state.palette_blend = None;
                 for ranges in &mut self.skinned_dirty_ranges {
                     ranges.push((compact_start, compact_end));
                 }
@@ -246,10 +269,18 @@ impl Scene3dRuntime {
                 };
                 if let Some(blend) = state.palette_blend.as_mut() {
                     blend.elapsed_seconds += presentation_dt;
-                    let alpha = (blend.elapsed_seconds/blend.duration_seconds).clamp(0.,1.);
-                    interpolate_skin_palette(&mut state.presented_palette, &blend.from, &blend.to, alpha);
-                    state.presented_feet = interpolate_presented_feet(blend.from_feet,blend.to_feet,alpha);
-                    if alpha >= 1. { state.palette_blend = None; }
+                    let alpha = (blend.elapsed_seconds / blend.duration_seconds).clamp(0., 1.);
+                    interpolate_skin_palette(
+                        &mut state.presented_palette,
+                        &blend.from,
+                        &blend.to,
+                        alpha,
+                    );
+                    state.presented_feet =
+                        interpolate_presented_feet(blend.from_feet, blend.to_feet, alpha);
+                    if alpha >= 1. {
+                        state.palette_blend = None;
+                    }
                 }
                 let Some(blend) = state.presentation_blend.as_mut() else {
                     continue;
@@ -297,9 +328,8 @@ impl Scene3dRuntime {
                 }
                 // Rendered feet advance on the very same alpha as packed GPU
                 // vertex data; contacts cannot lead the displayed skeleton.
-                state.presented_feet = interpolate_presented_feet(
-                    blend.from_feet, blend.to_feet, alpha,
-                );
+                state.presented_feet =
+                    interpolate_presented_feet(blend.from_feet, blend.to_feet, alpha);
 
                 if alpha >= 1.0 {
                     state.presentation_blend = None;
@@ -328,7 +358,11 @@ impl Scene3dRuntime {
             let distance_sq = delta.dot(delta);
 
             let target_hz = if distance_sq <= 20.0 * 20.0 {
-                if renderer_skinning::gpu_skinning_enabled() { 120.0_f64 } else { 30.0_f64 }
+                if renderer_skinning::gpu_skinning_enabled() {
+                    120.0_f64
+                } else {
+                    30.0_f64
+                }
             } else if distance_sq <= 45.0 * 45.0 {
                 20.0
             } else if distance_sq <= 90.0 * 90.0 {

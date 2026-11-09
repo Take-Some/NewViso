@@ -298,8 +298,8 @@ mod tests {
             "two_sided": true,
             "alpha_cutoff": 0.5,
             "textures": [
-                {"slot":"base_color","ref":"textures/test.ytd@m00_base","required":true},
-                {"slot":"normal","ref":"textures/test.ytd@m00_normal","required":true}
+                {"slot":"base_color","ref":"textures/test.texture@m00_base","required":true},
+                {"slot":"normal","ref":"textures/test.texture@m00_normal","required":true}
             ],
             "params": [
                 {"name":"roughness","type":"float","value":0.62}

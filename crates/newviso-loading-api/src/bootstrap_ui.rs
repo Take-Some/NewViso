@@ -135,7 +135,7 @@ pub const NORTH_STAR_BOOTSTRAP_UI_STYLE: BootstrapUiStyle = BootstrapUiStyle {
         fail: BootstrapUiRgb::new(255, 92, 108),
     },
     assets: BootstrapUiAssetDictionary {
-        logical_path: "textures/ui/loading/loaderWindow.ytd",
+        logical_path: include_str!("assets/bootstrap-texture.asset"),
         background_entry: "north_star_preload_background",
         logo_entry: "north_star_engine_logo",
         spinner_entry: "north_star_loading_spinner",

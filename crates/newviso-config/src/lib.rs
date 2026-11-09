@@ -1,3 +1,8 @@
+mod layers;
+pub use layers::*;
+mod xml;
+pub use xml::parse_engine_config_xml;
+
 use serde::{Deserialize, Serialize};
 use std::{
     env,
@@ -81,6 +86,7 @@ pub struct RuntimeConfig {
     pub max_frames: Option<u64>,
     pub skip_platform: bool,
     pub safe_mode: bool,
+    pub editor_mode: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -89,6 +95,7 @@ impl Default for RuntimeConfig {
             max_frames: None,
             skip_platform: false,
             safe_mode: false,
+            editor_mode: false,
         }
     }
 }
@@ -114,8 +121,12 @@ pub struct ResolvedBootstrapConfig {
     pub max_frames: Option<u64>,
     pub skip_platform: bool,
     pub safe_mode: bool,
+    pub editor_mode: bool,
     pub project_path: Option<PathBuf>,
     pub cli_overrides: Vec<String>,
+    pub runtime_profile: Option<String>,
+    pub runtime_layers: Vec<String>,
+    pub runtime_overrides: Vec<SettingOverride>,
 }
 
 #[derive(Debug)]
@@ -327,7 +338,15 @@ impl ResolvedBootstrapConfig {
             max_frames,
             skip_platform,
             safe_mode,
+            editor_mode: cli
+                .bool("runtime.editor_mode")?
+                .unwrap_or(config.runtime.editor_mode),
             project_path,
+            runtime_profile: cli
+                .runtime_profile
+                .or_else(|| env_string("NEWVISO_RUNTIME_PROFILE")),
+            runtime_layers: cli.runtime_layers,
+            runtime_overrides: cli.runtime_overrides,
             cli_overrides: cli.applied,
         })
     }

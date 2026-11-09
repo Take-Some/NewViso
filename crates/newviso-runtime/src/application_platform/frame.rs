@@ -8,7 +8,11 @@ fn all_frame_perf_logging_enabled() -> bool {
 }
 
 impl EngineApplication {
-    pub(super) fn step_frame(&mut self, dt: f32, surface: PlatformSurfaceMetricsV1) -> Result<bool, String> {
+    pub(super) fn step_frame(
+        &mut self,
+        dt: f32,
+        surface: PlatformSurfaceMetricsV1,
+    ) -> Result<bool, String> {
         if !self.ready {
             return Ok(false);
         }
@@ -22,12 +26,12 @@ impl EngineApplication {
             return Ok(false);
         }
 
+        let perf_start = std::time::Instant::now();
         self.world_save_allowed = false;
         self.elapsed_seconds += f64::from(dt);
         self.advance_climate_clock(dt)?;
         self.update_climate(dt)?;
         let perf_frame = self.asset_streamer.stats().frame;
-        let perf_start = std::time::Instant::now();
         let mut perf_mark = perf_start;
         let perf_physics_ms;
         let perf_scripts_ms;
@@ -50,14 +54,28 @@ impl EngineApplication {
         let has_ui = self.ui_template.is_some() || self.content_manager.is_some();
 
         let mut ui_frame = None;
+        let mut editor_pointer_gated = false;
         if has_ui {
             let ui = UiClient::new();
-            let dispatch = ui.dispatch_input(
+            let input_frame = input.ui_input_frame();
+            let mut dispatch = ui.dispatch_input(
                 self.ui_frame_index,
-                &input.ui_input_frame(),
+                &input_frame,
                 surface_size,
                 surface.pixels_per_point,
             )?;
+            if self.editor_mode {
+                if let Some(manager) = self.content_manager.as_mut() {
+                    editor_pointer_gated = manager.complete_pointer_dispatch(
+                        &mut dispatch,
+                        &input_frame,
+                        surface_size,
+                    );
+                }
+            }
+            if self.editor_mode {
+                application_editor::complete_global_shortcuts(&mut dispatch, &input);
+            }
             self.apply_content_dispatch(&dispatch)?;
 
             ui_frame = Some(ui.frame(
@@ -68,13 +86,44 @@ impl EngineApplication {
             )?);
         }
 
-        let camera_navigation_enabled = ui_frame
-            .as_ref()
-            .and_then(|frame| frame.input_capture.get("camera_navigation_gated"))
-            .and_then(Value::as_bool)
-            != Some(true);
+        let camera_navigation_enabled = !editor_pointer_gated
+            && ui_frame
+                .as_ref()
+                .and_then(|frame| frame.input_capture.get("camera_navigation_gated"))
+                .and_then(Value::as_bool)
+                != Some(true);
 
-        if self.physics.is_some() {
+        if self.editor_mode {
+            if let (Some(manager), Some(frame)) = (self.content_manager.as_mut(), ui_frame.as_ref())
+            {
+                if !self.window_focused {
+                    self.editor_viewport.release_navigation();
+                }
+                let actions = self.editor_viewport.step(
+                    &mut self.scene,
+                    manager,
+                    &input,
+                    frame,
+                    surface_size,
+                    surface.pixels_per_point,
+                    dt,
+                );
+                self.cursor_captured = self.editor_viewport.capture_cursor();
+                if !actions.is_empty() {
+                    self.apply_content_dispatch(&json!({"actions":actions}))?;
+                }
+                self.publish_content_manager_if_changed()?;
+            }
+        }
+
+        let perf_pre_physics_ms = perf_mark.elapsed().as_secs_f64() * 1000.0;
+        perf_mark = std::time::Instant::now();
+        if self.physics.is_some() && !self.editor_mode {
+            self.suspend_physical_character_drives();
+            self.physics
+                .as_mut()
+                .expect("physics checked")
+                .update_scene_hinges(&mut self.scene)?;
             bugtrap::set_phase("physics.step");
             let (surface_wetness, surface_snow) = self.scene.surface_weather_state();
             self.vehicles
@@ -86,16 +135,40 @@ impl EngineApplication {
                 .and_then(PhysicsRuntime::scene_collider_interests)
                 .map(|interests| self.scene.physics_static_solid_colliders_near(&interests))
                 .unwrap_or_default();
-            let (damage_contacts, activity_updates, pose_updates) = {
+            let (damage_contacts, activity_updates, pose_updates, audio_contacts) = {
                 let vehicles = &mut self.vehicles;
                 let physics = self.physics.as_mut().expect("physics checked");
-                physics.step_with_water(physics_dt, &scene_solids, vehicles, Some(self.scene.water_simulation_mut()))?;
+                let control_solids = scene_solids
+                    .iter()
+                    .map(|(_, min, max)| (*min, *max))
+                    .collect::<Vec<_>>();
+                let peds = &self.peds;
+                let ped_bodies = &mut self.ped_physics.bodies;
+                physics.step_with_water_and_controls(
+                    physics_dt,
+                    &scene_solids,
+                    vehicles,
+                    Some(self.scene.water_simulation_mut()),
+                    |physics, _| {
+                        crate::application_endorphin::EndorphinRuntime::update_controls(
+                            peds,
+                            ped_bodies,
+                            physics,
+                            &control_solids,
+                        )
+                    },
+                )?;
                 (
                     physics.damage_contacts(),
                     physics.scene_activity_updates(),
                     physics.scene_pose_updates(),
+                    physics.audio_contacts(self.elapsed_seconds),
                 )
             };
+
+            // Independent raw physical audio events: light bumps, persistent
+            // contacts and Endorphin articulation never depend on damage.
+            self.route_physics_audio(audio_contacts);
 
             // Static scene props remain cheap until a real collision or a
             // damage-carrying projectile reaches them. The scene owns health
@@ -138,7 +211,17 @@ impl EngineApplication {
             }
             for pose in pose_updates {
                 // World-actor presentation samples ped bodies after character navigation.
-                if self.is_ped_physics_entity(pose.entity) {
+                if self.is_ped_physics_entity(pose.entity)
+                    || (self
+                        .scene
+                        .character_bindings()
+                        .get(&pose.entity)
+                        .is_some_and(|binding| binding.enabled && binding.sync_position)
+                        && !self.scene.entity_has_physical_pose(pose.entity))
+                {
+                    // Upright anatomy owns the render origin/heading. A capsule
+                    // centre is not the animated skeleton root; script-phase
+                    // snapshots must not combine a new raw root with old foot IK.
                     continue;
                 }
                 self.scene
@@ -155,8 +238,10 @@ impl EngineApplication {
             }
         }
 
-        self.tick_cold(dt)?;
         perf_physics_ms = perf_mark.elapsed().as_secs_f64() * 1000.0;
+        let perf_cold_start = std::time::Instant::now();
+        self.tick_cold(dt)?;
+        let perf_cold_ms = perf_cold_start.elapsed().as_secs_f64() * 1000.0;
         perf_mark = std::time::Instant::now();
         let scripts_detail_start = std::time::Instant::now();
         let mut scripts_detail_mark = scripts_detail_start;
@@ -165,7 +250,7 @@ impl EngineApplication {
         let perf_script_state_ms;
         let perf_quickjs_ms;
         let perf_script_commands_ms;
-        let perf_scene_tick_ms;
+        let mut perf_scene_tick_ms;
         let mut final_camera_commands = Vec::new();
 
         bugtrap::set_phase("living_world.tick");
@@ -184,6 +269,9 @@ impl EngineApplication {
         scripts_detail_mark = std::time::Instant::now();
 
         self.sync_world_actor_presentations()?;
+        // Native actor state is available to scripts. Final lower-limb targets
+        // are resolved after script intents and the current animation tick.
+
         perf_presentations_ms = scripts_detail_mark.elapsed().as_secs_f64() * 1000.0;
         scripts_detail_mark = std::time::Instant::now();
 
@@ -250,6 +338,9 @@ impl EngineApplication {
                 }
             }
             self.apply_script_commands(&control.commands)?;
+            if !self.editor_mode {
+                self.update_protective_reaching()?;
+            }
             perf_script_commands_ms = scripts_detail_mark.elapsed().as_secs_f64() * 1000.0;
             scripts_detail_mark = std::time::Instant::now();
 
@@ -258,20 +349,39 @@ impl EngineApplication {
             self.scene.tick(dt)?;
             perf_scene_tick_ms = scripts_detail_mark.elapsed().as_secs_f64() * 1000.0;
         } else {
+            if !self.editor_mode {
+                self.update_protective_reaching()?;
+            }
             // Native orbit is an engine/editor navigation fallback, not gameplay.
-            self.scene.update_native_input_from_snapshot(
-                &input,
-                dt,
-                camera_navigation_enabled && self.settings.scheduling.native_navigation_enabled,
-            )?;
+            if !self.editor_mode {
+                self.scene.update_native_input_from_snapshot(
+                    &input,
+                    dt,
+                    camera_navigation_enabled && self.settings.scheduling.native_navigation_enabled,
+                )?;
+            }
+            let scene_tick_started = std::time::Instant::now();
+            self.scene.tick(dt)?;
             perf_script_state_ms = 0.0;
             perf_quickjs_ms = 0.0;
             perf_script_commands_ms = 0.0;
-            perf_scene_tick_ms = 0.0;
+            perf_scene_tick_ms = scene_tick_started.elapsed().as_secs_f64() * 1000.0;
+        }
+
+        // Animation and native body motion now describe the same frame.
+        // Resolve each source once, then publish an immutable diagnostic pose.
+        if !self.editor_mode {
+            let feet_started = std::time::Instant::now();
+            self.update_character_feet(false)?;
+            self.update_character_feet(true)?;
+            self.scene.refresh_joint_attachments()?;
+            self.publish_foot_motion_snapshot();
+            perf_scene_tick_ms += feet_started.elapsed().as_secs_f64() * 1000.0;
         }
 
         // Contact audio uses the just-updated skeleton phase, after scripts
         // and scene tick but before frame submission to the renderer.
+        self.resolve_ped_melee_contacts()?;
         self.flush_character_motion_audio()?;
 
         bugtrap::set_phase("vehicles.presentation");
@@ -301,7 +411,9 @@ impl EngineApplication {
         // Probe resident collision triangles after the final eye and streamed
         // geometry are ready. Render bounds of terrain/props are not rain roofs.
         let weather_eye = self.scene.camera_pose_values().0;
-        let weather_shelter = self.physics.as_ref()
+        let weather_shelter = self
+            .physics
+            .as_ref()
             .is_some_and(|physics| physics.weather_camera_is_sheltered(weather_eye));
         self.scene.set_weather_physical_shelter(weather_shelter);
         let rain_physics = self.physics.as_ref();
@@ -321,7 +433,7 @@ impl EngineApplication {
                 ),
             );
         }
-        let publish_start=std::time::Instant::now();
+        let publish_start = std::time::Instant::now();
         self.publish_bound_ui_if_changed()?;
         self.publish_content_manager_if_changed()?;
 
@@ -341,9 +453,20 @@ impl EngineApplication {
             return Ok(true);
         }
 
-        let perf_publish_ms=publish_start.elapsed().as_secs_f64()*1000.0;
-        let scene_render_start=std::time::Instant::now();
-        if let Some(ui) = ui_frame {
+        let perf_publish_ms = publish_start.elapsed().as_secs_f64() * 1000.0;
+        let scene_render_start = std::time::Instant::now();
+        if let Some(mut ui) = ui_frame {
+            if self.editor_mode {
+                if let Some(manager) = self.content_manager.as_ref() {
+                    self.editor_viewport.overlay(
+                        &self.scene,
+                        manager,
+                        &mut ui.draw_list,
+                        surface_size,
+                        surface.pixels_per_point,
+                    )?;
+                }
+            }
             if self.ui_frame_index == 0 {
                 let vertices = ui
                     .draw_list
@@ -429,7 +552,10 @@ impl EngineApplication {
             bugtrap::native_boundary("render.scene");
             self.scene
                 .render_frame_with_overlay(surface.width, surface.height, move || {
-                    RenderClient::new().set_ui_draw_list(ui.draw_list)
+                    RenderClient::new().composite_ui_draw_list(
+                        ui.draw_list,
+                        newviso_render_client::UiLayerDomain::Editor,
+                    )
                 })?;
         } else {
             bugtrap::native_boundary("render.scene");
@@ -446,33 +572,79 @@ impl EngineApplication {
         }
         let perf_provider_ms = perf_mark.elapsed().as_secs_f64() * 1000.0;
         let perf_total_ms = perf_start.elapsed().as_secs_f64() * 1000.0;
+        if let Some(interval) = super::performance::trace_interval() {
+            if perf_frame % interval == 0 {
+                let ragdolls = self
+                    .ped_physics
+                    .bodies
+                    .values()
+                    .filter(|body| body.endorphin.ragdoll.is_some())
+                    .count();
+                let simulated_bodies = self
+                    .physics
+                    .as_ref()
+                    .map_or(0, |physics| physics.simulated_body_count());
+                let streaming = self.asset_streamer.stats();
+                super::performance::FrameTrace {
+                    frame: perf_frame,
+                    total_ms: perf_total_ms,
+                    dt_ms: f64::from(dt) * 1000.0,
+                    pre_physics_ms: perf_pre_physics_ms,
+                    cold_ms: perf_cold_ms,
+                    physics_ms: perf_physics_ms,
+                    scripts_ms: perf_scripts_ms,
+                    world_native_ms: perf_world_native_ms,
+                    presentations_ms: perf_presentations_ms,
+                    script_state_ms: perf_script_state_ms,
+                    quickjs_ms: perf_quickjs_ms,
+                    script_commands_ms: perf_script_commands_ms,
+                    scene_tick_ms: perf_scene_tick_ms,
+                    streaming_ms: perf_streaming_ms,
+                    interest_ms: streaming_interest_ms,
+                    pump_ms: streaming_pump_ms,
+                    publish_ms: perf_publish_ms,
+                    scene_render_ms: perf_scene_render_ms,
+                    provider_ms: perf_provider_ms,
+                    active_ragdolls: ragdolls,
+                    simulated_bodies,
+                    queued_assets: streaming.queued,
+                    loading_assets: streaming.loading,
+                    resident_assets: streaming.resident,
+                    resident_bytes: streaming.resident_bytes,
+                    failed_assets: streaming.failed,
+                    over_asset_budget: streaming.over_budget,
+                    scene_prepare_queued: self.scene_prepare_pool.queued_tasks_for_diagnostics(),
+                    physics: self.physics.as_ref().map(PhysicsRuntime::frame_perf),
+                }
+                .emit();
+            }
+        }
         if perf_total_ms >= 25.0 || perf_frame % 60 == 0 || all_frame_perf_logging_enabled() {
-            let message=format!(
-                    "frame={} total_ms={:.2} physics_ms={:.2} scripts_world_ms={:.2} world_native_ms={:.2} presentations_ms={:.2} script_state_ms={:.2} quickjs_ms={:.2} script_commands_ms={:.2} scene_tick_ms={:.2} streaming_ms={:.2} publish_ms={:.2} scene_render_ms={:.2} provider_ms={:.2}",
-                    perf_frame,
-                    perf_total_ms,
-                    perf_physics_ms,
-                    perf_scripts_ms,
-                    perf_world_native_ms,
-                    perf_presentations_ms,
-                    perf_script_state_ms,
-                    perf_quickjs_ms,
-                    perf_script_commands_ms,
-                    perf_scene_tick_ms,
-                    perf_streaming_ms,
-                    perf_publish_ms,
-                    perf_scene_render_ms,
-                    perf_provider_ms
-                );
+            let message = format!(
+                "frame={} total_ms={:.2} physics_ms={:.2} scripts_world_ms={:.2} world_native_ms={:.2} presentations_ms={:.2} script_state_ms={:.2} quickjs_ms={:.2} script_commands_ms={:.2} scene_tick_ms={:.2} streaming_ms={:.2} publish_ms={:.2} scene_render_ms={:.2} provider_ms={:.2}",
+                perf_frame,
+                perf_total_ms,
+                perf_physics_ms,
+                perf_scripts_ms,
+                perf_world_native_ms,
+                perf_presentations_ms,
+                perf_script_state_ms,
+                perf_quickjs_ms,
+                perf_script_commands_ms,
+                perf_scene_tick_ms,
+                perf_streaming_ms,
+                perf_publish_ms,
+                perf_scene_render_ms,
+                perf_provider_ms
+            );
             if all_frame_perf_logging_enabled() {
-                host::info("newviso.perf",message);
+                host::info("newviso.perf", message);
             } else {
-                host::trace("newviso.perf",message);
+                host::trace("newviso.perf", message);
             }
         }
         bugtrap::set_phase("frame.idle");
 
         Ok(false)
     }
-
 }

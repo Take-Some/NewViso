@@ -1293,7 +1293,7 @@ mod tests {
     #[test]
     fn streaming_residency_suspends_and_restores_process_membership() {
         let mut e = entity(62, -8.0, 0);
-        e.asset_ref = Some("models/process_test.ydd".to_owned());
+        e.asset_ref = Some("models/process_test.model".to_owned());
         let mut world = SceneWorld::new(Vec3::ZERO);
         world.add_entity(e).unwrap();
         world.activate_all();
@@ -1598,5 +1598,35 @@ mod tests {
         assert_eq!(plan.visible_count, 1);
         let alpha = world.entity(SceneEntityId(1)).unwrap().lod_alpha;
         assert!(alpha > 0.0 && alpha < 1.0);
+    }
+    #[test]
+    fn physical_ownership_removes_the_closed_static_proxy_and_restores_the_same_entity() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        let mut door = entity(70, -2.0, 0);
+        door.name = "authored.door".into();
+        door.solid = true;
+        world.add_entity(door).unwrap();
+        world.activate_all();
+        let id = SceneEntityId(70);
+        let bounds = world.entity(id).unwrap().bounds;
+        assert_eq!(world.static_solid_bounds_near(&[bounds]).len(), 1);
+        let epoch = world.static_render_epoch();
+        world
+            .set_solid(id, false, SceneMutationSource::Physics)
+            .unwrap();
+        world
+            .set_mobility(id, SceneMobility::Dynamic, SceneMutationSource::Physics)
+            .unwrap();
+        assert!(world.static_solid_bounds_near(&[bounds]).is_empty());
+        assert!(world.static_render_epoch() > epoch);
+        assert_eq!(world.entity(id).unwrap().name, "authored.door");
+        world
+            .set_mobility(id, SceneMobility::Static, SceneMutationSource::Physics)
+            .unwrap();
+        world
+            .set_solid(id, true, SceneMutationSource::Physics)
+            .unwrap();
+        assert_eq!(world.static_solid_bounds_near(&[bounds]).len(), 1);
+        assert_eq!(world.entity_id_by_name("authored.door"), Some(id));
     }
 }

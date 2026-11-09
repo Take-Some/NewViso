@@ -1,20 +1,15 @@
 use super::engine_scripts::{compose_engine_scripts, default_player_requires_physics};
 use super::*;
+use newviso_config::merge_json as merge_engine_defaults;
+pub(super) use newviso_config::parse_engine_config_xml;
 
-const SHARED_RUNTIME_DEFAULTS: &str = "config/engine/runtime.defaults.xml";
+pub(super) const SHARED_RUNTIME_DEFAULTS: &str = "config/engine/runtime.defaults.xml";
 const SHARED_ENVIRONMENT_DEFAULTS: &str = "config/engine/environment.defaults.xml";
 const SHARED_RENDER_DEFAULTS: &str = "config/engine/render.defaults.xml";
 const SHARED_VFS_MOUNTS: &str = "config/engine/vfs_mounts.xml";
 const SHARED_SCRIPTS_DEFAULTS: &str = "config/engine/scripts.defaults.xml";
 
-#[derive(Debug)]
-struct EngineConfigXmlNode {
-    name: String,
-    attrs: BTreeMap<String, String>,
-    children: Vec<EngineConfigXmlNode>,
-}
-
-fn load_shared_engine_xml(
+pub(super) fn load_shared_engine_xml(
     shared_assets_dir: &Path,
     relative_path: &str,
     label: &str,
@@ -28,184 +23,6 @@ fn load_shared_engine_xml(
     })?;
     parse_engine_config_xml(&bytes, &path)
         .map_err(|error| format!("Shared Assets {label} defaults XML is invalid: {error}"))
-}
-
-pub(super) fn parse_engine_config_xml(bytes: &[u8], path: &Path) -> Result<Value, String> {
-    use quick_xml::{events::Event, Reader, XmlVersion};
-
-    fn attrs(
-        event: &quick_xml::events::BytesStart<'_>,
-    ) -> Result<BTreeMap<String, String>, String> {
-        let mut out = BTreeMap::new();
-        for attribute in event.attributes().with_checks(false) {
-            let attribute = attribute.map_err(|error| format!("XML attribute error: {error}"))?;
-            let key = attribute.key.into_inner().to_owned();
-            let value = attribute
-                .normalized_value(XmlVersion::Implicit1_0)
-                .map_err(|error| format!("XML attribute decode failed: {error}"))?
-                .into_owned();
-            out.insert(key, value);
-        }
-        Ok(out)
-    }
-
-    fn scalar(raw: &str) -> Value {
-        let raw = raw.trim();
-        if raw.eq_ignore_ascii_case("true") {
-            return Value::Bool(true);
-        }
-        if raw.eq_ignore_ascii_case("false") {
-            return Value::Bool(false);
-        }
-        if let Ok(value) = raw.parse::<i64>() {
-            return Value::Number(value.into());
-        }
-        if let Ok(value) = raw.parse::<u64>() {
-            return Value::Number(value.into());
-        }
-        if let Ok(value) = raw.parse::<f64>() {
-            if let Some(value) = serde_json::Number::from_f64(value) {
-                return Value::Number(value);
-            }
-        }
-        Value::String(raw.to_owned())
-    }
-
-    fn node_value(node: EngineConfigXmlNode) -> Result<Value, String> {
-        let kind = node.attrs.get("type").map(String::as_str);
-        if kind == Some("array") {
-            return node
-                .children
-                .into_iter()
-                .map(node_value)
-                .collect::<Result<Vec<_>, _>>()
-                .map(Value::Array);
-        }
-        if kind == Some("object") && node.children.is_empty() {
-            return Ok(Value::Object(serde_json::Map::new()));
-        }
-        if node
-            .attrs
-            .get("null")
-            .is_some_and(|value| value.eq_ignore_ascii_case("true"))
-        {
-            return Ok(Value::Null);
-        }
-
-        let axes = ["x", "y", "z", "w"]
-            .into_iter()
-            .filter_map(|axis| node.attrs.get(axis).map(|value| scalar(value)))
-            .collect::<Vec<_>>();
-        if axes.len() >= 2 {
-            return Ok(Value::Array(axes));
-        }
-
-        if node.children.is_empty() {
-            if let Some(value) = node.attrs.get("value") {
-                return Ok(scalar(value));
-            }
-            if node.attrs.is_empty() {
-                return Ok(Value::Object(serde_json::Map::new()));
-            }
-        }
-
-        let mut object = serde_json::Map::new();
-        for (key, value) in node.attrs {
-            if key != "type" && key != "null" && key != "value" {
-                object.insert(key, scalar(&value));
-            }
-        }
-        for child in node.children {
-            let key = child.name.clone();
-            let value = node_value(child)?;
-            if let Some(previous) = object.remove(&key) {
-                let mut values = match previous {
-                    Value::Array(values) => values,
-                    other => vec![other],
-                };
-                values.push(value);
-                object.insert(key, Value::Array(values));
-            } else {
-                object.insert(key, value);
-            }
-        }
-        Ok(Value::Object(object))
-    }
-
-    let mut reader = Reader::from_reader(bytes);
-    reader.config_mut().trim_text(true);
-    let mut buffer = Vec::new();
-    let mut stack = Vec::<EngineConfigXmlNode>::new();
-    let mut root = None::<EngineConfigXmlNode>;
-
-    loop {
-        match reader
-            .read_event_into(&mut buffer)
-            .map_err(|error| format!("XML read failed path='{}': {error}", path.display()))?
-        {
-            Event::Start(event) => {
-                let name = event.name().into_inner().to_owned();
-                stack.push(EngineConfigXmlNode {
-                    name,
-                    attrs: attrs(&event)?,
-                    children: Vec::new(),
-                });
-            }
-            Event::Empty(event) => {
-                let name = event.name().into_inner().to_owned();
-                let node = EngineConfigXmlNode {
-                    name,
-                    attrs: attrs(&event)?,
-                    children: Vec::new(),
-                };
-                if let Some(parent) = stack.last_mut() {
-                    parent.children.push(node);
-                } else if root.replace(node).is_some() {
-                    return Err("XML contains more than one root element".to_owned());
-                }
-            }
-            Event::End(_) => {
-                let node = stack
-                    .pop()
-                    .ok_or_else(|| "XML closing element has no matching start".to_owned())?;
-                if let Some(parent) = stack.last_mut() {
-                    parent.children.push(node);
-                } else if root.replace(node).is_some() {
-                    return Err("XML contains more than one root element".to_owned());
-                }
-            }
-            Event::Text(text) if !text.as_ref().chars().all(char::is_whitespace) => {
-                return Err(
-                    "engine defaults XML uses attribute values; non-whitespace text is not allowed"
-                        .to_owned(),
-                );
-            }
-            Event::Eof => break,
-            _ => {}
-        }
-        buffer.clear();
-    }
-
-    if !stack.is_empty() {
-        return Err("XML ended with unclosed elements".to_owned());
-    }
-    let root = root.ok_or_else(|| "XML contains no root element".to_owned())?;
-    node_value(root)
-}
-
-fn merge_engine_defaults(target: &mut Value, patch: &Value) {
-    if let (Some(target), Some(patch)) = (target.as_object_mut(), patch.as_object()) {
-        for (key, value) in patch {
-            match target.get_mut(key) {
-                Some(current) => merge_engine_defaults(current, value),
-                None => {
-                    target.insert(key.clone(), value.clone());
-                }
-            }
-        }
-    } else {
-        *target = patch.clone();
-    }
 }
 
 pub(super) fn shared_vfs_mount_policy(shared_assets_dir: &Path) -> Result<VfsMountPolicy, String> {
@@ -224,6 +41,7 @@ pub(super) fn resolve_project_capabilities(
     project: &ResolvedProject,
     providers: &[ProviderInfo],
     safe_mode: bool,
+    editor_mode: bool,
     runtime_settings: &ProjectRuntimeSettings,
 ) -> Result<Vec<ResolvedCapability>, String> {
     let player_requires_physics = default_player_requires_physics(runtime_settings);
@@ -275,14 +93,33 @@ pub(super) fn resolve_project_capabilities(
             required: false,
         })
         .collect();
-    if !safe_mode && !required.iter().any(|x| x.id == "audio.backend") && !optional.iter().any(|x| x.id == "audio.backend") {
-        optional.push(CapabilityNeed { id: "audio.backend".into(), min_version: 1, provider: None, required: false });
+    if !safe_mode
+        && !required.iter().any(|x| x.id == "audio.backend")
+        && !optional.iter().any(|x| x.id == "audio.backend")
+    {
+        optional.push(CapabilityNeed {
+            id: "audio.backend".into(),
+            min_version: 1,
+            provider: None,
+            required: false,
+        });
     }
 
+    if editor_mode {
+        required.retain(|need| need.id != "ui.backend");
+        required.push(CapabilityNeed {
+            id: "ui.backend".into(),
+            min_version: 1,
+            provider: None,
+            required: true,
+        });
+    }
     resolve_capabilities(
         providers,
         required.iter().cloned().chain(
-            optional.into_iter().filter(|need| !safe_mode && !required.iter().any(|base| base.id == need.id)),
+            optional
+                .into_iter()
+                .filter(|need| !safe_mode && !required.iter().any(|base| base.id == need.id)),
         ),
     )
 }
@@ -461,21 +298,10 @@ pub(super) fn mount_project_files(
 
     Ok(())
 }
-pub(super) fn load_effective_runtime_settings(
-    project: &ResolvedProject,
-    shared_assets_dir: &Path,
-) -> Result<ProjectRuntimeSettings, String> {
-    let shared = load_shared_engine_xml(shared_assets_dir, SHARED_RUNTIME_DEFAULTS, "runtime")?;
-    let authored = AssetClient::new()
-        .json(&project.manifest.files.runtime)
-        .map_err(|error| format!("runtime settings asset load failed: {error}"))?;
-    ProjectRuntimeSettings::from_base_and_override(shared, authored)
-        .map_err(|error| error.to_string())
-}
-
 pub(super) fn load_project_files(
     project: &ResolvedProject,
     shared_assets_dir: &Path,
+    configuration: newviso_project::ResolvedRuntimeConfiguration,
 ) -> Result<LoadedProjectFiles, String> {
     let assets = AssetClient::new();
 
@@ -483,7 +309,7 @@ pub(super) fn load_project_files(
     // authority rather than through the project-overlaid VFS. This prevents a
     // project from replacing the base document wholesale; project files are
     // explicitly deep-merged below instead.
-    let runtime = load_effective_runtime_settings(project, shared_assets_dir)?;
+    let runtime = configuration.settings;
 
     let mut environment = load_shared_engine_xml(
         shared_assets_dir,
@@ -551,6 +377,7 @@ pub(super) fn load_project_files(
         "files": project.manifest.files,
         "scripts": project.manifest.scripts,
         "runtime": runtime,
+        "launch_configuration": configuration.report,
         "environment": environment,
         "render_defaults": render_defaults,
         "engine_defaults": {
@@ -629,6 +456,7 @@ pub(super) fn start_project_scripting(
         .map(|module| ScriptModuleSpec {
             asset: module.asset.clone(),
             runtime_delta: module.runtime_delta,
+            project_context_cache: module.project_context_cache,
             on_start: module.on_start.clone(),
             on_frame: module.on_frame.clone(),
             on_event: module.on_event.clone(),

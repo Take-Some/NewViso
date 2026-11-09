@@ -20,12 +20,21 @@ impl ContentManager {
             editor_text: String::new(),
             saved_text: String::new(),
             status: "Ready".to_owned(),
-            surface_revision:0,
+            surface_revision: 0,
+            scene_editor: None,
+            scene_cache: Default::default(),
+            settings_editor: None,
+            settings_visible: false,
         };
         manager.refresh()?;
         Ok(manager)
     }
     pub fn set_project_workspace(&mut self, project: ProjectWorkspaceView) {
+        if self.selected.is_none() && self.root.join(&project.scene).is_file() {
+            if let Err(error) = self.select(&project.scene) {
+                self.status = error;
+            }
+        }
         self.project = Some(project);
         self.invalidate_surfaces();
     }
@@ -45,21 +54,55 @@ impl ContentManager {
         Ok(())
     }
     pub fn report_status(&mut self, message: impl Into<String>) {
-        let message=message.into();
-        if self.status!=message{self.status=message;self.invalidate_surfaces();}
+        let message = message.into();
+        if self.status != message {
+            self.status = message;
+            self.invalidate_surfaces();
+        }
     }
     pub fn is_dirty(&self) -> bool {
-        self.selected.is_some() && self.editor_text != self.saved_text
+        if self.settings_visible {
+            return self.settings_editor.as_ref().is_some_and(|e| e.is_dirty());
+        }
+        self.selected.is_some()
+            && self
+                .scene_editor
+                .as_ref()
+                .map_or_else(|| self.editor_text != self.saved_text, |e| e.is_dirty())
+    }
+    fn stash_scene_editor(&mut self) {
+        if let (Some(path), Some(editor)) = (self.selected.clone(), self.scene_editor.take()) {
+            // Only the active entry scene needs live runtime identities. Keep at
+            // most one suspended document, rather than retaining every map/history.
+            if self
+                .project
+                .as_ref()
+                .is_some_and(|project| project.scene != path)
+            {
+                return;
+            }
+            self.scene_cache.clear();
+            self.scene_cache
+                .insert(path, (editor, self.saved_text.clone()));
+        }
     }
     pub(super) fn select(&mut self, logical_path: &str) -> Result<(), String> {
+        if self.is_dirty() {
+            return Err("Save current changes before selecting another file".into());
+        }
+        if self.selected.as_deref() == Some(normalize(logical_path).as_str()) {
+            return Ok(());
+        }
         let path = self.resolve(logical_path)?;
+        self.settings_visible = false;
         let metadata = fs::metadata(&path)
             .map_err(|error| format!("content asset metadata failed '{logical_path}': {error}"))?;
 
         self.vfs_selected = None;
         self.vfs_preview.clear();
 
-        if metadata.len() > MAX_EDIT_BYTES || !is_editable_path(logical_path) {
+        if metadata.len() > edit_limit(logical_path) || !is_editable_path(logical_path) {
+            self.stash_scene_editor();
             self.selected = Some(normalize(logical_path));
             self.editor_text.clear();
             self.saved_text.clear();
@@ -69,13 +112,33 @@ impl ContentManager {
 
         let text = fs::read_to_string(&path)
             .map_err(|error| format!("content asset read failed '{logical_path}': {error}"))?;
-        self.selected = Some(normalize(logical_path));
+        let key = normalize(logical_path);
+        if self
+            .scene_cache
+            .get(&key)
+            .is_some_and(|(_, saved)| saved != &text)
+        {
+            return Err("Scene changed outside the editor; reopen the project before rebinding live objects".into());
+        }
+        let next = if let Some((editor, _)) = self.scene_cache.remove(&key) {
+            Some(editor)
+        } else {
+            scene_editor::SceneEditor::parse(&text)?
+        };
+        self.stash_scene_editor();
+        self.selected = Some(key);
         self.saved_text = text.clone();
+        self.scene_editor = next;
         self.editor_text = text;
         self.status = format!("Editing {logical_path}");
         Ok(())
     }
     pub(super) fn select_vfs(&mut self, logical_path: &str) -> Result<(), String> {
+        if self.is_dirty() {
+            return Err("Save current changes before selecting another file".into());
+        }
+        self.stash_scene_editor();
+        self.settings_visible = false;
         let logical_path = normalize(logical_path);
         let entry = self
             .vfs_entries
@@ -109,6 +172,10 @@ impl ContentManager {
         Ok(())
     }
     pub(super) fn save(&mut self) -> Result<Option<ContentEffect>, String> {
+        if self.settings_visible {
+            self.save_settings()?;
+            return Ok(None);
+        }
         let Some(logical_path) = self.selected.clone() else {
             self.status = "Nothing writable selected".to_owned();
             return Ok(None);
@@ -117,44 +184,30 @@ impl ContentManager {
             self.status = format!("'{logical_path}' is not text-editable");
             return Ok(None);
         }
+        if let Some(editor) = &self.scene_editor {
+            editor.validate()?;
+        }
         if !self.is_dirty() {
             self.status = format!("'{logical_path}' has no changes");
             return Ok(None);
         }
 
         let target = self.resolve(&logical_path)?;
-        let parent = target
-            .parent()
-            .ok_or_else(|| format!("content asset '{logical_path}' has no parent"))?;
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("content asset parent create failed: {error}"))?;
-
-        let temp = target.with_extension(format!(
-            "{}.newviso.tmp",
-            target
-                .extension()
-                .and_then(|value| value.to_str())
-                .unwrap_or("file")
-        ));
-
-        {
-            let mut file = fs::File::create(&temp)
-                .map_err(|error| format!("content temp file create failed: {error}"))?;
-            file.write_all(self.editor_text.as_bytes())
-                .map_err(|error| format!("content temp file write failed: {error}"))?;
-            file.sync_all()
-                .map_err(|error| format!("content temp file sync failed: {error}"))?;
-        }
-
-        if target.exists() {
-            fs::remove_file(&target)
-                .map_err(|error| format!("content target replace failed: {error}"))?;
-        }
-        fs::rename(&temp, &target)
-            .map_err(|error| format!("content temp commit failed: {error}"))?;
+        newviso_scene_document::write_authoring_file(
+            &target,
+            self.saved_text.as_bytes(),
+            self.editor_text.as_bytes(),
+        )?;
 
         self.saved_text = self.editor_text.clone();
-        self.status = format!("Saved {logical_path}");
+        if let Some(editor) = self.scene_editor.as_mut() {
+            editor.mark_saved();
+        }
+        self.status = if self.scene_editor.is_some() {
+            format!("Saved {logical_path}; transforms are live in the editor")
+        } else {
+            format!("Saved {logical_path}")
+        };
 
         if is_script_path(&logical_path) {
             return Ok(Some(ContentEffect::ScriptChanged {
@@ -182,6 +235,11 @@ impl ContentManager {
             ));
         }
 
-        Ok(self.root.join(relative))
+        let path = self.root.join(relative);
+        let canonical = path.canonicalize().map_err(|e| e.to_string())?;
+        if !canonical.starts_with(self.root.canonicalize().map_err(|e| e.to_string())?) {
+            return Err("content symlink escapes project root".into());
+        }
+        Ok(canonical)
     }
 }

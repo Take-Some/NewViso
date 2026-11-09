@@ -58,8 +58,13 @@ impl EngineApplication {
             return Ok(false);
         };
         let Some(clip) = self.load_cached_scene_animation_clip(
-            stable_id, &binding.clip_ref, binding.planar_root_lock,
-        )? else { return Ok(false); };
+            stable_id,
+            &binding.clip_ref,
+            binding.planar_root_lock,
+        )?
+        else {
+            return Ok(false);
+        };
         let deferred_seconds =
             (self.elapsed_seconds - binding.bound_elapsed_seconds).max(0.0) as f32;
         let effective_start_time_seconds =
@@ -80,8 +85,11 @@ impl EngineApplication {
         )?;
         Ok(changed)
     }
-    fn load_cached_scene_animation_clip(
-        &mut self, stable_id: u64, clip_ref: &str, planar_root_lock: bool,
+    pub(super) fn load_cached_scene_animation_clip(
+        &mut self,
+        stable_id: u64,
+        clip_ref: &str,
+        planar_root_lock: bool,
     ) -> Result<Option<Arc<ModelAnimationClip>>, String> {
         if !self.scene.entity_model_installed(stable_id) {
             return Ok(None);
@@ -98,11 +106,7 @@ impl EngineApplication {
                 stable_id, model.name, clip_ref
             )
         })?;
-        let cache_key = (
-            model.id.0,
-            clip_ref.to_owned(),
-            planar_root_lock,
-        );
+        let cache_key = (model.id.0, clip_ref.to_owned(), planar_root_lock);
         let clip = if let Some(clip) = self.animation_clip_cache.get(&cache_key).cloned() {
             clip
         } else {
@@ -128,32 +132,51 @@ impl EngineApplication {
     }
 
     pub(super) fn queue_scene_animation_preloads(
-        &mut self, stable_id: u64, clips: Vec<String>, planar_root_lock: bool,
+        &mut self,
+        stable_id: u64,
+        clips: Vec<String>,
+        planar_root_lock: bool,
     ) {
-        self.scene_animation_preloads.entry(stable_id).or_default()
+        self.scene_animation_preloads
+            .entry(stable_id)
+            .or_default()
             .extend(clips.into_iter().map(|clip| (clip, planar_root_lock)));
     }
 
     pub(super) fn pump_scene_animation_preloads(&mut self) -> Result<(), String> {
         // Admit one clip per streaming pump while startup owns presentation.
         // Off-screen requests remain deferred until their model becomes resident.
-        let entities = self.scene_animation_preloads.keys().copied().collect::<Vec<_>>();
+        let entities = self
+            .scene_animation_preloads
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
         for stable_id in entities {
             if self.scene.entity_state(stable_id).is_none() {
                 self.scene_animation_preloads.remove(&stable_id);
                 continue;
             }
-            let requests = self.scene_animation_preloads[&stable_id].iter().cloned().collect::<Vec<_>>();
+            let requests = self.scene_animation_preloads[&stable_id]
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>();
             for (clip, planar_root_lock) in requests {
-                if self.load_cached_scene_animation_clip(stable_id, &clip, planar_root_lock)?.is_some() {
-                    let pending = self.scene_animation_preloads.get_mut(&stable_id).expect("request retained");
+                if self
+                    .load_cached_scene_animation_clip(stable_id, &clip, planar_root_lock)?
+                    .is_some()
+                {
+                    let pending = self
+                        .scene_animation_preloads
+                        .get_mut(&stable_id)
+                        .expect("request retained");
                     pending.remove(&(clip, planar_root_lock));
-                    if pending.is_empty() { self.scene_animation_preloads.remove(&stable_id); }
+                    if pending.is_empty() {
+                        self.scene_animation_preloads.remove(&stable_id);
+                    }
                     return Ok(());
                 }
             }
         }
         Ok(())
     }
-
 }

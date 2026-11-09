@@ -1,0 +1,91 @@
+import * as Game from './default_game_base.ysc';
+import { createRuntimeSnapshotDecoder } from './snapshot_delta.ysc';
+import {LivingWorldCommands as World} from './world/living_world.ysc';
+const decode=createRuntimeSnapshotDecoder(),foe='endorphin.test.enemy',platform=900060171;
+const encode=(v:any)=>JSON.stringify(v,(_k:string,v:any)=>typeof v==='bigint'?String(v):v);
+const add=(a:any,b:any)=>a.map((v:number,i:number)=>v+b[i]);
+const sub=(a:any,b:any)=>a.map((v:number,i:number)=>v-b[i]);
+const cross=(a:any,b:any)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+function rotate(q:any,v:any):any {const t=cross(q.slice(0,3),v).map((v:number)=>2*v);return add(v,add(t.map((v:number)=>q[3]*v),cross(q.slice(0,3),t)));}
+let stage=0,since=0,updates=0,initial:any={},stopped:any={},samples=0,peak=0,evidence:any={};
+function check(ok:any,message:string):void {if(!ok)throw new Error('ENDORPHIN_SUPPORT '+message);}
+function next(n:number,now:number,cmd:any[]):void {stage=n;since=now;cmd.push({op:'console.write',message:'ENDORPHIN_SUPPORT_STAGE '+n});}
+function targets(e:any):any[] {return Object.values(e?.control?.stepping?.planted??{});}
+function observe(e:any,p:any):void {
+ const goals=targets(e);
+ check(goals.length===2,'both feet retain a sampled landing surface '+encode(e?.control?.stepping));
+ for(const g of goals){
+  check(Number(g.support?.entity)===platform,'surface target is not bound to the supporting body '+encode(g));
+  const a=g.support,contact=add(p.position,rotate(p.rotation,a.local_contact));
+  const normal=rotate(p.rotation,a.local_normal);
+  const expected=add(contact,normal.map((v:number)=>v*a.clearance));
+  const error=Math.hypot(...sub(g.position,expected));peak=Math.max(peak,error);
+  check(error<.0002,'foot target does not follow the actual support transform '+encode({error,g,p,expected}));
+  const velocity=add(p.linear_velocity,cross(p.angular_velocity,sub(contact,p.position)));
+  check(Math.hypot(...sub(g.velocity,velocity))<.002,'point velocity does not follow the current support motion');
+ }
+ samples++;
+}
+export function on_start(raw:any):any {return Game.on_start(decode(raw));}
+export function on_frame(raw:any):any {
+ const p=decode(raw);p.frame={...p.frame,platform:{...p.frame.platform,focused:false}};
+ const result:any=Game.on_frame(p),cmd=result.commands,r=p.runtime;
+ const now=Number(r?.peds?.world_seconds??p.elapsed_seconds);
+ const npc=r?.peds?.peds?.find((v:any)=>v.profile.actor_id===foe);
+ const body=r?.peds?.physics?.bodies?.find((v:any)=>v.actor_id===foe),e=body?.endorphin,rig=body?.ragdoll;
+ const capsule=r?.physics?.bodies?.find((v:any)=>String(v.entity_key)===String(body?.entity_key));
+ const support=r?.physics?.bodies?.find((v:any)=>Number(v.entity)===platform);
+ if(!since)since=now;
+ if(rig?.active){
+  const s=rig.skeleton_integrity;
+  check(s&&s.max_bone_length_error<.00001&&s.max_relative_scale_error<.0001&&s.max_basis_shear<.0001,'rigid skeleton');
+ }
+ if(stage===0&&npc&&body?.controlled&&now>1){
+  const profile={...npc.profile,position:[0,2.3,-5],combat:null,melee:null,armed:false,block_events:true};
+  cmd.push({op:'physics.body.upsert',entity:platform,body_kind:'kinematic',position:[0,2,-5],
+    shape:{kind:'box',half_extents:[2,.25,2]},friction:.8,participates_in_queries:true,casts_contacts:true},
+    {op:'ped.upsert',profile,reset:true},{op:'agent.tasks.clear',agent_id:foe+'.ai'},
+    World.upsertActor({id:foe,kind:'pedestrian',position:[0,2.3,-5],group:'raiders',tags:['combatant']}),
+    {op:'physics.body.pose.set',id:foe,position:[0,3.2,-5],rotation:[0,0,0,1]},
+    {op:'physics.body.velocity.set',id:foe,velocity:[0,0,0]},
+    {op:'items.inventory.unequip',owner_id:foe,slot:'hands'});
+  next(1,now,cmd);
+ }else if(stage===1&&body?.controlled&&support&&now-since>.3){
+  check(capsule?.position?.[1]>2.9,'actor did not reach elevated support '+encode(capsule?.position));
+  cmd.push({op:'ped.endorphin.activate',actor_id:foe,direction:[1,0,0],impulse:1});next(2,now,cmd);
+ }else if(stage===2&&rig?.active&&targets(e).length===2){
+  observe(e,support);initial=JSON.parse(encode(e.control.stepping.planted));updates=e.control.updates;
+  cmd.push({op:'physics.body.pose.set',entity:platform,position:[.04,2,-5],rotation:[0,Math.sin(.06),0,Math.cos(.06)]});
+  next(3,now,cmd);
+ }else if(stage===3&&e?.control?.updates>updates+1){
+  observe(e,support);
+  const goals=e.control.stepping.planted;
+  check(Object.keys(initial).some(k=>Math.hypot(...sub(goals[k].position,initial[k].position))>.02),'support transport was not exercised');
+  evidence.translation_and_rotation=true;updates=e.control.updates;
+  cmd.push({op:'physics.body.pose.set',entity:platform,position:[.04,2,-5.03],rotation:[0,Math.sin(-.04),0,Math.cos(-.04)]},
+    {op:'physics.body.velocity.set',entity:platform,velocity:[0,0,0]});
+  next(4,now,cmd);
+ }else if(stage===4&&e?.control?.updates>updates+1){
+  observe(e,support);stopped=JSON.parse(encode(e.control.stepping.planted));updates=e.control.updates;
+  next(5,now,cmd);
+ }else if(stage===5&&e?.control?.updates>updates+1){
+  observe(e,support);
+  for(const [foot,g] of Object.entries(e.control.stepping.planted) as any)
+   check(Math.hypot(...sub(g.position,stopped[foot].position))<.0002,'stationary support retained stale motion');
+  evidence.stopping=true;updates=e.control.updates;
+  cmd.push({op:'physics.body.destroy',entity:platform});next(6,now,cmd);
+ }else if(stage===6&&!support&&e?.control?.updates>updates){
+  check(!targets(e).some(g=>Number(g.support?.entity)===platform),'retired support retained a ghost target');
+  evidence.retirement=true;evidence.samples=samples;evidence.maximum_target_error=peak;
+  evidence.active_motors=rig?.joints?.some((j:any)=>j.motor?.max_torque>0)??false;
+  evidence.standing_acceptance=false;
+  check(evidence.active_motors,'native muscle drives were not exercised');
+  cmd.push({op:'console.write',message:'ENDORPHIN_VERIFY_EVIDENCE '+encode(evidence)},
+   {op:'console.write',message:'ENDORPHIN_VERIFY_PASS surface_local_targets rotation translation stopping retirement rigid_skeleton'});
+  result.exit_requested=true;next(7,now,cmd);
+ }
+ check(stage===7||now-since<8,'stage timeout '+stage+' '+encode({body,support}));
+ return result;
+}
+export function on_event(p:any):any {return Game.on_event(p);}
+export function on_shutdown(p:any):any {return Game.on_shutdown(p);}

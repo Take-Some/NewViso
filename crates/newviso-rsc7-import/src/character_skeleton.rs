@@ -38,7 +38,9 @@ pub(crate) fn attach_character_skeleton(
         return Ok(());
     }
 
-    let candidates = skeleton_candidates(address.logical_path());
+    let policy: Value = serde_json::from_str(&assets.text("config/engine/model_metadata.json")?)
+        .map_err(|e| format!("model metadata policy: {e}"))?;
+    let candidates = skeleton_candidates(address.logical_path(), &policy)?;
     let mut failures = Vec::new();
     for candidate in &candidates {
         match load_skeleton_xml_bytes(assets, candidate) {
@@ -75,7 +77,7 @@ fn load_skeleton_xml_bytes(assets: &AssetClient, logical_path: &str) -> Result<V
         return Ok(raw);
     }
 
-    // Runtime/authored metadata may also be packaged as NEF8 while preserving
+    // Authored metadata may also be packaged while preserving
     // the same XML body contract. In that case the generic ListFile codec owns
     // envelope decoding and this layer only consumes the decoded XML payload.
     assets
@@ -96,25 +98,43 @@ fn looks_like_xml(bytes: &[u8]) -> bool {
         .is_some_and(|byte| byte == b'<')
 }
 
-fn skeleton_candidates(logical_path: &str) -> Vec<String> {
+fn skeleton_candidates(logical_path: &str, policy: &Value) -> Result<Vec<String>, String> {
+    if policy["schema"] != "newviso.model-metadata-policy.v1" {
+        return Err("unsupported model metadata policy".into());
+    }
+    let suffixes = policy["skeleton_sidecar_suffixes"]
+        .as_array()
+        .ok_or("missing skeleton sidecar suffixes")?;
+    if suffixes.is_empty() || suffixes.len() > 32 {
+        return Err("invalid skeleton sidecar suffix count".into());
+    }
+    let suffixes = suffixes
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .filter(|s| !s.is_empty() && !s.contains(['/', '\\', ':']))
+                .ok_or("invalid skeleton sidecar suffix")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let variant = policy["variant_directory"]
+        .as_str()
+        .filter(|s| !s.is_empty() && !s.contains(['/', '\\', ':']))
+        .ok_or("invalid variant directory")?;
     let path = logical_path.replace('\\', "/");
     let mut out = Vec::new();
-    push_skeleton_candidates(&mut out, &path);
-
+    for suffix in &suffixes {
+        push_unique_candidate(&mut out, replace_extension(&path, suffix));
+    }
     let lower = path.to_ascii_lowercase();
-    if let Some(index) = lower.rfind("/variants/") {
+    if let Some(index) = lower.rfind(&format!("/{}/", variant.to_ascii_lowercase())) {
         let character_dir = &path[..index];
         if let Some(name) = character_dir.rsplit('/').next() {
-            push_unique_candidate(&mut out, format!("{character_dir}/{name}.skeleton.ymt"));
-            push_unique_candidate(&mut out, format!("{character_dir}/{name}.ymt"));
+            for suffix in &suffixes {
+                push_unique_candidate(&mut out, format!("{character_dir}/{name}.{suffix}"));
+            }
         }
     }
-    out
-}
-
-fn push_skeleton_candidates(out: &mut Vec<String>, model_path: &str) {
-    push_unique_candidate(out, replace_extension(model_path, "skeleton.ymt"));
-    push_unique_candidate(out, replace_extension(model_path, "ymt"));
+    Ok(out)
 }
 
 fn push_unique_candidate(out: &mut Vec<String>, candidate: String) {
@@ -367,6 +387,21 @@ fn validate_trs(joint: &RawJoint, logical_path: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn valid_skin_joint_influence(value: f32, weight: f32, joint_count: usize) -> bool {
+    if !value.is_finite()
+        || value < 0.0
+        || value.fract().abs() > 1.0e-4
+        || !weight.is_finite()
+        || weight < 0.0
+    {
+        return false;
+    }
+    // Unused RSC7 blend lanes encode an absent joint as 0xFF.
+    // The scene's read_skin_influences skips lanes with weight <= 1e-8;
+    // never permit this sentinel if any nonzero weight would sample it.
+    (value as usize) < joint_count || (value == 255.0 && weight <= 1.0e-8)
+}
+
 fn validate_joint_stream_domain(
     model: &ModelResource,
     skeleton: &ModelSkeleton,
@@ -374,34 +409,44 @@ fn validate_joint_stream_domain(
 ) -> Result<(), String> {
     for mesh in &model.meshes {
         for stream in &mesh.vertex_streams {
-            if !matches!(
-                stream.semantic,
-                VertexSemantic::JointIndices | VertexSemantic::JointIndicesExtra
-            ) {
-                continue;
-            }
-            if stream.stride != 16 || stream.data.len() % 4 != 0 {
+            let paired_weights = match stream.semantic {
+                VertexSemantic::JointIndices => VertexSemantic::JointWeights,
+                VertexSemantic::JointIndicesExtra => VertexSemantic::JointWeightsExtra,
+                _ => continue,
+            };
+            let weights = mesh
+                .vertex_streams
+                .iter()
+                .find(|candidate| candidate.semantic == paired_weights)
+                .ok_or_else(|| {
+                    format!(
+                        "character joint indices lack matching weights model='{}' mesh='{}'",
+                        model.name, mesh.name
+                    )
+                })?;
+            if stream.stride != 16
+                || weights.stride != 16
+                || stream.data.len() % 16 != 0
+                || stream.data.len() != weights.data.len()
+                || stream.vertex_count != weights.vertex_count
+            {
                 return Err(format!(
-                    "character joint stream has unsupported layout model='{}' mesh='{}' stride={} bytes={}",
-                    model.name,
-                    mesh.name,
-                    stream.stride,
-                    stream.data.len()
+                    "character joint stream has unsupported index/weight layout model='{}' mesh='{}' index_stride={} weight_stride={} index_bytes={} weight_bytes={}",
+                    model.name, mesh.name, stream.stride, weights.stride,
+                    stream.data.len(), weights.data.len()
                 ));
             }
-            for chunk in stream.data.chunks_exact(4) {
-                let value = f32::from_le_bytes(chunk.try_into().expect("exact f32 chunk"));
-                if !value.is_finite()
-                    || value < 0.0
-                    || value.fract().abs() > 1.0e-4
-                    || value as usize >= skeleton.joints.len()
-                {
+            for (joint_bytes, weight_bytes) in stream
+                .data
+                .chunks_exact(4)
+                .zip(weights.data.chunks_exact(4))
+            {
+                let value = f32::from_le_bytes(joint_bytes.try_into().expect("exact f32 joint"));
+                let weight = f32::from_le_bytes(weight_bytes.try_into().expect("exact f32 weight"));
+                if !valid_skin_joint_influence(value, weight, skeleton.joints.len()) {
                     return Err(format!(
-                        "character skin joint index outside skeleton path='{logical_path}' model='{}' mesh='{}' value={} joints={}",
-                        model.name,
-                        mesh.name,
-                        value,
-                        skeleton.joints.len()
+                        "character skin joint index outside skeleton path='{logical_path}' model='{}' mesh='{}' value={} weight={} joints={}",
+                        model.name, mesh.name, value, weight, skeleton.joints.len()
                     ));
                 }
             }
@@ -499,23 +544,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn variant_candidates_prefer_exact_then_character_base() {
+    fn unused_rsc7_joint_padding_is_valid_but_weighted_out_of_range_is_not() {
+        assert!(valid_skin_joint_influence(255.0, 0.0, 101));
+        assert!(valid_skin_joint_influence(255.0, 1.0e-9, 101));
+        assert!(valid_skin_joint_influence(100.0, 0.75, 101));
+        assert!(!valid_skin_joint_influence(255.0, 0.001, 101));
+        assert!(!valid_skin_joint_influence(101.0, 0.0, 101));
+        assert!(!valid_skin_joint_influence(f32::NAN, 0.0, 101));
+        assert!(!valid_skin_joint_influence(3.0, f32::INFINITY, 101));
+    }
+
+    #[test]
+    fn variant_candidates_follow_authored_metadata_policy() {
+        let policy = serde_json::json!({"schema":"newviso.model-metadata-policy.v1","skeleton_sidecar_suffixes":["skeleton.xml","metadata.xml"],"variant_directory":"variants"});
         assert_eq!(
-            skeleton_candidates("models/characters/abby/variants/abby_seattle.ydd"),
+            skeleton_candidates("models/characters/test/variants/coat.model", &policy).unwrap(),
             vec![
-                "models/characters/abby/variants/abby_seattle.skeleton.ymt",
-                "models/characters/abby/variants/abby_seattle.ymt",
-                "models/characters/abby/abby.skeleton.ymt",
-                "models/characters/abby/abby.ymt"
+                "models/characters/test/variants/coat.skeleton.xml",
+                "models/characters/test/variants/coat.metadata.xml",
+                "models/characters/test/test.skeleton.xml",
+                "models/characters/test/test.metadata.xml"
             ]
         );
     }
 
     #[test]
-    fn skeleton_source_detection_distinguishes_xml_from_nef8() {
+    fn skeleton_source_detection_distinguishes_xml_from_opaque_data() {
         assert!(looks_like_xml(b"  \n<?xml version=\"1.0\"?><Skeleton/>"));
         assert!(looks_like_xml(b"\xEF\xBB\xBF<Skeleton/>"));
-        assert!(!looks_like_xml(b"NEF8\x02\x05\x00\x00"));
+        assert!(!looks_like_xml(b"opaque\x00binary"));
     }
 
     #[test]
@@ -525,7 +582,7 @@ mod tests {
   <Joint index="1" tag="11816" parent_index="0" name="SKEL_Pelvis" tx="0" ty="0.9" tz="0" qx="0" qy="0" qz="0" qw="1" sx="1" sy="1" sz="1" />
 </Skeleton>"#;
         let skeleton =
-            decode_skeleton_xml("models/characters/gta/test/test.skeleton.ymt", xml).unwrap();
+            decode_skeleton_xml("models/characters/gta/test/test.skeleton.xml", xml).unwrap();
         assert_eq!(skeleton.name, "ped");
         assert_eq!(skeleton.joints.len(), 2);
         assert_eq!(skeleton.joints[1].tag, 11816);

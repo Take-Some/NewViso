@@ -34,6 +34,51 @@ impl NavigationRuntime {
         end: Vec3,
         agent_radius: f32,
     ) -> Result<u64, String> {
+        self.request_path_with_access(start, end, agent_radius, BTreeSet::new())
+    }
+
+    pub fn request_path_with_access(
+        &mut self,
+        start: Vec3,
+        end: Vec3,
+        agent_radius: f32,
+        gate_access: BTreeSet<String>,
+    ) -> Result<u64, String> {
+        self.request_character_path(start, end, agent_radius, 2.0 * agent_radius, gate_access)
+    }
+
+    pub fn request_character_path(
+        &mut self,
+        start: Vec3,
+        end: Vec3,
+        agent_radius: f32,
+        agent_height: f32,
+        gate_access: BTreeSet<String>,
+    ) -> Result<u64, String> {
+        self.request_character_path_with_step(
+            start,
+            end,
+            agent_radius,
+            agent_height,
+            gate_access,
+            self.config.max_step_height,
+        )
+    }
+    pub fn request_character_path_with_step(
+        &mut self,
+        start: Vec3,
+        end: Vec3,
+        agent_radius: f32,
+        agent_height: f32,
+        gate_access: BTreeSet<String>,
+        max_step_height: f32,
+    ) -> Result<u64, String> {
+        if !max_step_height.is_finite() || !(0.0..=2.0).contains(&max_step_height) {
+            return Err("invalid navigation step height".into());
+        }
+        if !agent_height.is_finite() || agent_height < 0.0 {
+            return Err("invalid navigation agent height".into());
+        }
         if start
             .iter()
             .chain(end.iter())
@@ -50,6 +95,9 @@ impl NavigationRuntime {
             start,
             end,
             agent_radius,
+            gate_access,
+            agent_height,
+            max_step_height,
         });
         Ok(id)
     }
@@ -67,6 +115,11 @@ impl NavigationRuntime {
         processed
     }
 
+    pub fn cancel_request(&mut self, id: u64) {
+        self.requests.retain(|r| r.id != id);
+        self.results.remove(&id);
+    }
+
     pub fn take_result(&mut self, id: u64) -> Option<PathResult> {
         self.results.remove(&id)
     }
@@ -77,6 +130,9 @@ impl NavigationRuntime {
             start,
             end,
             agent_radius,
+            gate_access: BTreeSet::new(),
+            agent_height: 2.0 * agent_radius,
+            max_step_height: self.config.max_step_height,
         })
     }
     pub(super) fn solve(&self, request: &PathRequest) -> PathResult {
@@ -88,6 +144,12 @@ impl NavigationRuntime {
         };
 
         if start_id == end_id {
+            if self
+                .gate_cost(request.start, request.end, request)
+                .is_none()
+            {
+                return failed(request.id, PathStatus::NoPath);
+            }
             return PathResult {
                 id: request.id,
                 status: PathStatus::Found,
@@ -99,6 +161,7 @@ impl NavigationRuntime {
 
         let mut open = BinaryHeap::new();
         let mut came_from = BTreeMap::<u64, u64>::new();
+        let mut chosen = BTreeMap::<u64, Portal>::new();
         let mut g = BTreeMap::<u64, f32>::from([(start_id, 0.0)]);
         let mut closed = BTreeSet::new();
         open.push(HeapNode {
@@ -115,8 +178,39 @@ impl NavigationRuntime {
             }
             if current.id == end_id {
                 let corridor = reconstruct(start_id, end_id, &came_from);
-                let portals = self.corridor_portals(&corridor);
-                let waypoints = string_pull(request.start, request.end, &portals);
+                let portals = corridor
+                    .iter()
+                    .skip(1)
+                    .map(|id| {
+                        let p = &chosen[id];
+                        let width = horizontal_distance(p.left, p.right);
+                        let inset = if p.off_mesh || width <= f32::EPSILON {
+                            0.0
+                        } else {
+                            ((request.agent_radius + self.config.weld_epsilon) / width).min(0.5)
+                        };
+                        (
+                            add(p.left, mul(sub(p.right, p.left), inset)),
+                            add(p.right, mul(sub(p.left, p.right), inset)),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let mut waypoints = string_pull(request.start, request.end, &portals);
+                if waypoints
+                    .windows(2)
+                    .any(|p| self.gate_cost(p[0], p[1], request).is_none())
+                {
+                    waypoints = vec![request.start];
+                    for id in corridor.iter().skip(1) {
+                        let p = &chosen[id];
+                        waypoints.push(mul(add(p.left, p.right), 0.5));
+                        waypoints.push(if *id == end_id {
+                            request.end
+                        } else {
+                            self.polygons[id].centroid
+                        });
+                    }
+                }
                 return PathResult {
                     id: request.id,
                     status: PathStatus::Found,
@@ -131,7 +225,8 @@ impl NavigationRuntime {
                 let Some(next) = self.polygons.get(&portal.to) else {
                     continue;
                 };
-                if self.polygon_blocked(next, request.agent_radius)
+                if portal.step_height > request.max_step_height + self.config.weld_epsilon
+                    || self.polygon_blocked(next, request.agent_radius)
                     || self.portal_blocked(portal, request.agent_radius)
                     || (!portal.off_mesh
                         && horizontal_distance(portal.left, portal.right)
@@ -140,10 +235,30 @@ impl NavigationRuntime {
                 {
                     continue;
                 }
+                let a = if current.id == start_id {
+                    request.start
+                } else {
+                    current_poly.centroid
+                };
+                let b = if next.id == end_id {
+                    request.end
+                } else {
+                    next.centroid
+                };
+                let via = mul(add(portal.left, portal.right), 0.5);
+                let (Some(ca), Some(cb)) = (
+                    self.gate_cost(a, via, request),
+                    self.gate_cost(via, b, request),
+                ) else {
+                    continue;
+                };
                 let tentative = g[&current.id]
-                    + distance(current_poly.centroid, next.centroid) * portal.cost_scale;
+                    + (distance(a, via) + distance(via, b)) * portal.cost_scale
+                    + ca
+                    + cb;
                 if tentative + 1.0e-6 < g.get(&next.id).copied().unwrap_or(f32::INFINITY) {
                     came_from.insert(next.id, current.id);
+                    chosen.insert(next.id, portal.clone());
                     g.insert(next.id, tentative);
                     let h = distance(next.centroid, self.polygons[&end_id].centroid);
                     open.push(HeapNode {
@@ -202,19 +317,6 @@ impl NavigationRuntime {
         }
         let midpoint = mul(add(portal.left, portal.right), 0.5);
         self.position_blocked(midpoint, agent_radius)
-    }
-
-    fn corridor_portals(&self, corridor: &[u64]) -> Vec<(Vec3, Vec3)> {
-        let mut out = Vec::new();
-        for pair in corridor.windows(2) {
-            let Some(poly) = self.polygons.get(&pair[0]) else {
-                continue;
-            };
-            if let Some(portal) = poly.portals.iter().find(|portal| portal.to == pair[1]) {
-                out.push((portal.left, portal.right));
-            }
-        }
-        out
     }
 
     fn position_blocked(&self, point: Vec3, agent_radius: f32) -> bool {

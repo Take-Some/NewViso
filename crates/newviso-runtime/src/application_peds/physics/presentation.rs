@@ -8,7 +8,7 @@ impl EngineApplication {
     ) -> Option<([f32; 3], [f32; 3])> {
         let body = self.ped_physics.bodies.get(id)?;
         let pose = self.physics.as_ref()?.vehicle_body_state(body.entity)?;
-        if let Some(ragdoll) = &body.ragdoll {
+        if let Some(ragdoll) = &body.endorphin.ragdoll {
             return Some(ragdoll.presentation(pose.position));
         }
         if body.reaction.is_some() {
@@ -17,10 +17,13 @@ impl EngineApplication {
             // would make a lying character rotate and sink a second time.
             let bottom = pose.position[1]
                 - animation::capsule_vertical_extent(pose.rotation, body.radius, body.half_height);
-            let floor = self
-                .physics
-                .as_ref()?
-                .character_ground_contact_height(body.entity);
+            let floor = if self.ped_physical_getup_active(id) {
+                self.ped_getup_observed_ground(id)
+            } else {
+                self.physics
+                    .as_ref()?
+                    .character_ground_contact_height(body.entity)
+            };
             let mut model_y = bottom.max(floor.unwrap_or(bottom)) + offset[1];
             if let Some(floor) = floor {
                 if let Some(rig) = self
@@ -28,6 +31,7 @@ impl EngineApplication {
                     .get(id)
                     .and_then(|p| p.locomotion.as_ref())
                     .and_then(|l| l.ragdoll.as_ref())
+                    .or(Some(&body.endorphin.model.rig))
                 {
                     let contacts = rig.floor_contacts().collect::<Vec<_>>();
                     if let Ok(Some(lowest)) = self
@@ -82,19 +86,25 @@ impl EngineApplication {
 
     pub(crate) fn ped_runtime_state(&self) -> Value {
         let mut state = self.peds.runtime_state();
+        state["weapon_rigs"] = self.endorphin.weapon_rigs_snapshot();
+        state["world_seconds"] = json!(self.living_world.world_seconds());
+        state["combat_director"] = json!({"geometry_probes":self.ped_physics.combat.geometry_probes,
+            "verified_cover":self.ped_physics.combat.verified_cover});
+        state["melee_collision"] = json!(self.ped_physics.melee);
         state["physics"] = json!({"bodies": self.ped_physics.bodies.iter().map(|(id, b)| json!({
-            "actor_id": id, "entity": b.entity, "entity_key": b.entity.to_string(), "mass_kg": PED_MASS_KG, "center_offset": b.center_offset,
-            "recovery_seconds": b.recovery_seconds, "controlled": !self.peds.is_dead(id) && b.recovery_seconds <= 0.0 && b.vehicle_response.is_none() && b.reaction.is_none(),
+            "actor_id": id, "scene_key":self.world_actor_presentations.get(id).map(|p|&p.scene_key), "entity": b.entity, "entity_key": b.entity.to_string(), "mass_kg": b.mass_kg, "center_offset": b.center_offset,
+            "recovery_seconds": b.recovery_seconds, "controlled": b.authority(self.peds.is_dead(id)).locomotion,
+            "authority": b.authority(self.peds.is_dead(id)),
+            "weapon_pose":self.ped_weapon_pose(id,b),
             "ragdoll": self.ragdoll_snapshot(b),
+            "endorphin": self.endorphin_snapshot(b),
             "hit_reaction": b.hit_reaction.as_ref().map(|r|json!({"clip_ref":r.clip_ref,"elapsed_seconds":r.elapsed,"duration_seconds":r.duration,"generation":r.generation})),
             "additive_playback": self.scene.entity_additive_animation(b.entity),
             "animation": b.reaction.as_ref().map(|r| json!({"phase": r.phase.as_str(), "cause": r.cause,
                 "clip_ref": r.clip.clip_ref, "elapsed_seconds": r.elapsed, "clip_time_seconds": r.clip_time(),
                 "duration_seconds": r.clip.duration_seconds, "generation": r.generation})),
             "skeletal_playback": self.scene.entity_animation_playback(b.entity),
-            "joint_positions": (["SKEL_Pelvis", "SKEL_Head", "SKEL_L_Hand", "SKEL_R_Hand", "SKEL_L_Foot", "SKEL_R_Foot"]
-                .into_iter().filter_map(|joint| self.scene.entity_joint_world_position(b.entity, joint).ok().map(|p| (joint, p)))
-                .collect::<BTreeMap<_, _>>()),
+            "joint_positions": self.ped_joint_positions(b),
             "vehicle_response": b.vehicle_response.as_ref().map(|r| json!({"kind": r.kind.as_str(), "weapon_type": r.kind.weapon_type(),
                 "source_entity_key": r.source.to_string(), "elapsed_seconds": r.elapsed, "direction": r.direction, "wheel_load": r.wheel_load}))
         })).collect::<Vec<_>>()});

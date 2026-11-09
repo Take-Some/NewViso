@@ -1,0 +1,74 @@
+import { Ped } from "./world/peds.ysc";
+import * as Game from './default_game_base.ysc';
+import { createRuntimeSnapshotDecoder } from './snapshot_delta.ysc';
+import { PlayerPresentation } from './gameplay/player_presentation.ysc';
+const decode=createRuntimeSnapshotDecoder(),presentation=new PlayerPresentation(true);
+let elapsed=0,stage=0,since=0,events:any={},started=false,launched=false,landed=false,settle=0;
+let config:any,npcs:string[]=[],npcEvents:any={},npcJumped=false;
+function event(e:any):void{
+ const id=e?.payload?.actor_id;
+ if(npcs.includes(id)){const counts=npcEvents[id]??(npcEvents[id]={});counts[e.topic]=(counts[e.topic]??0)+1;}
+ if(e?.payload?.actor_id==='player.character'||e?.payload?.entity==='player.character'){
+  events[e.topic]=(events[e.topic]??0)+1;
+  if(e.topic==='character.land')landed=true;
+ }
+}
+export function on_event(e:any):any {event(e);return Game.on_event(e);}
+export function on_start(raw:any):any{
+ const p=decode(raw);config=p.project.runtime.variables.engine_player;
+ presentation.configure(config); npcs=p.project.runtime.variables.motion_verification_npcs??[];
+ const r:any=Game.on_start(p);
+ if(config.controller==='project'){
+  const feet=config.spawn_position??[0,.05,6],eye=[feet[0],feet[1]+config.eye_height,feet[2]];
+  r.commands.push(...presentation.frame(eye,0,config.camera_mode,eye,[0,-.8,-.6],[0,1,0],
+   config.locomotion_clips?.idle||config.locomotion_dictionary+'@idle',0,false,p,false,false,true));
+ }
+ for(let i=0;i<npcs.length;i++)r.commands.push(new Ped(npcs[i]).goTo([-3+i*6,.05,-20],1.5));
+ if(config.controller==='project')r.commands.push({op:'physics.world.configure',fixed_hz:120,max_steps_per_frame:8,gravity:config.gravity,contact_skin:.002,scene_colliders:{enabled:true,friction:.72,restitution:.02,density:1,participates_in_queries:true,casts_contacts:true}}, {
+ op:'physics.body.upsert',entity:config.physics_entity,body_kind:'dynamic',
+ shape:{kind:'capsule',radius:config.body_radius,half_height:(config.body_height-2*config.body_radius)/2},
+ position:[0,config.body_height/2+.05,6],rotation:[0,0,0,1],
+ linear_velocity:[0,0,0],angular_velocity:[0,0,0],friction:0,restitution:0,density:80,
+ continuous_collision:true,participates_in_queries:true,participates_in_contacts:true,
+ collision_groups:1,collision_mask:4294967295});
+ return r;
+}
+export function on_frame(raw:any):any{
+ const p=decode(raw),dt=Number(p.delta_seconds);elapsed+=dt;
+ const body=p.runtime.physics?.bodies?.find((b:any)=>String(b.entity)===String(config.physics_entity));
+ const down=stage===1?[41]:stage===2?[41,60]:[];
+ const jump=stage===3&&!launched;
+ p.frame={...p.frame,platform:{...p.frame.platform,focused:true,cursor_captured:true},
+ input:{state:{keys:{down,pressed:jump?[58]:[]},mouse:{down:[],pressed:[1],delta:{x:0,y:0}}}}};
+ const r:any=Game.on_frame(p),commands=r.commands;
+ if(stage===3&&!npcJumped){npcJumped=true;for(const id of npcs)commands.push(new Ped(id).jump(4.6));}
+ if(body){
+  const v=body.linear_velocity;
+  if(config.controller==='project'){
+   const speed=stage===1?1.5:stage===2?4.6:0;
+   commands.push({op:'physics.body.pose.set',entity:config.physics_entity,position:body.position,rotation:[0,0,0,1]},{op:'physics.body.velocity.set',entity:config.physics_entity,velocity:[0,jump&&!launched?5.4:v[1],-speed]});
+   const eye=[body.position[0],body.position[1]-config.body_height/2+config.eye_height,body.position[2]];
+   commands.push(...presentation.frame(eye,0,config.camera_mode,eye,[0,-.8,-.6],[0,1,0],config.locomotion_clips?.[speed>2?'run':speed>0?'walk':'idle'] || config.locomotion_dictionary+'@'+(speed>2?'run':speed>0?'walk':'idle'),elapsed,speed>0,p,false,false,true));
+  }
+  const foot=[body.position[0],body.position[1]-config.body_height/2,body.position[2]];
+  // Look down at the actual skinned torso/hands and material ranges.
+  const eye=[foot[0],foot[1]+config.eye_height,foot[2]-.18];
+  commands.push({op:'scene.camera.set',position:config.camera_mode==='third_person'?[foot[0],foot[1]+1.3,foot[2]-2.5]:eye,target:config.camera_mode==='third_person'?[foot[0],foot[1]+1,foot[2]]:[eye[0],eye[1]-.9,eye[2]-.4],up:[0,1,0],fov_y_degrees:72,near:.04,far:250});
+  if(stage===0){
+   settle+=dt;
+   if(settle>1.5){stage=1;since=elapsed;commands.push({op:'console.write',message:'MOTION_CAPTURE first_person'});}
+  } else if(stage===1&&elapsed-since>2.5){stage=2;since=elapsed;}
+  else if(stage===2&&elapsed-since>2.5){stage=3;since=elapsed;}
+  else if(stage===3&&jump&&body.linear_velocity[1]>1){launched=true;}
+  else if(stage===3&&launched&&landed&&elapsed-since>1.4){
+   if(!(events['character.footstep']>3))throw new Error('MOTION_VERIFY no shared contacts '+JSON.stringify(events));
+   if(events['character.jump']!==1||events['character.land']!==1)throw new Error('MOTION_VERIFY duplicate/missing air events '+JSON.stringify(events));
+   for(const id of npcs){const e=npcEvents[id]??{};if(!(e['character.footstep']>2&&e['character.jump']===1&&e['character.land']===1))throw new Error('MOTION_VERIFY NPC '+id+' '+JSON.stringify(e));}
+   commands.push({op:'console.write',message:'CHARACTER_MOTION_VERIFY_PASS '+JSON.stringify({player:events,npcs:npcEvents})});
+   r.exit_requested=true;
+  }
+ }
+ if(elapsed>15)throw new Error('MOTION_VERIFY timeout '+JSON.stringify({stage,events,body}));
+ return r;
+}
+export function on_shutdown(p:any):any{return Game.on_shutdown(p);}

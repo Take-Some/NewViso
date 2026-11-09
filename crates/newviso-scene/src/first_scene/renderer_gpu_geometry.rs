@@ -162,6 +162,67 @@ impl Scene3dRuntime {
         }
         Ok(())
     }
+    /// Prepare the skinned output ring before presenting the initial playable
+    /// frame. A first-time allocation is expensive and must not be hidden inside
+    /// the acquired frame slot while the loading compositor is still active.
+    pub(super) fn warmup_skinned_output_capacity(
+        &mut self,
+        render: &RenderClient,
+    ) -> Result<(), String> {
+        let required_vertices = u32::try_from(
+            self.skinned_vertex_data.len() / FLOATS_PER_VERTEX
+        ).map_err(|_| "compact skinned vertex count exceeds u32".to_owned())?;
+        let mut gpu = self.gpu.ok_or_else(|| {
+            "3D scene GPU resources are not initialized".to_owned()
+        })?;
+        if required_vertices <= gpu.skinned_vertex_capacity {
+            return Ok(());
+        }
+        let next = required_vertices
+            .checked_next_power_of_two()
+            .unwrap_or(required_vertices)
+            .max(DEFAULT_SKINNED_VERTEX_CAPACITY);
+        let mut new_buffers = [0u32; SCENE_FRAME_SLOTS];
+        for slot in 0..SCENE_FRAME_SLOTS {
+            match render.create_frame_buffer(
+                slot,
+                &format!("newviso.scene.skinned_vertices.grown.slot.{slot}"),
+                next as u64 * VERTEX_STRIDE,
+                "Vertex",
+                if renderer_skinning::gpu_skinning_enabled() {
+                    "GpuOnly"
+                } else {
+                    "CpuToGpu"
+                },
+            ) {
+                Ok(buffer) => new_buffers[slot] = buffer,
+                Err(error) => {
+                    for buffer in new_buffers {
+                        if buffer != 0 {
+                            render.destroy_buffer(buffer);
+                        }
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        for old_buffer in gpu.skinned_vertex_buffers {
+            // The renderer backend owns GPU fence-safe resource retirement.
+            render.destroy_buffer(old_buffer);
+        }
+        gpu.skinned_vertex_buffers = new_buffers;
+        gpu.skinned_vertex_capacity = next;
+        let full = (0, self.skinned_vertex_data.len());
+        for ranges in &mut self.skinned_dirty_ranges {
+            ranges.clear();
+            if full.1 != 0 {
+                ranges.push(full);
+            }
+        }
+        self.gpu = Some(gpu);
+        Ok(())
+    }
+
     pub(super) fn sync_skinned_vertex_gpu(
         &mut self,
         render: &RenderClient,
@@ -173,45 +234,13 @@ impl Scene3dRuntime {
             ));
         }
 
-        let required_vertices =
-            u32::try_from(self.skinned_vertex_data.len() / FLOATS_PER_VERTEX)
-                .map_err(|_| "compact skinned vertex count exceeds u32".to_owned())?;
-        let mut gpu = self
-            .gpu
-            .ok_or_else(|| "3D scene GPU resources are not initialized".to_owned())?;
-
-        if required_vertices > gpu.skinned_vertex_capacity {
-            let next = required_vertices
-                .checked_next_power_of_two()
-                .unwrap_or(required_vertices)
-                .max(DEFAULT_SKINNED_VERTEX_CAPACITY);
-            let mut new_buffers = [0u32; SCENE_FRAME_SLOTS];
-            for slot in 0..SCENE_FRAME_SLOTS {
-                new_buffers[slot] = render.create_frame_buffer(
-                    slot,
-                    &format!("newviso.scene.skinned_vertices.grown.slot.{slot}"),
-                    next as u64 * VERTEX_STRIDE,
-                    "Vertex",
-                    if renderer_skinning::gpu_skinning_enabled() { "GpuOnly" } else { "CpuToGpu" },
-                )?;
-            }
-            for old_buffer in gpu.skinned_vertex_buffers {
-                render.destroy_buffer(old_buffer);
-            }
-            gpu.skinned_vertex_buffers = new_buffers;
-            gpu.skinned_vertex_capacity = next;
-            let full = (0, self.skinned_vertex_data.len());
-            for ranges in &mut self.skinned_dirty_ranges {
-                ranges.clear();
-                if full.1 != 0 {
-                    ranges.push(full);
-                }
-            }
-            self.gpu = Some(gpu);
-        }
+        self.warmup_skinned_output_capacity(render)?;
+        let gpu = self.gpu.ok_or_else(|| {
+            "3D scene GPU resources are not initialized".to_owned()
+        })?;
 
         if renderer_skinning::gpu_skinning_enabled() {
-            self.dispatch_gpu_skinning(render, frame_slot, gpu)?;
+            self.dispatch_gpu_skinning(render, frame_slot)?;
             return Ok(gpu);
         }
 

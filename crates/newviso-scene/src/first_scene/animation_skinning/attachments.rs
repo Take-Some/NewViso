@@ -2,6 +2,11 @@
 use super::*;
 
 impl Scene3dRuntime {
+    /// Installed immutable rig metadata; callers may cache capability checks by Arc identity.
+    pub fn entity_skeleton(&self, id: u64) -> Option<&std::sync::Arc<ModelSkeleton>> {
+        self.entity_skeletons.get(&id).map(|(s, _)| s)
+    }
+
     pub(super) fn animated_joint_model_matrix(
         &self,
         stable_id: u64,
@@ -72,17 +77,25 @@ impl Scene3dRuntime {
         joint_name: &str,
     ) -> Result<([f32; 3], [f32; 3]), String> {
         let bind = self.bind_joint_model_matrix(stable_id, joint_name)?;
-        let (skeleton, _) = self.entity_skeletons.get(&stable_id)
+        let (skeleton, _) = self
+            .entity_skeletons
+            .get(&stable_id)
             .ok_or_else(|| "camera anchor has no installed skeleton".to_owned())?;
-        let index = skeleton.joints.iter().position(|j| j.name.eq_ignore_ascii_case(joint_name))
+        let index = skeleton
+            .joints
+            .iter()
+            .position(|j| j.name.eq_ignore_ascii_case(joint_name))
             .ok_or_else(|| format!("camera anchor has no joint {joint_name}"))?;
         let mut root_index = index;
         while let Some(parent) = skeleton.joints[root_index].parent {
             let parent = parent as usize;
-            if parent >= root_index { return Err("camera anchor skeleton is not topological".to_owned()); }
+            if parent >= root_index {
+                return Err("camera anchor skeleton is not topological".to_owned());
+            }
             root_index = parent;
         }
-        let bind_root = self.bind_joint_model_matrix(stable_id, &skeleton.joints[root_index].name)?;
+        let bind_root =
+            self.bind_joint_model_matrix(stable_id, &skeleton.joints[root_index].name)?;
         let (animated, animated_root) = if self.skinned_entities.contains_key(&stable_id) {
             let pose = self.entity_pose_model_matrices(stable_id)?;
             (pose[index], pose[root_index])
@@ -93,6 +106,88 @@ impl Scene3dRuntime {
             std::array::from_fn(|i| animated[12 + i] - bind[12 + i]),
             joint_camera_animation_angles(bind, animated, bind_root, animated_root)?,
         ))
+    }
+
+    /// Installed neutral skeleton, transformed with the same scene entity as animation.
+    pub fn entity_joint_bind_world_matrix(
+        &self,
+        stable_id: u64,
+        joint_name: &str,
+    ) -> Result<[f32; 16], String> {
+        let joint = self.bind_joint_model_matrix(stable_id, joint_name)?;
+        let entity = self
+            .world
+            .entity(SceneEntityId(stable_id))
+            .ok_or("missing skeleton entity")?;
+        Ok(mul_mat4(
+            geometry::instance_model_matrix(
+                entity.transform.position,
+                entity.transform.rotation_degrees,
+                entity.transform.scale,
+            ),
+            joint,
+        ))
+    }
+
+    /// Cheap attachment ownership filter; avoids allocating a full diagnostic snapshot.
+    pub fn entity_has_resident_asset(&self, id: u64, asset: &str) -> bool {
+        self.world.entity(SceneEntityId(id)).is_some_and(|e| {
+            matches!(e.residency, SceneResidency::Resident) && e.asset_ref.as_deref() == Some(asset)
+        })
+    }
+    pub fn entity_transform_matrix(&self, id: u64) -> Option<[f32; 16]> {
+        let e = self.world.entity(SceneEntityId(id))?;
+        Some(geometry::instance_model_matrix(
+            e.transform.position,
+            e.transform.rotation_degrees,
+            e.transform.scale,
+        ))
+    }
+
+    /// One sampled palette for all requested markers, avoiding repeated pose evaluation.
+    pub fn entity_joint_world_matrices(
+        &self,
+        stable_id: u64,
+        names: &[&str],
+    ) -> Result<std::collections::BTreeMap<String, [f32; 16]>, String> {
+        let (skeleton, source_to_model) = self
+            .entity_skeletons
+            .get(&stable_id)
+            .ok_or("missing installed skeleton")?;
+        let globals = if self.skinned_entities.contains_key(&stable_id) {
+            self.entity_pose_model_matrices(stable_id)?
+        } else {
+            let mut out = Vec::with_capacity(skeleton.joints.len());
+            for j in &skeleton.joints {
+                let local = trs_matrix(j.bind_translation, j.bind_rotation, j.bind_scale);
+                out.push(j.parent.map_or(local, |p| mul_mat4(out[p as usize], local)));
+            }
+            out.into_iter()
+                .map(|m| mul_mat4(*source_to_model, m))
+                .collect()
+        };
+        let entity = self
+            .world
+            .entity(SceneEntityId(stable_id))
+            .ok_or("missing skeleton entity")?;
+        let transform = geometry::instance_model_matrix(
+            entity.transform.position,
+            entity.transform.rotation_degrees,
+            entity.transform.scale,
+        );
+        names
+            .iter()
+            .map(|name| {
+                let index = skeleton
+                    .joints
+                    .iter()
+                    .position(|j| j.name.eq_ignore_ascii_case(name))
+                    .ok_or_else(|| {
+                        format!("skeleton '{}' has no joint '{}'", skeleton.name, name)
+                    })?;
+                Ok((name.to_string(), mul_mat4(transform, globals[index])))
+            })
+            .collect()
     }
 
     pub fn entity_joint_world_matrix(
@@ -120,10 +215,7 @@ impl Scene3dRuntime {
     /// The foot markers are sampled by the SAME asynchronous worker that
     /// generated the currently displayed packed vertices. Using playback's
     /// newest simulation pose here used to play contact audio ahead of Vulkan.
-    pub fn entity_animation_feet_positions(
-        &self,
-        stable_id: u64,
-    ) -> Option<[[f32; 3]; 2]> {
+    pub fn entity_animation_feet_positions(&self, stable_id: u64) -> Option<[[f32; 3]; 2]> {
         let state = self.skinned_entities.get(&stable_id)?;
         let playback = state.playback.as_ref()?;
         if state.pose_layers.is_physical()
@@ -139,8 +231,8 @@ impl Scene3dRuntime {
             entity.transform.scale,
         );
         Some(feet.map(|point| {
-            let result = transform_point_mat4(transform, Vec3::new(point[0],point[1],point[2]));
-            [result.x,result.y,result.z]
+            let result = transform_point_mat4(transform, Vec3::new(point[0], point[1], point[2]));
+            [result.x, result.y, result.z]
         }))
     }
 
@@ -305,10 +397,23 @@ impl Scene3dRuntime {
         }
     }
 
+    pub fn joint_attachment_children(&self, parent: u64) -> Vec<u64> {
+        self.joint_attachments
+            .iter()
+            .filter_map(|(child, attachment)| {
+                (attachment.parent_stable_id == parent).then_some(*child)
+            })
+            .collect()
+    }
+
     pub fn clear_entity_joint_attachment(&mut self, child_stable_id: u64) -> bool {
         self.joint_attachments.remove(&child_stable_id).is_some()
     }
 
+    /// Refresh attachments after an external character presentation correction.
+    pub fn refresh_joint_attachments(&mut self) -> Result<(), String> {
+        self.update_joint_attachments()
+    }
     pub(in crate::first_scene) fn update_joint_attachments(&mut self) -> Result<(), String> {
         if self.joint_attachments.is_empty() {
             return Ok(());

@@ -1,23 +1,24 @@
 use super::*;
 mod arm_ik;
-mod pose_layers;
-mod scheduling;
-mod transforms;
-mod sampling;
+mod leg_ik;
+pub use leg_ik::{SceneFootSupport, SceneLegIkConstraint};
 mod attachments;
 mod frame_update;
-mod workers;
+mod pose_layers;
+pub use pose_layers::ScenePhysicalRecovery;
+mod sampling;
+mod scheduling;
 #[cfg(test)]
 mod tests;
-use transforms::*;
-use sampling::*;
-pub(super) use workers::SkinningWorkerPool;
+mod transforms;
+mod workers;
 pub(super) use arm_ik::extend_bounds as arm_ik_bounds;
 pub use arm_ik::SceneArmIkConstraint;
 use newviso_model::{
     AnimationInterpolation, AnimationQuatKey, AnimationVec3Key, ModelAnimationClip, ModelSkeleton,
 };
 use newviso_resource_runtime::AssetId;
+use sampling::*;
 use std::{
     collections::BTreeMap,
     sync::{
@@ -26,6 +27,8 @@ use std::{
     },
     thread::{self, JoinHandle},
 };
+use transforms::*;
+pub(super) use workers::SkinningWorkerPool;
 
 #[derive(Clone, Debug)]
 pub(super) struct SkinnedEntityAnimationState {
@@ -135,6 +138,7 @@ struct SkinningResult {
     packed: Vec<f32>,
     palette: Vec<[f32; 16]>,
     gpu_skinning: bool,
+    physical: bool,
     feet: Option<[[f32; 3]; 2]>,
 }
 
@@ -155,17 +159,39 @@ fn find_foot_joint_indices(skeleton: &ModelSkeleton) -> Option<[usize; 2]> {
     let mut indices = [None; 2];
     for (index, joint) in skeleton.joints.iter().enumerate() {
         let name = joint.name.to_ascii_lowercase();
-        if !(name.contains("foot") || name.contains("ankle")) { continue; }
-        if indices[0].is_none() && [
-            "l_foot", "leftfoot", "foot_l", "l_ankle", "ankle_l", "left_foot",
-        ].iter().any(|needle| name.contains(needle)) {
+        if !(name.contains("foot") || name.contains("ankle")) {
+            continue;
+        }
+        if indices[0].is_none()
+            && [
+                "l_foot",
+                "leftfoot",
+                "foot_l",
+                "l_ankle",
+                "ankle_l",
+                "left_foot",
+            ]
+            .iter()
+            .any(|needle| name.contains(needle))
+        {
             indices[0] = Some(index);
-        } else if indices[1].is_none() && [
-            "r_foot", "rightfoot", "foot_r", "r_ankle", "ankle_r", "right_foot",
-        ].iter().any(|needle| name.contains(needle)) {
+        } else if indices[1].is_none()
+            && [
+                "r_foot",
+                "rightfoot",
+                "foot_r",
+                "r_ankle",
+                "ankle_r",
+                "right_foot",
+            ]
+            .iter()
+            .any(|needle| name.contains(needle))
+        {
             indices[1] = Some(index);
         }
-        if indices[0].is_some() && indices[1].is_some() { break; }
+        if indices[0].is_some() && indices[1].is_some() {
+            break;
+        }
     }
     Some([indices[0]?, indices[1]?])
 }
@@ -186,7 +212,11 @@ fn skin_palette_feet_positions(
         let global = mul_mat4(mul_mat4(*matrix, source_to_model), bind);
         positions[side] = [global[12], global[13], global[14]];
     }
-    positions.iter().flatten().all(|v| v.is_finite()).then_some(positions)
+    positions
+        .iter()
+        .flatten()
+        .all(|v| v.is_finite())
+        .then_some(positions)
 }
 
 fn interpolate_presented_feet(
@@ -196,12 +226,17 @@ fn interpolate_presented_feet(
 ) -> Option<[[f32; 3]; 2]> {
     match (from, to) {
         (Some(from), Some(to)) => {
-            if alpha <= 0.0 { return Some(from); }
-            if alpha >= 1.0 { return Some(to); }
-            Some(std::array::from_fn(|foot|
-                std::array::from_fn(|axis| from[foot][axis]
-                    + (to[foot][axis] - from[foot][axis]) * alpha)
-            ))
+            if alpha <= 0.0 {
+                return Some(from);
+            }
+            if alpha >= 1.0 {
+                return Some(to);
+            }
+            Some(std::array::from_fn(|foot| {
+                std::array::from_fn(|axis| {
+                    from[foot][axis] + (to[foot][axis] - from[foot][axis]) * alpha
+                })
+            }))
         }
         (_, to) => to,
     }
@@ -225,7 +260,10 @@ impl SkinnedEntityAnimationState {
             source_model_id,
             source_to_model,
             model_to_source,
-            presented_palette: vec![trs_matrix([0.;3], [0.,0.,0.,1.], [1.;3]); skeleton.joints.len()],
+            presented_palette: vec![
+                trs_matrix([0.; 3], [0., 0., 0., 1.], [1.; 3]);
+                skeleton.joints.len()
+            ],
             palette_blend: None,
             skeleton,
             derived_joint_drivers,
@@ -321,7 +359,8 @@ impl Scene3dRuntime {
         }
         state.animation_generation = state.animation_generation.wrapping_add(1).max(1);
         let generation = state.animation_generation;
-        let transition_from = if blend_seconds > 0.0 {
+        let physical_recovery = state.pose_layers.bind_recovery_clip(&clip.name);
+        let transition_from = if blend_seconds > 0.0 && !physical_recovery {
             state.playback.as_ref().map(|previous| AnimationTransition {
                 clip: previous.clip.clone(),
                 time_seconds: previous.time_seconds,
@@ -349,17 +388,14 @@ impl Scene3dRuntime {
             return false;
         };
         state.animation_generation = state.animation_generation.wrapping_add(1).max(1);
+        state.pose_layers.cancel_recovery();
         state.playback.take().is_some()
     }
 
     /// Adjust locomotion cadence in-place. Rebinding the clip would restart
     /// the gait, lose foot phase and repeatedly blend with the old pose.
     /// The character audio system supplies a strictly bounded calibrated rate.
-    pub fn set_entity_locomotion_rate(
-        &mut self,
-        stable_id: u64,
-        rate: f32,
-    ) -> bool {
+    pub fn set_entity_locomotion_rate(&mut self, stable_id: u64, rate: f32) -> bool {
         if !rate.is_finite() || !(0.70..=1.30).contains(&rate) {
             return false;
         }
@@ -372,7 +408,9 @@ impl Scene3dRuntime {
         let Some(playback) = state.playback.as_mut() else {
             return false;
         };
-        if !playback.clip.looping { return false; }
+        if !playback.clip.looping {
+            return false;
+        }
         // Keep the clock and generation untouched. The renderer and contact
         // events now sample the same continuous animation phase.
         playback.playback_rate = rate;
@@ -400,7 +438,6 @@ impl Scene3dRuntime {
             "playback_rate": playback.playback_rate}),
         )
     }
-
 }
 
 fn build_derived_joint_drivers(
@@ -487,4 +524,3 @@ fn build_derived_joint_drivers(
 }
 
 type LocalPose = (Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<[f32; 3]>, Vec<bool>);
-

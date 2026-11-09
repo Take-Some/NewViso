@@ -1,0 +1,129 @@
+import * as Game from './default_game_base.ysc';
+import {createRuntimeSnapshotDecoder} from './snapshot_delta.ysc';
+import {LivingWorldCommands as World} from './world/living_world.ysc';
+const decode=createRuntimeSnapshotDecoder(),ids=['director.enemy.0','director.enemy.1','director.enemy.2'];
+const gun='weapon.pistol.military',wall=900060181;
+let stage=0,since=0,playerId='',owner='',playerBodyId=0,profiles:any[]=[],
+ playerProfile:any,deadId='',duellist='',guardSeen=false,counterSeen=false,coverSeen=false,occludedReload=false,peekSeen=false;
+let captureSent=false;
+let evidence:any={max_active:0,participants:{},support:false},memory:any=null,shots=0;
+const encode=(v:any)=>JSON.stringify(v,(_k:string,v:any)=>typeof v==='bigint'?String(v):v);
+function check(ok:any,message:string):void{if(!ok)throw new Error('COMBAT_DIRECTOR '+message);}
+function next(n:number,now:number,cmd:any[]):void{stage=n;since=now;cmd.push({op:'console.write',message:'DIRECTOR_STAGE '+n});}
+function place(cmd:any[],id:string,position:number[]):void {
+ cmd.push(World.upsertActor({id,kind:id===playerId?'player':'pedestrian',position,group:id===playerId?'player':'director.raiders',tags:['combatant']}),
+ {op:'physics.body.pose.set',...(id===playerId?{entity:playerBodyId}:{id}),position:[position[0],position[1]+.9,position[2]],rotation:[0,0,0,1]},
+ {op:'physics.body.velocity.set',...(id===playerId?{entity:playerBodyId}:{id}),velocity:[0,0,0]});
+}
+export function on_start(raw:any):any {
+ const p=decode(raw),v=p.project.runtime.variables;playerId=v.engine_player.scene_id;owner=v.engine_items.owner_id;playerBodyId=v.engine_player.physics_entity;
+ const result:any=Game.on_start(p);result.commands.push({op:'items.inventory.add',owner_id:owner,item_id:gun,quantity:1},{op:'items.inventory.equip',owner_id:owner,slot:'hands',item_id:gun});return result;
+}
+export function on_frame(raw:any):any {
+ const p=decode(raw),r=p.runtime,now=Number(r.peds?.world_seconds??r.living_world?.clock?.world_seconds??p.elapsed_seconds);
+ const press=stage===0&&!captureSent;if(press)captureSent=true;
+ p.frame={...p.frame,platform:{...p.frame.platform,focused:true,cursor_captured:true},camera_navigation_enabled:true,
+ input:{state:{keys:{down:[],pressed:stage===1?[9]:[]},mouse:{down:[],pressed:press?[1]:[],delta:{x:0,y:0}}}}};
+ const result:any=Game.on_frame(p),cmd=result.commands;
+ const states=(r.peds?.peds??[]),enemies=ids.map(id=>states.find((p:any)=>p.profile.actor_id===id));
+ const player=states.find((p:any)=>p.profile.actor_id===playerId);
+ const body=(id:string)=>(r.peds?.physics?.bodies??[]).find((b:any)=>b.actor_id===id);
+ const actor=(id:string)=>(r.living_world?.simulation?.actors??[]).find((a:any)=>a.id===id);
+ if(!since)since=now;
+ if(stage>=2&&stage<=3){
+  const living=enemies.filter((p:any)=>p&&!p.dead),active=living.filter((p:any)=>p.combat?.tactics?.role==='active');
+  evidence.max_active=Math.max(evidence.max_active,active.length);
+  check(active.length<=1,'authored melee slot limit '+encode(living.map((p:any)=>p.combat?.tactics)));
+  for(const p of living){
+   evidence.participants[p.profile.actor_id]={attacks:p.melee.attacks,hits:p.melee.hits,role:p.combat?.tactics?.role};
+   evidence.support=evidence.support||['flank','observe','guard'].includes(p.combat?.tactics?.action);
+  }
+ }
+ if(stage===0&&player&&enemies.every((e:any)=>e&&body(e.profile.actor_id)?.controlled)&&now>2){
+  playerProfile={...player.profile,max_health:2000,armour:0};
+  profiles=enemies.map((e:any)=>({...e.profile,group:'director.raiders',max_health:1000,armour:0,armed:false,block_events:false,
+   combat:{...e.profile.combat,target_actor:playerId,melee_only:true,sight_range:24,reaction_seconds:0,memory_seconds:5}}));
+  cmd.push({op:'ped.upsert',profile:playerProfile,reset:true});
+  for(const profile of profiles)cmd.push({op:'ped.upsert',profile,reset:true},{op:'agent.tasks.clear',agent_id:profile.agent_id});
+  place(cmd,playerId,[0,.05,6]);
+  place(cmd,ids[0],[0,.05,5.35]);place(cmd,ids[1],[.68,.05,6.2]);place(cmd,ids[2],[-.68,.05,6.2]);
+  next(1,now,cmd);
+ }else if(stage===1){next(11,now,cmd);
+ }else if(stage===11&&now-since>.4){
+  check(!r.items?.inventories?.find((i:any)=>i.owner_id===owner)?.equipped?.hands,'Shared holster selects actual unarmed mode');next(2,now,cmd);
+ }else if(stage===2&&enemies.every((e:any)=>e.melee.attacks>0&&e.melee.hits>0)){
+  check(evidence.support,'supporting actors choose actual tactics');
+  const active=enemies.find((e:any)=>e.combat.tactics.role==='active');deadId=(active??enemies[0]).profile.actor_id;
+  cmd.push({op:'ped.damage',actor_id:deadId,source:'director.proof',amount:10000,origin:[0,1,6]});
+  next(3,now,cmd);
+ }else if(stage===3&&states.find((p:any)=>p.profile.actor_id===deadId)?.dead&&now-since>.4){
+  const survivor=enemies.find((e:any)=>!e.dead&&e.combat.tactics.role==='active');
+  if(survivor){
+   evidence.death_reassigned=true;duellist=survivor.profile.actor_id;
+   const retired=states.find((p:any)=>p.profile.actor_id===deadId);
+   cmd.push({op:'ped.upsert',profile:{...retired.profile,combat:null,block_events:true},reset:true},{op:'agent.tasks.clear',agent_id:retired.profile.agent_id});
+   place(cmd,deadId,[8,.05,-12]);
+   for(const e of enemies.filter((e:any)=>!e.dead)){
+    const profile={...e.profile,combat:e.profile.actor_id===duellist?{...e.profile.combat,reaction_seconds:1.0}:null,block_events:e.profile.actor_id!==duellist};
+    cmd.push({op:'ped.upsert',profile,reset:true},{op:'agent.tasks.clear',agent_id:profile.agent_id});
+    if(e.profile.actor_id!==duellist)place(cmd,e.profile.actor_id,[8,.05,-8]);
+   }
+   playerProfile={...playerProfile,melee:{...playerProfile.melee,windup_seconds:.5,recovery_seconds:1.0}};
+   cmd.push({op:'ped.upsert',profile:playerProfile,reset:true});
+   place(cmd,playerId,[0,.05,6]);place(cmd,duellist,[0,.05,5.15]);next(4,now,cmd);
+  }
+ }else if(stage===4&&now-since>.35&&body(duellist)?.controlled){
+  cmd.push({op:'ped.melee.attack',actor_id:playerId,direction:[0,0,-1]});next(5,now,cmd);
+ }else if(stage===5){
+  const enemy=states.find((p:any)=>p.profile.actor_id===duellist);
+  if(['windup','active'].includes(player.melee.phase)&&enemy.combat.tactics.action==='guard'&&enemy.melee.blocking)guardSeen=true;
+  if(player.melee.phase==='recovery'&&enemy.combat.tactics.action==='counter')counterSeen=true;
+  if(guardSeen&&counterSeen&&now-since>1.4){
+   evidence.observed_guard=true;evidence.observed_counter=true;
+   const ranged={...enemy.profile,armed:true,combat_range:10,combat_damage:1,combat_cooldown_seconds:.2,
+    combat:{...enemy.profile.combat,melee_only:false,magazine_capacity:1,reserve:4,reload_seconds:3,reaction_seconds:.2,memory_seconds:8}};
+   cmd.push({op:'ped.upsert',profile:ranged,reset:true},{op:'agent.tasks.clear',agent_id:ranged.agent_id},
+    {op:'items.inventory.add',owner_id:duellist,item_id:gun,quantity:1},
+    {op:'items.inventory.equip',owner_id:duellist,slot:'hands',item_id:gun},
+    {op:'physics.body.upsert',entity:wall,body_kind:'static',position:[0,1,0],shape:{kind:'box',half_extents:[1,1,.2]},participates_in_queries:true,casts_contacts:true});
+   place(cmd,playerId,[0,.05,6]);place(cmd,duellist,[2,.05,-2]);next(6,now,cmd);
+  }
+ }else if(stage===6){
+  const e=states.find((p:any)=>p.profile.actor_id===duellist),c=e.combat;
+  if(c.tactics.action==='cover'&&c.reload_until>now)coverSeen=true;
+  if(coverSeen&&!c.visible&&c.reload_until>now&&c.tactics.action==='cover'){
+   occludedReload=true;memory=c.last_seen_position;shots=c.shots;
+  }
+  if(occludedReload&&c.tactics.action==='peek'&&c.reload_until<=now)peekSeen=true;
+  if(coverSeen&&occludedReload&&peekSeen&&c.visible&&c.shots>shots){
+   check(r.peds.combat_director.geometry_probes>0&&r.peds.combat_director.verified_cover>0,'resident geometry verified cover');
+   evidence.reload_cover=true;evidence.occluded_reload_retained=true;evidence.peek_reacquired=true;evidence.geometry=r.peds.combat_director;
+   // A broad new occluder lets us check observation memory without a live target oracle.
+   cmd.push({op:'physics.body.destroy',entity:wall},
+    {op:'physics.body.upsert',entity:wall,body_kind:'static',position:[0,1,2],shape:{kind:'box',half_extents:[12,2,.2]},participates_in_queries:true,casts_contacts:true});
+   next(7,now,cmd);
+  }
+ }else if(stage===7){
+  const e=states.find((p:any)=>p.profile.actor_id===duellist);
+  if(!e.combat.visible&&e.combat.mode==='search'){
+   memory=e.combat.last_seen_position;shots=e.combat.shots;
+   place(cmd,playerId,[6,.05,6]);next(8,now,cmd);
+  }
+ }else if(stage===8&&now-since>.8){
+  const e=states.find((p:any)=>p.profile.actor_id===duellist);
+  check(!e.combat.visible&&e.combat.shots===shots,'occluded target cannot be fired at');
+  check(JSON.stringify(e.combat.last_seen_position)===JSON.stringify(memory),'hidden relocation cannot update known target position');
+  evidence.observation_memory=true;next(9,now,cmd);
+ }else if(stage===9&&now-since>8.5){
+  const e=states.find((p:any)=>p.profile.actor_id===duellist);
+  check(e.combat.mode==='patrol'&&e.combat.tactics.action==='patrol'&&!e.combat.last_seen_position,'expired memory releases tactical task');
+  evidence.memory_expired=true;
+  cmd.push({op:'physics.body.destroy',entity:wall},{op:'console.write',message:'MELEE_VERIFY_EVIDENCE '+encode(evidence)},
+   {op:'console.write',message:'MELEE_VERIFY_PASS director slots fairness death guard counter cover reload peek memory'});
+  result.exit_requested=true;next(10,now,cmd);
+ }
+ check(stage===10||now-since<24,'stage timeout '+stage+' '+encode({enemies:enemies.map((e:any)=>({id:e?.profile.actor_id,melee:e?.melee,combat:e?.combat,physical:body(e?.profile.actor_id)})),player:player?.melee,guardSeen,counterSeen,coverSeen,occludedReload,peekSeen,geometry:r.peds?.combat_director}));
+ return result;
+}
+export function on_event(p:any):any{return Game.on_event(p);}
+export function on_shutdown(p:any):any{return Game.on_shutdown(p);}

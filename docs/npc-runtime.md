@@ -171,6 +171,8 @@ Implemented capabilities:
 
 Navigation residency follows collision residency. When a streamed collision mesh materializes, the runtime derives a navigation tile from the same transformed geometry. When it leaves residency, the navigation tile is removed and affected local paths are invalidated.
 
+Physical doors register traversal gates with width, height, key access, directional egress and obstruction state. Search and corridor smoothing respect these gates. The physical character controller reserves a FIFO turn, approaches the handle, opens with bounded effort, waits for leaf clearance, then crosses; one-way leaves can require a pull and retreat. See [physical-doors.md](physical-doors.md) for authoring, persistence and native acceptance.
+
 Authored static solid cubes also contribute their exact transformed triangles near active characters. Unchanged primitive tiles retain their navigation revision and paths; retired primitives release their tiles. Imported model bounding boxes do not become walkable surfaces.
 
 The local navmesh does not replace the LivingWorld route graph. A physical actor refines the current coarse route segment against resident local geometry.

@@ -37,11 +37,11 @@ Dependencies flow downward only. scripts/verify_boundaries.py enforces the allow
 ## Crate responsibilities
 
 - newviso-compat-abi: binary compatibility types and symbols for deployed external provider DLLs. No engine policy and no provider loading.
-- newviso-config: bootstrap defaults, adjacent config.json, environment overrides, CLI overrides, and provider-role selection.
+- newviso-config: bootstrap defaults, environment/CLI overrides, generic configuration merging and source tracing, shared XML decoding, and provider-role selection.
 - newviso-core: engine-neutral runtime state primitives.
 - newviso-host: service registry, aliases, event bus, host callbacks, and host-owned platform snapshot service.
 - newviso-provider-runtime: provider discovery, ABI probing, DLL ownership, and provider lifecycle.
-- newviso-project: project manifest schema, validation, and project-local path resolution. It has no runtime/backend dependencies.
+- newviso-project: project manifest schema, typed runtime settings, profile inheritance/resolution, validation, editor metadata, and project-local path resolution. It depends only on the neutral newviso-config utility layer and has no runtime/backend dependencies.
 - newviso-platform: platform runtime bridge and event loop. It knows only the generic PlatformApplication callback interface; it does not know about Vulkan, scenes, ECS, or rendering.
 - newviso-render-client: typed client facade over the provider-neutral engine.render service protocol.
 - newviso-resource-runtime: engine-wide, domain-neutral residency runtime. It owns canonical asset identity and generic streaming/residency policy (owner claims, priorities, dependency closure supplied by the asset service, budgets, churn grace, retry, eviction, and VFS-generation invalidation). It contains no file-format parser, magic table, extension dispatch, or codec registry.
@@ -217,3 +217,13 @@ have one shared implementation.
 See [the 2026-10-04 refactor report](docs/architecture-refactor-2026-10-04.md)
 for module ownership, reproducible endpoint benchmarks, verification, and the
 remaining repository/deployed-provider findings.
+
+## Runtime configuration composition
+
+The engine and offline newviso-project-tool use the same ResolvedRuntimeConfiguration resolver. The live host supplies the VFS reader; the authoring tool supplies a filesystem mount adapter. The resolved settings are consumed once by both capability selection and runtime creation. Profile data stays in Shared/project content. See docs/project-configuration.md for precedence, source tracing and schema metadata.
+
+## Scene authoring boundary
+
+newviso-scene-document owns provider-free type/component metadata, scene validation, transactional authoring edits, bounded entity-span history, and atomic authoring saves. The scene loader, content-manager inspector and offline project tool consume this shared contract. Package orchestration stays in apps/newviso-project-tool; runtime/providers remain independent of the authoring UI. UI draw streams cross newviso-render-client as typed frame-envelope layer packets and a UI composite graph pass.
+
+Native authoring keeps runtime configuration drafts in newviso-project::RuntimeSettingsDocument, a backend-free model over the existing resolver and schema. newviso-content-manager owns settings/context UI and emits explicit live-apply effects; newviso-runtime checks optimistic live values and routes them through configure_runtime. Editor pointer handling runs only in explicit editor mode. Scene properties.data remains opaque project-owned data carried by the generic scene provider payload.

@@ -377,3 +377,97 @@ fn saved_vitals_survive_profile_changes_and_invalid_saves_are_rejected() {
     p.restore_vitals("ped", 0.0, 0.0).unwrap();
     assert!(p.is_dead("ped"));
 }
+
+#[test]
+fn combat_requires_visibility_and_searches_last_seen_instead_of_tracking_through_walls() {
+    let mut agents = AgentRuntime::default();
+    agents.upsert_agent(agent()).unwrap();
+    let mut peds = PedRuntime::default();
+    peds.upsert(
+        PedProfile {
+            actor_id: "ped".into(),
+            agent_id: "ped.ai".into(),
+            armed: true,
+            combat: Some(combat::CombatProfile {
+                target_actor: "player".into(),
+                memory_seconds: 2.0,
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        true,
+    )
+    .unwrap();
+    let mut s = snapshot(1.0, None);
+    s.actors.push(actor("player", [4.0, 0.0, 0.0], None));
+    peds.tick_combat(&s, &BTreeMap::from([("ped".into(), false)]), &mut agents)
+        .unwrap();
+    assert!(agents.tick(0.1, &s).is_empty());
+    assert_eq!(
+        peds.state("ped").unwrap().combat.as_ref().unwrap().mode,
+        "patrol"
+    );
+    s.world_seconds = 1.2;
+    peds.tick_combat(&s, &BTreeMap::from([("ped".into(), true)]), &mut agents)
+        .unwrap();
+    assert!(!peds.combat_shot("ped", 1.3)); // reaction window
+    assert!(peds.combat_shot("ped", 2.01));
+    s.world_seconds = 2.2;
+    s.actors[1].position = [80.0, 0.0, 0.0];
+    peds.tick_combat(&s, &BTreeMap::from([("ped".into(), false)]), &mut agents)
+        .unwrap();
+    assert!(!peds.combat_shot("ped", 2.3));
+    let search = &agents.runtime_state()["agents"][0]["tasks"][0]["task"];
+    assert_eq!(search["position"], json!([4.0, 0.0, 0.0]));
+    s.world_seconds = 4.0;
+    peds.tick_combat(&s, &BTreeMap::new(), &mut agents).unwrap();
+    assert_eq!(
+        peds.state("ped").unwrap().combat.as_ref().unwrap().mode,
+        "patrol"
+    );
+    assert!(agents.runtime_state()["agents"][0]["tasks"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn external_player_uses_armour_and_death_without_owning_an_ai_or_physics_controller() {
+    let mut peds = PedRuntime::default();
+    let mut agents = AgentRuntime::default();
+    let profile = PedProfile {
+        actor_id: "player".into(),
+        damage_entity: Some(900000000),
+        max_health: 100.0,
+        armour: 25.0,
+        block_events: true,
+        ..Default::default()
+    };
+    peds.upsert(profile.clone(), true).unwrap();
+    assert!(peds
+        .damage("player", "enemy".into(), 30.0, [0.0; 3], &mut agents)
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        (
+            peds.state("player").unwrap().health,
+            peds.state("player").unwrap().armour
+        ),
+        (95.0, 0.0)
+    );
+    peds.damage("player", "enemy".into(), 100.0, [0.0; 3], &mut agents)
+        .unwrap();
+    assert!(peds.is_dead("player"));
+    assert!(!peds.combat_shot("player", 1.0));
+    let events = peds.drain_events();
+    assert_eq!(
+        events.iter().filter(|e| e["kind"] == "ped.death").count(),
+        1
+    );
+    peds.damage("player", "enemy".into(), 100.0, [0.0; 3], &mut agents)
+        .unwrap();
+    assert!(peds.drain_events().is_empty());
+    peds.upsert(profile, true).unwrap();
+    assert!(!peds.is_dead("player"));
+    assert_eq!(peds.state("player").unwrap().health, 100.0);
+}

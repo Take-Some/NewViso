@@ -42,6 +42,14 @@ impl ContentManager {
                     project_file_action("runtime", "Runtime Settings", &project.runtime),
                     project_file_action("environment", "Environment", &project.environment),
                 ];
+                if self.settings_editor.is_some() {
+                    entry_files[1]["action_id"] = Value::String("content.settings.open".into());
+                    entry_files.push(project_file_action(
+                        "manifest",
+                        "Project Manifest",
+                        &project.manifest,
+                    ));
+                }
                 if let Some(path) = project.scripts.as_deref() {
                     entry_files.push(project_file_action("scripts", "Scripts", path));
                 }
@@ -153,6 +161,13 @@ impl ContentManager {
                         .to_owned(),
                     ),
                 );
+                if self.settings_editor.is_some() {
+                    set_surface_field(
+                        &mut manifest,
+                        "action_id",
+                        Value::String("content.settings.open".into()),
+                    );
+                }
                 set_payload_path(&mut manifest, project.manifest.clone());
 
                 let mut entry_heading = builtin_node("text");
@@ -356,7 +371,9 @@ impl ContentManager {
             .and_then(|path| self.entries.iter().find(|entry| entry.path == path))
             .is_some_and(|entry| entry.editable);
 
-        let details = if editable {
+        let details = if let Some(editor) = &self.scene_editor {
+            editor.inspector()
+        } else if editable {
             let mut node = builtin_node("code_editor");
             set_surface_field(&mut node, "text", Value::String(selected.to_owned()));
             set_surface_field(&mut node, "value", Value::String(self.editor_text.clone()));
@@ -393,6 +410,9 @@ impl ContentManager {
         );
         if let Some(node) = find_component_mut(&mut toolbar, "project.settings") {
             let mut value = Value::Object(node.clone());
+            if self.settings_editor.is_some() {
+                value["action_id"] = Value::String("content.settings.open".into());
+            }
             set_payload_path(&mut value, manifest_path.clone());
             *node = value
                 .as_object()
@@ -414,6 +434,10 @@ impl ContentManager {
             Value::String(selected.to_owned()),
         );
 
+        let mut project_components = project_components;
+        if let Some(editor) = &self.scene_editor {
+            project_components.push(editor.outliner());
+        }
         let mut project_panel = builtin_surface("project");
         set_surface_field(
             &mut project_panel,
@@ -426,7 +450,9 @@ impl ContentManager {
             Value::Array(project_components),
         );
 
-        let details_title = if selected == manifest_path {
+        let details_title = if self.scene_editor.is_some() {
+            "Scene Inspector"
+        } else if selected == manifest_path {
             "Project Settings"
         } else if editable && is_script_path(selected) {
             "Script Editor"
@@ -435,7 +461,9 @@ impl ContentManager {
         } else {
             "Details"
         };
-        let details_footer = if self.is_dirty() {
+        let details_footer = if self.scene_editor.is_some() {
+            "Transforms apply live · Ctrl+S saves · structural changes need reload"
+        } else if self.is_dirty() {
             "Unsaved changes · Ctrl+S to Save + Reload"
         } else if editable {
             "Ctrl+S · Save + Reload"
@@ -453,6 +481,11 @@ impl ContentManager {
             &mut details_panel,
             "subtitle",
             Value::String(selected.to_owned()),
+        );
+        set_surface_field(
+            &mut details_panel,
+            "body_lines",
+            Value::Array(vec![Value::String(self.status.clone())]),
         );
         set_surface_field(
             &mut details_panel,
@@ -496,6 +529,22 @@ impl ContentManager {
             Value::Array(browser_nodes),
         );
 
-        vec![toolbar, project_panel, details_panel, content_browser]
+        let mut menu = self.scene_editor.as_ref().map(|e| e.context_surface()).unwrap_or_else(|| serde_json::json!({
+            "version":1,"surface_id":"newviso.content_manager.object_menu","source":"newviso.content-manager","visible":false,"components":[]
+        }));
+        if self.settings_visible {
+            menu["visible"] = Value::Bool(false);
+        }
+        let settings = self.settings_editor.as_ref().map(|e|e.surface(self.settings_visible)).unwrap_or_else(||serde_json::json!({
+            "version":1,"surface_id":"newviso.content_manager.settings","source":"newviso.content-manager","visible":false,"components":[]
+        }));
+        vec![
+            toolbar,
+            project_panel,
+            details_panel,
+            content_browser,
+            settings,
+            menu,
+        ]
     }
 }

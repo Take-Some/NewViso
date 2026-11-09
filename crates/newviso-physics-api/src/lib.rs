@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 mod joints;
-pub use joints::PhysicsJointSnapshot;
+pub use joints::{
+    PhysicsAngularLimits, PhysicsJointBody, PhysicsJointMotor, PhysicsJointSnapshot,
+    PhysicsWorldAngularDrive,
+};
 
 pub const ENGINE_PHYSICS_SERVICE_ID: &str = "engine.physics";
 pub const PHYSICS_SERVICE_ID: &str = "physics.api";
@@ -385,6 +388,22 @@ pub struct PhysicsStepReport {
     pub commands_applied: usize,
 }
 
+/// Native manifold samples retain the complete support patch. Event summaries
+/// remain compatible and may still select one representative point per pair.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PhysicsContactPoint {
+    pub position: PhysicsVec3,
+    /// Points from manifold B towards A.
+    pub normal: PhysicsVec3,
+    pub impulse: f32,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PhysicsContactManifold {
+    pub a: PhysicsEntityKey,
+    pub b: PhysicsEntityKey,
+    pub points: Vec<PhysicsContactPoint>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PhysicsFrameOutput {
     pub fixed_tick: u64,
@@ -396,6 +415,8 @@ pub struct PhysicsFrameOutput {
     pub activity_updates: Vec<PhysicsBodyActivityUpdate>,
     #[serde(default)]
     pub events: Vec<PhysicsEvent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contact_manifolds: Vec<PhysicsContactManifold>,
     #[serde(default)]
     pub query_hits: Vec<PhysicsQueryHit>,
     pub report: PhysicsStepReport,
@@ -421,6 +442,9 @@ impl Default for PhysicsApiVersion {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PhysicsFeature {
     JointConstraints,
+    JointAngularLimits,
+    JointMotors,
+    ContactManifolds,
     CollisionPairFiltering,
     StaticColliders,
     DynamicBodies,
@@ -763,3 +787,6 @@ mod tests {
         .unwrap();
     }
 }
+
+mod hinge;
+pub use hinge::PhysicsHinge;

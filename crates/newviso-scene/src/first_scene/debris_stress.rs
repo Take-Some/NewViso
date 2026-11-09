@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::io::Write as _;
 use super::*;
 use std::time::Instant;
 
@@ -63,7 +65,7 @@ fn append_compact_record(cube: &Cube, out: &mut Vec<f32>) {
 #[test]
 #[ignore = "manual multi-million debris stress benchmark"]
 fn debris_mass_instance_stress() {
-    println!(
+    let _ = writeln!(std::io::stdout().lock(),
         "DEBRIS_STRESS contract legacy_bytes_per_chip={} matrix_instance_bytes={} compact_bytes_per_chip={}",
         CUBE_VERTEX_COUNT as usize * FLOATS_PER_VERTEX * std::mem::size_of::<f32>(),
         INSTANCE_FLOATS * std::mem::size_of::<f32>(),
@@ -81,7 +83,7 @@ fn debris_mass_instance_stress() {
             chip(index).append_vertices(&mut vertices);
         }
         let elapsed = started.elapsed().as_secs_f64() * 1000.0;
-        println!(
+        let _ = writeln!(std::io::stdout().lock(),
             "DEBRIS_STRESS legacy count={} ms={:.3} floats={} bytes={} mib={:.2}",
             count,
             elapsed,
@@ -109,7 +111,7 @@ fn debris_mass_instance_stress() {
             ));
         }
         let elapsed = started.elapsed().as_secs_f64() * 1000.0;
-        println!(
+        let _ = writeln!(std::io::stdout().lock(),
             "DEBRIS_STRESS production_matrix count={} ms={:.3} bytes={} mib={:.2}",
             count,
             elapsed,
@@ -128,7 +130,7 @@ fn debris_mass_instance_stress() {
             append_compact_record(&cube, &mut compact);
         }
         let elapsed = started.elapsed().as_secs_f64() * 1000.0;
-        println!(
+        let _ = writeln!(std::io::stdout().lock(),
             "DEBRIS_STRESS compact count={} ms={:.3} floats={} bytes={} mib={:.2}",
             count,
             elapsed,
@@ -142,7 +144,7 @@ fn debris_mass_instance_stress() {
     for count in [1_000_000usize, 5_000_000usize] {
         let legacy_bytes = count as u64 * CUBE_VERTEX_COUNT as u64 * FLOATS_PER_VERTEX as u64 * 4;
         let compact_bytes = count as u64 * 14 * 4;
-        println!(
+        let _ = writeln!(std::io::stdout().lock(),
             "DEBRIS_STRESS projected count={} legacy_mib={:.2} compact_mib={:.2} reduction_x={:.2}",
             count,
             legacy_bytes as f64 / (1024.0 * 1024.0),

@@ -7,15 +7,14 @@ use newviso_compat_abi::provider::{EventSinkV1, EventSinkV1_TO};
 use newviso_events::{decode_host_event, topic, EventEnvelope};
 use newviso_host as host;
 pub use newviso_script_client::ScriptPermission;
-use newviso_script_client::{
-    ScriptClient, ScriptInvocation, ScriptModuleLoad, ScriptResponseStatus,
-};
+use newviso_script_client::{ScriptClient, ScriptInvocation, ScriptResponseStatus};
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex, Weak},
 };
 
+mod imports;
 mod snapshot_delta;
 use snapshot_delta::SnapshotDelta;
 
@@ -23,6 +22,7 @@ use snapshot_delta::SnapshotDelta;
 pub struct ScriptModuleSpec {
     pub asset: String,
     pub runtime_delta: bool,
+    pub project_context_cache: bool,
     pub on_start: Option<String>,
     pub on_frame: Option<String>,
     pub on_event: Option<String>,
@@ -45,6 +45,14 @@ pub struct ScriptControl {
 struct LoadedModule {
     spec: ScriptModuleSpec,
     snapshot_revision: Option<u64>,
+    project_cache_valid: bool,
+}
+
+fn frame_project_cache_ready(modules: &[LoadedModule]) -> bool {
+    modules
+        .iter()
+        .filter(|module| module.spec.on_frame.is_some())
+        .all(|module| module.spec.project_context_cache && module.project_cache_valid)
 }
 
 #[derive(Default)]
@@ -110,17 +118,18 @@ impl ScriptRuntime {
         let mut loaded = Vec::with_capacity(modules.len());
 
         for spec in modules {
-            let module_bytes = assets.raw_bytes(&spec.asset)?;
-            scripting.load_module(&ScriptModuleLoad {
-                reference: &spec.asset,
-                module_bytes: &module_bytes,
-                permissions: &spec.permissions,
-                metadata: BTreeMap::from([
-                    ("source".to_owned(), "newviso-project-vfs".to_owned()),
-                    ("logical_path".to_owned(), spec.asset.clone()),
-                ]),
-            })?;
-            loaded.push(LoadedModule { spec, snapshot_revision: None });
+            imports::load_module_graph(
+                &assets,
+                &scripting,
+                &spec.asset,
+                &spec.permissions,
+                BTreeMap::from([("source".to_owned(), "newviso-project-vfs".to_owned())]),
+            )?;
+            loaded.push(LoadedModule {
+                spec,
+                snapshot_revision: None,
+                project_cache_valid: false,
+            });
         }
 
         let event_queue = Arc::new(Mutex::new(ScriptEventQueue {
@@ -155,34 +164,43 @@ impl ScriptRuntime {
         Ok(())
     }
 
-    /// Rebuilds the complete script graph after any project script asset changes.
+    /// Reload configured root scripts, resolving relative dependencies via VFS.
     ///
-    /// Child imports are owned by the scripting provider, so NewViso intentionally
-    /// does not parse or track the dependency graph. Reloading the root lets the
-    /// provider resolve the new graph through engine.assets/VFS transactionally.
+    /// The V8 provider preserves imported module identities. Until transactional
+    /// graph replacement exists, changing an imported child requires restarting
+    /// the NewViso process; silently retaining stale imported values is forbidden.
     pub fn reload_graph_after_asset_change(
         &mut self,
         changed_reference: &str,
     ) -> Result<(), String> {
+        if !self
+            .modules
+            .iter()
+            .any(|module| module.spec.asset.eq_ignore_ascii_case(changed_reference))
+        {
+            return Err(format!(
+                "Imported YSC asset '{changed_reference}' changed. Restart NewViso to rebuild the linked V8 module graph safely."
+            ));
+        }
         let assets = AssetClient::new();
         let scripting = ScriptClient::new();
 
         for module in &mut self.modules {
             // A failed later reload also leaves earlier modules needing a full base.
             module.snapshot_revision = None;
+            module.project_cache_valid = false;
             let spec = &module.spec;
-            let module_bytes = assets.raw_bytes(&spec.asset)?;
-            scripting.load_module(&ScriptModuleLoad {
-                reference: &spec.asset,
-                module_bytes: &module_bytes,
-                permissions: &spec.permissions,
-                metadata: BTreeMap::from([
+            imports::load_module_graph(
+                &assets,
+                &scripting,
+                &spec.asset,
+                &spec.permissions,
+                BTreeMap::from([
                     ("source".to_owned(), "newviso-content-manager".to_owned()),
-                    ("logical_path".to_owned(), spec.asset.clone()),
                     ("reload".to_owned(), "true".to_owned()),
                     ("changed_asset".to_owned(), changed_reference.to_owned()),
                 ]),
-            })?;
+            )?;
         }
 
         Ok(())
@@ -207,7 +225,8 @@ impl ScriptRuntime {
             "event": "start",
             "project": project_context
         });
-        let start_control = self.invoke_lifecycle("start", &payload, false, Some(runtime_state.clone()))?;
+        let start_control =
+            self.invoke_lifecycle("start", &payload, false, Some(runtime_state.clone()))?;
         absorb_control(&mut control, start_control);
         Ok(control)
     }
@@ -232,14 +251,29 @@ impl ScriptRuntime {
             absorb_control(&mut control, event_control);
         }
 
-        let payload = json!({
-            "event": "frame",
-            "delta_seconds": delta_seconds,
-            "elapsed_seconds": elapsed_seconds,
-            "project": project_context,
-            "frame": frame_context,
-            "events": events
-        });
+        // When every frame hook opted into the project-cache protocol and
+        // already consumed a complete project config, omit its immutable
+        // 300-KiB+ tree. The module's decoder reinstates identical project data.
+        let compact = frame_project_cache_ready(&self.modules);
+        let payload = if compact {
+            json!({
+                "event": "frame",
+                "delta_seconds": delta_seconds,
+                "elapsed_seconds": elapsed_seconds,
+                "__project_cached": true,
+                "frame": frame_context,
+                "events": events
+            })
+        } else {
+            json!({
+                "event": "frame",
+                "delta_seconds": delta_seconds,
+                "elapsed_seconds": elapsed_seconds,
+                "project": project_context,
+                "frame": frame_context,
+                "events": events
+            })
+        };
 
         let frame_control = self.invoke_lifecycle("frame", &payload, true, Some(runtime_state))?;
         absorb_control(&mut control, frame_control);
@@ -355,12 +389,34 @@ impl ScriptRuntime {
     ) -> Result<ScriptControl, String> {
         let client = ScriptClient::new();
         let mut control = ScriptControl::default();
+        static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let trace = frame
+            && *TRACE.get_or_init(|| std::env::var("NEWVISO_PERF_TRACE").as_deref() == Ok("1"));
+        let delta_started = trace.then(std::time::Instant::now);
         let use_delta = runtime.is_some() && self.modules.iter().any(|m| m.spec.runtime_delta);
         let revision = self.snapshot_delta.next_revision();
         let delta = use_delta.then(|| self.snapshot_delta.encode(runtime.as_ref().unwrap()));
+        let delta_ms = delta_started.map_or(0.0, |mark| mark.elapsed().as_secs_f64() * 1000.0);
+        let mut provider_ms = 0.0;
+        let mut merge_ms = 0.0;
+        let mut script_stage_us = [0u64; 7];
         let mut full_payload = None;
         let mut delta_payload = None;
         let mut reset_payload = None;
+        // Merge results in the original module order; only the transport and
+        // worker-channel hop are batched. Lifecycle effects remain sequential.
+        let batch_frames = frame
+            && self
+                .modules
+                .iter()
+                .filter(|module| module.spec.on_frame.is_some())
+                .take(2)
+                .count()
+                == 2;
+        let mut batch_requests: Vec<Vec<u8>> = Vec::new();
+        let mut batch_modules: Vec<(usize, String, bool, bool)> = Vec::new();
+        // Each snapshot flavor is serialized at most once per batch/frame.
+        let mut batch_json: [Option<Vec<u8>>; 3] = std::array::from_fn(|_| None);
 
         for module_index in 0..self.modules.len() {
             let operation = {
@@ -382,28 +438,39 @@ impl ScriptRuntime {
             let request_id = format!("newviso-{phase}-{}", self.request_counter);
             let module = &self.modules[module_index];
             let spec = &module.spec;
-            let request_payload = if spec.runtime_delta && use_delta {
+            let project_context_cache = spec.project_context_cache;
+            let (request_payload, payload_kind) = if spec.runtime_delta && use_delta {
                 if module.snapshot_revision == self.snapshot_delta.revision() {
-                    delta_payload.get_or_insert_with(|| {
-                        let mut value = payload.clone();
-                        value["__runtime_snapshot"] = delta.as_ref().unwrap().clone();
-                        value
-                    })
+                    (
+                        delta_payload.get_or_insert_with(|| {
+                            let mut value = payload.clone();
+                            value["__runtime_snapshot"] = delta.as_ref().unwrap().clone();
+                            value
+                        }),
+                        1usize,
+                    )
                 } else {
-                    reset_payload.get_or_insert_with(|| {
-                        let mut value = payload.clone();
-                        value["__runtime_snapshot"] = SnapshotDelta::full(runtime.as_ref().unwrap(), revision);
-                        value
-                    })
+                    (
+                        reset_payload.get_or_insert_with(|| {
+                            let mut value = payload.clone();
+                            value["__runtime_snapshot"] =
+                                SnapshotDelta::full(runtime.as_ref().unwrap(), revision);
+                            value
+                        }),
+                        2usize,
+                    )
                 }
             } else {
-                full_payload.get_or_insert_with(|| {
-                    let mut value = payload.clone();
-                    if let Some(runtime) = runtime.as_ref() {
-                        value["runtime"] = runtime.clone();
-                    }
-                    value
-                })
+                (
+                    full_payload.get_or_insert_with(|| {
+                        let mut value = payload.clone();
+                        if let Some(runtime) = runtime.as_ref() {
+                            value["runtime"] = runtime.clone();
+                        }
+                        value
+                    }),
+                    0usize,
+                )
             };
 
             let request = ScriptInvocation {
@@ -419,11 +486,52 @@ impl ScriptRuntime {
                 ]),
             };
 
+            if batch_frames {
+                if batch_json[payload_kind].is_none() {
+                    batch_json[payload_kind] =
+                        Some(serde_json::to_vec(request_payload).map_err(|e| e.to_string())?);
+                }
+                batch_requests.push(client.prepare_frame_request_with_payload(
+                    &request,
+                    batch_json[payload_kind].as_deref().unwrap(),
+                ));
+                batch_modules.push((
+                    module_index,
+                    operation,
+                    spec.runtime_delta && use_delta,
+                    project_context_cache && payload.get("project").is_some(),
+                ));
+                continue;
+            }
+
+            let provider_started = trace.then(std::time::Instant::now);
             let response = if frame {
                 client.frame(&request)?
             } else {
                 client.invoke(&request)?
             };
+            if let Some(started) = provider_started {
+                provider_ms += started.elapsed().as_secs_f64() * 1000.0;
+            }
+            if trace {
+                const KEYS: [&str; 7] = [
+                    "perf.host_encode_us",
+                    "perf.host_gateway_us",
+                    "perf.host_decode_us",
+                    "perf.provider_roundtrip_us",
+                    "perf.v8_input_bridge_us",
+                    "perf.v8_javascript_us",
+                    "perf.v8_output_bridge_us",
+                ];
+                for (index, key) in KEYS.iter().enumerate() {
+                    let duration = response
+                        .metadata
+                        .get(*key)
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .unwrap_or(0);
+                    script_stage_us[index] = script_stage_us[index].saturating_add(duration);
+                }
+            }
 
             match response.status {
                 ScriptResponseStatus::Ok | ScriptResponseStatus::Empty => {}
@@ -442,15 +550,114 @@ impl ScriptRuntime {
                 }
             }
 
+            let merge_started = trace.then(std::time::Instant::now);
             if let Some(value) = response.payload_json()? {
                 merge_control(&mut control, &value);
+            }
+            if let Some(started) = merge_started {
+                merge_ms += started.elapsed().as_secs_f64() * 1000.0;
             }
             if spec.runtime_delta && use_delta {
                 self.modules[module_index].snapshot_revision = Some(revision);
             }
+            if project_context_cache && payload.get("project").is_some() {
+                // Only after a successful script invocation; if it failed
+                // or was hot-reloaded, the next call transmits a fresh base.
+                self.modules[module_index].project_cache_valid = true;
+            }
+        }
+        if batch_frames {
+            let mut processed = 0usize;
+            for chunk in batch_requests.chunks(64) {
+                let batch_started = trace.then(std::time::Instant::now);
+                let responses = client.frame_batch_encoded(chunk)?;
+                if let Some(started) = batch_started {
+                    provider_ms += started.elapsed().as_secs_f64() * 1000.0;
+                }
+                let received = responses.len();
+                for ((module_index, operation, set_delta, set_cache), response) in batch_modules
+                    [processed..processed + received]
+                    .iter()
+                    .zip(responses)
+                {
+                    if trace {
+                        const KEYS: [&str; 7] = [
+                            "perf.host_encode_us",
+                            "perf.host_gateway_us",
+                            "perf.host_decode_us",
+                            "perf.provider_roundtrip_us",
+                            "perf.v8_input_bridge_us",
+                            "perf.v8_javascript_us",
+                            "perf.v8_output_bridge_us",
+                        ];
+                        for (index, key) in KEYS.iter().enumerate() {
+                            let duration = response
+                                .metadata
+                                .get(*key)
+                                .and_then(|value| value.parse::<u64>().ok())
+                                .unwrap_or(0);
+                            script_stage_us[index] =
+                                script_stage_us[index].saturating_add(duration);
+                        }
+                    }
+                    match response.status {
+                        ScriptResponseStatus::Ok | ScriptResponseStatus::Empty => {}
+                        other => {
+                            return Err(format!(
+                                "script '{}' operation '{}' returned status {:?}: {}",
+                                self.modules[*module_index].spec.asset,
+                                operation,
+                                other,
+                                if response.diagnostics.is_empty() {
+                                    "no provider diagnostics".to_owned()
+                                } else {
+                                    response.diagnostics.join(" | ")
+                                }
+                            ))
+                        }
+                    }
+                    let merge_started = trace.then(std::time::Instant::now);
+                    if let Some(value) = response.payload_json()? {
+                        merge_control(&mut control, &value);
+                    }
+                    if let Some(started) = merge_started {
+                        merge_ms += started.elapsed().as_secs_f64() * 1000.0;
+                    }
+                    if *set_delta {
+                        self.modules[*module_index].snapshot_revision = Some(revision);
+                    }
+                    if *set_cache {
+                        self.modules[*module_index].project_cache_valid = true;
+                    }
+                }
+                if received != chunk.len() {
+                    return Err("YSC batch stopped without a script error response".into());
+                }
+                processed += chunk.len();
+            }
         }
         if use_delta {
             self.snapshot_delta.commit(runtime.unwrap());
+        }
+        if trace && self.request_counter % 30 == 0 {
+            let json_bytes =
+                |value: &Value| serde_json::to_vec(value).map_or(0, |bytes| bytes.len());
+            let project_bytes = payload.get("project").map_or(0, json_bytes);
+            let delta_bytes = delta.as_ref().map_or(0, json_bytes);
+            let full_payload_bytes = full_payload.as_ref().map_or(0, json_bytes);
+            let delta_payload_bytes = delta_payload.as_ref().map_or(0, json_bytes);
+            host::info("newviso.perf.trace.script", format!(
+                "script_frame={} delta_ms={:.4} provider_ms={:.4} response_merge_ms={:.4} project_bytes={} delta_bytes={} full_payload_bytes={} delta_payload_bytes={} commands={}",
+                self.request_counter, delta_ms, provider_ms, merge_ms,
+                project_bytes, delta_bytes, full_payload_bytes,
+                delta_payload_bytes, control.commands.len()
+            ));
+            host::info("newviso.perf.trace.script.stages", format!(
+                "script_frame={} host_encode_us={} host_gateway_us={} host_decode_us={} provider_roundtrip_us={} v8_input_bridge_us={} v8_javascript_us={} v8_output_bridge_us={}",
+                self.request_counter, script_stage_us[0], script_stage_us[1],
+                script_stage_us[2], script_stage_us[3], script_stage_us[4],
+                script_stage_us[5], script_stage_us[6]
+            ));
         }
 
         Ok(control)
@@ -501,6 +708,40 @@ fn merge_control(control: &mut ScriptControl, value: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cache_module(opt_in: bool, cached: bool, frame: bool) -> LoadedModule {
+        LoadedModule {
+            spec: ScriptModuleSpec {
+                asset: "scripts/test.ysc".into(),
+                runtime_delta: opt_in,
+                project_context_cache: opt_in,
+                on_start: Some("on_start".into()),
+                on_frame: frame.then(|| "on_frame".into()),
+                on_event: None,
+                on_shutdown: None,
+                permissions: Vec::new(),
+            },
+            snapshot_revision: None,
+            project_cache_valid: cached,
+        }
+    }
+
+    #[test]
+    fn project_cache_requires_all_active_frame_modules_to_opt_in_and_be_primed() {
+        assert!(!frame_project_cache_ready(&[
+            cache_module(true, true, true),
+            cache_module(false, false, true),
+        ]));
+        assert!(!frame_project_cache_ready(&[
+            cache_module(true, true, true),
+            cache_module(true, false, true),
+        ]));
+        assert!(frame_project_cache_ready(&[
+            cache_module(true, true, true),
+            cache_module(true, true, true),
+            cache_module(false, false, false),
+        ]));
+    }
 
     #[test]
     fn resizing_event_queue_preserves_newest_events_and_accounts_drops() {

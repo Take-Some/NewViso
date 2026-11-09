@@ -40,6 +40,14 @@ impl EngineApplication {
         &mut self,
         contact: PhysicsDamageContact,
     ) -> Result<bool, String> {
+        let external = self
+            .peds
+            .states()
+            .find(|p| p.profile.damage_entity == Some(contact.target))
+            .map(|p| p.profile.actor_id.clone());
+        if let Some(id) = external {
+            return self.apply_external_combat_damage(&id, contact);
+        }
         let Some(id) = self
             .ped_physics
             .bodies
@@ -47,6 +55,7 @@ impl EngineApplication {
             .find(|(_, body)| {
                 body.entity == contact.target
                     || body
+                        .endorphin
                         .ragdoll
                         .as_ref()
                         .is_some_and(|r| r.contains(contact.target))
@@ -94,7 +103,6 @@ impl EngineApplication {
                             contact.source,
                             VehiclePedHit::Bump,
                             contact.impulse_direction,
-                            false,
                         )?;
                         host::publish_event_json(
                             "ped.vehicle.hit",
@@ -140,13 +148,7 @@ impl EngineApplication {
             self.ped_physics.last_collision_damage.insert(key, now);
         }
         if let Some(kind) = vehicle_kind {
-            self.begin_ped_vehicle_response(
-                &id,
-                contact.source,
-                kind,
-                contact.impulse_direction,
-                true,
-            )?;
+            self.begin_ped_vehicle_response(&id, contact.source, kind, contact.impulse_direction)?;
         }
         let source = self
             .ped_physics
@@ -172,13 +174,68 @@ impl EngineApplication {
             .as_ref()
             .and_then(|p| p.vehicle_body_state(contact.source))
             .map_or(contact.point, |body| body.position);
+        let body_hit = if !vehicle {
+            self.ped_body_contact(&id, contact.target, contact.point)
+        } else {
+            None
+        };
+        let anatomical = if !vehicle {
+            self.ped_grip_contact_region(&id, contact.point)
+        } else {
+            None
+        };
+        let zone = body_hit
+            .as_ref()
+            .and_then(|(_, region, _)| super::super::hit_zones::HitZone::parse(region))
+            .or_else(|| anatomical.map(|v| v.0))
+            .or_else(|| {
+                if !vehicle {
+                    self.living_world
+                        .actor_runtime_views()
+                        .into_iter()
+                        .find(|actor| actor.id == id)
+                        .and_then(|actor| {
+                            self.peds.state(&id).map(|ped| {
+                                super::super::hit_zones::zone_from_contact(
+                                    contact.point,
+                                    actor.position,
+                                    ped.profile.capsule_height,
+                                    ped.profile.capsule_radius,
+                                )
+                            })
+                        })
+                } else {
+                    None
+                }
+            });
+        let amount = amount
+            * body_hit
+                .as_ref()
+                .map_or_else(|| zone.map_or(1.0, |region| region.multiplier()), |v| v.2);
+        let before_health = self.peds.state(&id).map_or(0.0, |p| p.health);
         let before_vitals = self.peds.state(&id).map_or(0.0, |p| p.health + p.armour);
-        if let Some(cancel) =
-            self.peds
-                .damage(&id, source.clone(), amount, origin, &mut self.agents)?
-        {
+        let impact = if vehicle_kind.is_some_and(|kind| kind != VehiclePedHit::Bump) {
+            newviso_agent::peds::grip::GripImpact::Knockdown
+        } else if let Some((part, _, _)) = &body_hit {
+            self.ped_body_grip_impact(&id, part)
+        } else if let Some((_, impact)) = anatomical {
+            impact
+        } else if zone == Some(super::super::hit_zones::HitZone::Arm) {
+            newviso_agent::peds::grip::GripImpact::Arm
+        } else {
+            newviso_agent::peds::grip::GripImpact::Body
+        };
+        if let Some(cancel) = self.peds.damage_with_impact(
+            &id,
+            source.clone(),
+            amount,
+            origin,
+            impact,
+            &mut self.agents,
+        )? {
             application_agents::apply_agent_commands(&mut self.living_world, vec![cancel])?;
         }
+        self.record_ped_body_damage(&id, body_hit.as_ref().map(|v| v.0.as_str()), before_health)?;
         self.save_ped_vitals(&id)?;
         let dead = self.peds.is_dead(&id);
         let applied = self
@@ -210,9 +267,9 @@ impl EngineApplication {
             if !ragdoll_started {
                 if let Some(body) = self.ped_physics.bodies.get_mut(&id) {
                     if let Some(physics) = self.physics.as_mut() {
-                        physics.release_character_body_towards(
+                        physics.release_character_body(
                             body.entity,
-                            contact.impulse_direction,
+                            body.endorphin.model.ragdoll.angular_damping,
                         )?;
                     }
                     body.was_dead = true;
@@ -220,13 +277,13 @@ impl EngineApplication {
                 self.start_ped_fall_animation(&id, contact.impulse_direction, "death");
             }
         } else if applied {
-            if let Some(body) = self.ped_physics.bodies.get_mut(&id) {
-                body.recovery_seconds =
-                    body.recovery_seconds
-                        .max(if vehicle { VEHICLE_FALL_SECONDS } else { 0.12 });
-            }
             if !vehicle {
-                self.start_ped_hit_reaction(&id, contact.impulse_direction)?;
+                self.start_ped_hit_reaction(
+                    &id,
+                    contact.impulse_direction,
+                    (before_health - self.peds.state(&id).map_or(before_health, |p| p.health))
+                        .max(0.0),
+                )?;
             }
         }
         if !ragdoll_started && ballistic && contact.contact_impulse > 0.0 {
@@ -245,7 +302,7 @@ impl EngineApplication {
             json!({"actor_id": id, "entity": contact.target, "source": source, "source_entity": contact.source,
                 "entity_key": contact.target.to_string(), "source_entity_key": contact.source.to_string(),
                 "response": vehicle_kind.map(VehiclePedHit::as_str), "weapon_type": vehicle_kind.and_then(VehiclePedHit::weapon_type),
-                "position": contact.point, "damage": amount, "impulse": contact.contact_impulse, "dead": dead}),
+                "position": contact.point, "hit_zone": zone.map(|z| z.name()), "hit_part":body_hit.as_ref().map(|v|&v.0), "damage": amount, "impulse": contact.contact_impulse, "dead": dead}),
         )?;
         Ok(true)
     }

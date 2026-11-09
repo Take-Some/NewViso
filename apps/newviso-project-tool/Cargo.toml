@@ -1,0 +1,12 @@
+[package]
+name = "newviso-project-tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+newviso-scene-document.workspace = true
+blake3.workspace = true
+newviso-config.workspace = true
+newviso-project.workspace = true
+serde_json.workspace = true

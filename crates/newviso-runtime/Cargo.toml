@@ -5,10 +5,13 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+newviso-editor-viewport.workspace = true
 newviso-steering.workspace = true
 newviso-navigation.workspace = true
+newviso-doors.workspace = true
 newviso-character.workspace = true
 newviso-agent.workspace = true
+newviso-endorphin.workspace = true
 newviso-audio-client.workspace = true
 newviso-bugtrap.workspace = true
 newviso-assets-client.workspace = true
@@ -36,6 +39,7 @@ newviso-scene.workspace = true
 newviso-scripting.workspace = true
 newviso-textures.workspace = true
 newviso-ui-client.workspace = true
+newviso-ui-draw.workspace = true
 newviso-world.workspace = true
 newviso-vehicle.workspace = true
 blake3.workspace = true

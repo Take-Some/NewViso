@@ -137,25 +137,7 @@ impl ResourceDecoder for SemanticTextureDecoder {
     }
 }
 
-fn normalize_rsc7_texture_address(address: AssetAddress) -> AssetAddress {
-    // GTA texture dictionary entry identity is case-insensitive, while the
-    // canonical NETD dictionaries are authored with lowercase entry names.
-    // Normalize only YTD entry selectors here; never alter selectors for other
-    // asset families where case may be semantically meaningful.
-    let is_ytd = address
-        .logical_path()
-        .rsplit_once('.')
-        .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("ytd"));
-    let Some(entry) = address.entry().filter(|_| is_ytd) else {
-        return address;
-    };
-    let normalized_entry = entry.to_ascii_lowercase();
-    if normalized_entry == entry {
-        return address;
-    }
-    AssetAddress::parse(&format!("{}@{}", address.logical_path(), normalized_entry))
-        .unwrap_or(address)
-}
+
 
 fn decode_texture_resource(
     address: &AssetAddress,
@@ -547,7 +529,6 @@ fn decode_model_resource(
                                         .transpose()
                                         .ok()
                                         .flatten()
-                                        .map(normalize_rsc7_texture_address)
                                         .map(AssetRef::new);
                                     let role = texture
                                         .get("role")
@@ -1536,21 +1517,9 @@ mod tests {
     }
 
     #[test]
-    fn rsc7_ytd_texture_selectors_are_canonicalized_to_lowercase() {
-        let address =
-            AssetAddress::parse("textures/weapons/gta/w_ar_carbinerifle.ytd@W_AR_CarbineRifle")
-                .unwrap();
-        let normalized = normalize_rsc7_texture_address(address);
-        assert_eq!(
-            normalized.canonical(),
-            "textures/weapons/gta/w_ar_carbinerifle.ytd@w_ar_carbinerifle"
-        );
-
-        let non_ytd = AssetAddress::parse("materials/example.ymat@MiXeD").unwrap();
-        assert_eq!(
-            normalize_rsc7_texture_address(non_ytd).canonical(),
-            "materials/example.ymat@MiXeD"
-        );
+    fn semantic_texture_references_preserve_provider_owned_identity() {
+        let address=AssetAddress::parse("textures/dictionary@MiXeD").unwrap();
+        assert_eq!(address.canonical(),"textures/dictionary@MiXeD");
     }
 
     #[test]

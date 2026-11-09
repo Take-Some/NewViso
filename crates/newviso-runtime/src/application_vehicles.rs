@@ -23,7 +23,7 @@ mod systems;
 
 use audio_fx::*;
 use helpers::*;
-use newviso_audio_client::{AudioClient, AudioVoiceUpdateRequest};
+use newviso_audio_client::{AudioClient, AudioVoiceUpdateRequest, ImpactMaterial, PhysicsAudioContact, PhysicsAudioRouter};
 use newviso_model::{ModelFragmentPartRole, ModelResource, ModelWheelSlot};
 use newviso_scene::{SceneLightDesc, SceneLightType, SceneModelDent, SceneModelPartPose};
 use newviso_vehicle::{
@@ -235,6 +235,7 @@ struct VehicleAudioFxControls {
     last_audio_seconds: f64,
     next_clatter_seconds: f64,
     next_impact_audio_seconds: f64,
+    physics_audio_router: PhysicsAudioRouter,
     audio_events_emitted: u64,
 }
 
@@ -320,6 +321,7 @@ impl Default for VehicleAudioFxControls {
             last_audio_seconds: 0.0,
             next_clatter_seconds: 0.0,
             next_impact_audio_seconds: 0.0,
+            physics_audio_router: PhysicsAudioRouter::default(),
             audio_events_emitted: 0,
         }
     }

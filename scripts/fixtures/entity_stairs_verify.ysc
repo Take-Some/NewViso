@@ -1,0 +1,165 @@
+import { FootMotionAudit } from "./foot_motion_audit.ysc";
+import * as Game from "./default_game_base.ysc";
+import { createRuntimeSnapshotDecoder } from "./snapshot_delta.ysc";
+const decode=createRuntimeSnapshotDecoder(),audit=new FootMotionAudit();
+let gaitCaptures=0,gaitCaptureTime=0;
+let elapsed=0,stage=0,since=0,config:any,models:any[]=[],samples:any[]=[],boneLengths:any={},soleTreads:any={},soleFrames:any={},unshiftedFits:any={},maxFootError=0,maxBoneError=0,maxPlantedSoleError=0,middle=false,life=0,entityKeys:any={},airborne=false,maxAirLift=0,airRootOffset=0,maxAirRootError=0,rigidResults:any[]=[];
+function check(x:any,m:string):void{if(!x)throw new Error("ENTITY_STAIRS_VERIFY "+m);}
+const distance=(a:number[],b:number[])=>Math.hypot(...a.map((v,i)=>v-b[i]));
+function binding(i:number):any{
+ return i===1?{body_id:"generic.proxy",endorphin_model:"physics/endorphin/humanoid.json"}:
+ {foot_placement_profile:"physics/endorphin/feet_humanoid.json",phase:i===2?"script":"native"};
+}
+export function on_event(e:any):any{return Game.on_event(e);}
+export function on_start(raw:any):any{
+ const p=decode(raw);config=p.project.runtime.variables;models=config.entity_stair_models;
+ const r:any=Game.on_start(p),c=r.commands;
+ c.push({op:"physics.world.configure",fixed_hz:120,max_steps_per_frame:8,gravity:9.81,contact_skin:.002,
+ scene_colliders:{enabled:true,friction:.72,restitution:0,density:1,participates_in_queries:true,casts_contacts:true}});
+ c.push({op:"scene.dynamic_entity.upsert",id:"generic.runtime",visual:"none",asset_ref:models[2].model,
+ position:[6,1.15,2],rotation_degrees:[0,0,0],scale:[1,1,1],bounds_half_extent:[.5,1.2,.5],base_color:[1,1,1,1],
+ solid:false,visible_distance:180,stream_distance:200,fade_range:10,character:binding(2)});
+ for(let i=0;i<3;i++){
+  const id=i===2?"generic.runtime":"generic.authored."+i;
+  c.push({op:"physics.body.upsert",id:i===1?"generic.proxy":id,body_kind:"dynamic",
+    shape:{kind:"capsule",radius:.32,half_height:.58},position:[i*3,.95,2],rotation:[0,0,0,1],
+    friction:.72,restitution:0,density:80,continuous_collision:true,angular_damping:1},
+   {op:"scene.entity.animation.preload",id,clip_refs:["idle","walk"].map(g=>models[i].locomotion+"@"+g)},
+   {op:"scene.entity.animation.play",id,clip_ref:models[i].locomotion+"@idle",planar_root_lock:true,blend_seconds:0});
+ }
+ for(const prop of config.entity_stair_props)c.push({op:"physics.body.upsert",entity:prop.entity,body_kind:"dynamic",
+   shape:prop.shape,position:prop.position,linear_velocity:prop.velocity??[0,0,0],friction:.8,restitution:0,density:10,
+   linear_damping:.05,angular_damping:.8,continuous_collision:true});
+ return r;
+}
+export function on_frame(raw:any):any{
+ const p=decode(raw);elapsed+=Number(p.delta_seconds);
+ const bodies=p.runtime.physics?.bodies??[],chars=p.runtime.scene?.characters??[],feet=p.runtime.endorphin?.feet??[];
+ audit.observe(feet,elapsed,stage>=1&&stage<=2);
+ const byKey=(key:string)=>{const b=bodies.find((b:any)=>String(b.entity_key??b.entity)===key);return b&&{
+ entity_key:String(b.entity_key??b.entity),position:b.position,linear_velocity:b.linear_velocity,stair_support:b.stair_support};};
+ const actors=["generic.authored.0","generic.authored.1","generic.runtime"].map(id=>{
+  const ch=chars.find((c:any)=>c.id===id);if(ch)entityKeys[id]=ch.entity_key;return {id,ch,b:byKey(ch?.body_key??entityKeys[id])};
+ });
+ check((p.runtime.peds?.physics?.bodies??[]).length===0,"legacy Ped adapter unexpectedly active");
+ for(const actor of feet){
+  for(const leg of actor.legs??[]){
+   if(!leg.hip||!leg.knee||!leg.position)continue;
+   const key=actor.entity_key+leg.foot,l=[distance(leg.hip,leg.knee),distance(leg.knee,leg.position)];
+   if(!boneLengths[key])boneLengths[key]=l;
+   maxBoneError=Math.max(maxBoneError,...l.map((v,i)=>Math.abs(v-boneLengths[key][i])));
+   maxFootError=Math.max(maxFootError,distance(leg.position,leg.target));
+   const s=leg.support;check(s&&s.target_sole?.length===4&&s.actual_sole?.length===4,"missing sole contract");
+   const candidate=s.contact_sole;
+   const span=distance(candidate[0],candidate[2]);
+   if(s.has_surface&&s.surface_complete&&!s.anchored_goal&&!s.preview_goal&&
+      ((s.authored_ankle[2]>.3+span&&candidate.every((v:number[])=>v[2]>.3))||
+       (s.authored_ankle[2]<-2.86-span&&candidate.every((v:number[])=>v[2]<-2.86)))&&
+      candidate.every((v:number[])=>v[0]>-1.2&&v[0]<7.2)){
+    check(Math.hypot(s.contact_target[0]-s.authored_ankle[0],s.contact_target[2]-s.authored_ankle[2])<.0001,"forced centring "+JSON.stringify({actor,leg}));
+    unshiftedFits[actor.entity_key]=(unshiftedFits[actor.entity_key]??0)+1;
+   }
+   if(!s.planted)continue;
+   soleFrames[actor.entity_key]=(soleFrames[actor.entity_key]??0)+1;
+   const target=s.contact_sole??s.target_sole,actual=s.actual_sole,y=target.reduce((sum:number,v:number[])=>sum+v[1],0)/4;
+   maxPlantedSoleError=Math.max(maxPlantedSoleError,...actual.map((v:number[],i:number)=>distance(v,target[i])));
+   check(maxPlantedSoleError<.01,"actual sole misses support "+JSON.stringify({actor,leg,maxPlantedSoleError}));
+   if(y>.1&&y<1.5&&target.every((v:number[])=>v[2]<0&&v[2]>-2.56)){
+    const tread=Math.round(y/.18)-1,lo=-(tread+1)*.32,hi=-tread*.32;
+    check(tread>=0&&tread<8,"bad tread height "+y);
+    check(target.every((v:number[])=>v[2]>=lo-.002&&v[2]<=hi+.002),"target spans riser");
+    check(actual.every((v:number[])=>v[2]>=lo-.004&&v[2]<=hi+.004),"actual sole spans riser");
+    const t=soleTreads[actor.entity_key]??(soleTreads[actor.entity_key]={});t[tread]=(t[tread]??0)+1;
+   }
+  }
+ }
+ const r:any=Game.on_frame(p),c=r.commands;
+ c.push({op:"scene.camera.set",position:[-5,4.6,2],target:[3.5,1,-1.5],up:[0,1,0],fov_y_degrees:65,near:.04,far:200});
+ const ready=actors.every(a=>a.b&&a.ch?.active)&&feet.filter((a:any)=>a.legs?.length===2).length===3;
+ if(stage===0&&elapsed>1.5&&ready){
+  stage=1;since=elapsed;
+  for(let i=0;i<3;i++)c.push({op:"scene.entity.animation.play",id:actors[i].id,clip_ref:models[i].locomotion+"@walk",planar_root_lock:true,blend_seconds:.15});
+ }
+ for(let i=0;i<actors.length;i++){
+  const a=actors[i];if(!a.b||stage>=6)continue;
+  const wanted=stage===1?-3.8:stage===2?1.8:a.b.position[2],dz=wanted-a.b.position[2],speed=stage===1?1.25:stage===2?1.05:0;
+  c.push({op:"physics.character.drive",id:i===1?"generic.proxy":a.id,horizontal_velocity:[0,Math.abs(dz)>.03?Math.sign(dz)*Math.min(speed,Math.abs(dz)*4):0],
+    settings:{traction:.95,max_acceleration:7,air_acceleration:.5,input_timeout_seconds:.25}});
+ }
+ if(stage===1&&actors[0].b?.position[2]<-.5&&actors[0].b?.position[2]>-2.1){
+  const position=actors[0].b.position;
+  c.push({op:"scene.camera.set",position:[position[0]-2.8,position[1]+1.1,position[2]+1.6],
+    target:[position[0],position[1]-.1,position[2]],up:[0,1,0],fov_y_degrees:55,near:.04,far:200});
+  if(gaitCaptures<5&&elapsed-gaitCaptureTime>.09){
+   c.push({op:"console.write",message:"ENTITY_STAIR_CAPTURE gait"+gaitCaptures});gaitCaptures++;gaitCaptureTime=elapsed;
+  }
+ }
+ if(config.entity_stair_trace)c.push({op:"console.write",message:"ENTITY_FOOT_SAMPLE "+JSON.stringify({t:elapsed,stage,feet})});
+ if(!middle&&stage===1&&actors[0].b?.position[2]<-1&&actors[0].b?.position[2]>-2){middle=true;c.push({op:"console.write",message:"ENTITY_STAIR_CAPTURE middle"});}
+ if(stage===1&&actors.every(a=>a.b&&a.b.position[2]<-3.6)){
+  for(const a of actors)check(Math.abs(a.b.position[1]-.9-1.44)<.07,"bad upper landing "+JSON.stringify(a));
+  stage=1.5;since=elapsed;c.push({op:"console.write",message:"ENTITY_STAIR_CAPTURE upper"});
+  for(let i=0;i<3;i++)c.push({op:"scene.entity.animation.play",id:actors[i].id,clip_ref:models[i].locomotion+"@idle",planar_root_lock:true,blend_seconds:.15});
+ }else if(stage===1.5){
+  const turn=Math.min(1,(elapsed-since)/.5);
+  for(const a of actors)c.push({op:"scene.entity.transform.set",id:a.id,rotation_degrees:[0,180*turn,0]});
+  if(turn===1){
+   stage=2;since=elapsed;
+   for(let i=0;i<3;i++)c.push({op:"scene.entity.animation.play",id:actors[i].id,clip_ref:models[i].locomotion+"@walk",planar_root_lock:true,blend_seconds:.15});
+  }
+ }else if(stage===2&&actors.every(a=>a.b&&a.b.position[2]>1.6)){
+  for(const a of actors)check(Math.abs(a.b.position[1]-.9)<.07,"bad lower landing "+JSON.stringify(a));
+  check(maxBoneError<.004,"bone stretch "+maxBoneError);check(maxFootError<.065,"target miss "+maxFootError);
+  // Heel/toe roll is a valid partial contact. Dense audit verifies real loaded
+  // stair contacts; it never requires an artificial flat landing on each tread.
+  check(Object.keys(soleFrames).length===3&&Object.values(soleFrames).every((n:any)=>n>5),"missing complete-foot contact samples");
+  check(Object.keys(unshiftedFits).length===3&&Object.values(unshiftedFits).every((n:any)=>n>5),"missing natural placement");
+  for(const prop of config.entity_stair_props){
+   const b=byKey(String(prop.entity));check(b,"missing rigid prop");
+   if(prop.riser){check(b.position[2]>.04&&b.position[1]<.13,"rigid prop was stair-lifted "+JSON.stringify(b));}
+   else {check(Math.abs(b.position[1]-prop.expected_y)<.025,"rigid prop missed tread "+JSON.stringify({prop,b}));}
+   check(!b.stair_support,"prop received character assistance");
+   rigidResults.push({entity:prop.entity,shape:prop.shape,position:b.position,expected_y:prop.expected_y,riser:prop.riser??false});
+  }
+  stage=3;since=elapsed;c.push({op:"scene.character.configure",id:actors[2].id,character:null});
+ }else if(stage===3&&elapsed-since>.15){
+  check(!chars.some((x:any)=>x.id===actors[2].id),"component removal failed");
+  check(!feet.some((x:any)=>x.entity_key===entityKeys[actors[2].id]&&x.legs?.length),"stale feet after removal");
+  stage=4;since=elapsed;c.push({op:"scene.character.configure",id:actors[2].id,character:{...binding(2),phase:"native"}});
+ }else if(stage===4&&elapsed-since>.3){
+  const a=actors[2];check(a.ch?.binding.phase==="native"&&feet.some((f:any)=>f.entity_key===a.ch.entity_key&&f.legs?.length===2),"phase switch/restore failed");
+  stage=5;since=elapsed;c.push({op:"scene.character.configure",id:a.id,character:{enabled:false}});
+ }else if(stage===5&&elapsed-since>.15){
+  const a=actors[2];check(a.ch?.binding.enabled===false&&!feet.some((f:any)=>f.entity_key===a.ch.entity_key&&f.legs?.length),"disabled component retained feet");
+  stage=6;since=elapsed;
+  c.push({op:"physics.body.upsert",entity:920000030,body_kind:"dynamic",shape:{kind:"capsule",radius:.32,half_height:.58},
+    position:[6,.95,4],friction:.72,restitution:0,density:80,continuous_collision:true},
+    {op:"scene.character.configure",id:a.id,character:{foot_placement_profile:"physics/endorphin/feet_humanoid.json",phase:"script",body_entity:920000030}});
+ }else if(stage===6&&elapsed-since>.6){
+  const a=actors[2];check(a.ch?.body_key==="920000030"&&Math.abs(a.ch.position[2]-4)<.05,"body rebind did not follow new source");
+  check(feet.some((f:any)=>f.entity_key===a.ch.entity_key&&f.legs?.length),"rebound feet did not resume");
+  airRootOffset=a.ch.position[1]-a.b.position[1];stage=7;since=elapsed;
+  c.push({op:"physics.character.drive",entity:920000030,horizontal_velocity:[0,0],jump_speed:3,
+    settings:{traction:.95,max_acceleration:7,air_acceleration:.5,input_timeout_seconds:.25}});
+ }else if(stage===7){
+  const a=actors[2];check(a.ch?.body_key==="920000030","lost rebind");
+  maxAirLift=Math.max(maxAirLift,a.b.position[1]-.915);
+  maxAirRootError=Math.max(maxAirRootError,Math.abs(a.ch.position[1]-a.b.position[1]-airRootOffset));
+  check(maxAirRootError<.08,"render root detached from airborne body");
+  if(a.b.position[1]>1.12){
+   airborne=true;check(!feet.some((f:any)=>f.entity_key===a.ch.entity_key&&f.legs?.length),"airborne foot pinned to tread");
+  }
+  if(airborne&&elapsed-since>1.2&&a.b.position[1]<.94){
+   check(maxAirLift>.3,"jump did not leave ground");
+   c.push({op:"console.write",message:"ENTITY_STAIRS_VERIFY_PASS "+JSON.stringify({actors,soleFrames,soleTreads,unshiftedFits,maxFootError,maxBoneError,maxPlantedSoleError,rigid_props:rigidResults,maxAirLift,maxAirRootError,natural_motion:audit.finish(actors.map(a=>entityKeys[a.id])),lifecycle:"remove/restore/change-phase/disable/rebind/airborne"})});
+   r.exit_requested=true;
+  }
+ }
+ if(samples.length===0||elapsed-samples[samples.length-1].t>.25){
+  const s={t:elapsed,stage,actors:actors.map(a=>({id:a.id,key:a.ch?.entity_key,b:a.b,root:a.ch?.position})),feet:config.entity_stair_trace?feet:undefined};
+  samples.push(s);c.push({op:"console.write",message:"ENTITY_STAIR_SAMPLE "+JSON.stringify(s)});
+ }
+ check(elapsed<38,"timeout "+JSON.stringify({stage,actors,soleTreads}));
+ return r;
+}
+export function on_shutdown(p:any):any{return Game.on_shutdown(p);}

@@ -1,3 +1,10 @@
+mod support;
+pub use support::SupportSurface;
+mod strike;
+pub use strike::{
+    closest_segment_points, sweep_strike_aabb, sweep_strike_capsules, sweep_strike_triangle,
+    StrikeCapsule, StrikeContact,
+};
 mod sweep;
 pub use sweep::{
     sweep_sphere_aabb, sweep_sphere_aabb_hit, SphereSweepHit, SphereSweepMesh, TriangleSurfaceHit,

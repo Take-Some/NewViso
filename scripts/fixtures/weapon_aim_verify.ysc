@@ -1,0 +1,88 @@
+import * as Game from './default_game_base.ysc';
+import {createRuntimeSnapshotDecoder} from './snapshot_delta.ysc';
+const decode=createRuntimeSnapshotDecoder(),id='endorphin.test.enemy';
+let stage=0,since=0,baseline=0,magazine=0,behindFrames=0,frontFrames=0,armFrames=0,profile:any=null,flashSource='joint';
+const encode=(v:any)=>JSON.stringify(v,(_k:string,v:any)=>typeof v==='bigint'?String(v):v);
+function check(ok:any,msg:string):void{if(!ok)throw new Error('WEAPON_AIM '+msg);}
+export function on_start(raw:any):any{
+ const p=decode(raw),out:any=Game.on_start(p);
+ const weapon=p.project?.runtime?.variables?.endorphin_expected_weapon??'weapon.pistol.military';
+ if(p.project?.runtime?.variables?.endorphin_ambient_probe)out.commands.push(
+  {op:'items.inventory.add',owner_id:id,item_id:weapon,quantity:1},
+  {op:'items.inventory.equip',owner_id:id,slot:'hands',item_id:weapon});
+ return out;
+}
+export function on_frame(raw:any):any{
+ const p=decode(raw);p.frame={...p.frame,platform:{...p.frame.platform,focused:false}};
+ const out:any=Game.on_frame(p),cmd=out.commands,r=p.runtime,t=Number(r.peds?.world_seconds??p.elapsed_seconds);
+ const ped=r.peds?.peds?.find((v:any)=>v.profile.actor_id===id),record=r.peds?.physics?.bodies?.find((v:any)=>v.actor_id===id);
+ const body=r.physics?.bodies?.find((v:any)=>String(v.entity_key??v.entity)===String(record?.entity_key));
+ const measured=record?.weapon_pose,forward=measured?.forward,speed=Number(p.project?.runtime?.variables?.endorphin_rear_speed??1.2);
+ if(!since)since=t;
+ if(stage>=2&&stage<=4&&ped?.weapon_grip?.lost)throw new Error('WEAPON_AIM grip lost '+encode({stage,t,grip:ped.weapon_grip,authority:record.authority,ragdoll:record.ragdoll?.active,reaction:record.animation,pose:measured,body}));
+ if(stage===0&&body&&measured?.ready&&t>1){
+  check(!String(ped.profile.weapon_grip?.model?.holding_joint).startsWith('opaque.binding.'),'grip holding joint was not retargeted');
+  check(!(ped.profile.weapon_grip?.model?.hit_receivers??[]).some((r:any)=>r.segments.some((s:any[])=>s.some((j:any)=>String(j).startsWith('opaque.binding.')))),'grip receivers were not retargeted');
+  if(p.project?.runtime?.variables?.endorphin_decoy_probe){
+   const key=id+'.attached.decoy',rig=r.peds.weapon_rigs[measured.rig_asset];
+   const real=p.project.runtime.variables.endorphin_expected_weapon;
+   const model=real==='weapon.rifle.mini14'?'models/weapon/pistol/pistol.ydd@pistol':'models/weapon/rifle_mini14/rifle_mini14.ydd@rifle_mini14';
+   cmd.push({op:'scene.dynamic_entity.upsert',id:key,visual:'none',asset_ref:model,position:[0,0,0],rotation_degrees:[0,0,0],scale:[1,1,1],bounds_half_extent:[1,1,1],base_color:[1,1,1,1],solid:false,visible_distance:120,stream_distance:180,fade_range:10},
+    {op:'scene.entity.attach_to_joint',id:key,parent:record.scene_key??id,joint:rig.eye_joint,position_offset:[3,3,-3],rotation_offset_degrees:[0,180,0]});
+  }
+  profile={...ped.profile,armed:true,combat_range:40,combat_damage:0,combat_cooldown_seconds:.1,
+   combat:{target_actor:'player.character',magazine_capacity:50,reserve:50,reaction_seconds:0,spread:0},melee:null};
+  cmd.push({op:'ped.upsert',profile,reset:true},{op:'agent.tasks.clear',agent_id:profile.agent_id});stage=1;since=t;
+ }else if(stage===1&&record.controlled&&t-since>.3){stage=2;since=t;
+ }else if(stage===2){
+  // Physical velocity gives the real walking body a rearward heading while AI keeps its front target.
+  cmd.push({op:'physics.body.velocity.set',id,velocity:[0,0,-speed]});
+  if(forward&&forward[2]<-.9&&t-since>.4){baseline=ped.combat.shots;magazine=ped.combat.magazine;stage=3;since=t;}
+ }else if(stage===3){
+  cmd.push({op:'physics.body.velocity.set',id,velocity:[0,0,-speed]});
+  if(forward&&forward[2]<-.9){
+   behindFrames++;
+   check(ped.combat.shots===baseline&&ped.combat.magazine===magazine,'rear target emitted a shot or consumed ammunition');
+   for(const c of cmd.filter((c:any)=>c.op==='scene.entity.arm_ik.set'&&c.id===id))
+    for(const a of c.arms??[])if(a.weight>.2){
+     const arm=measured.arms.find((m:any)=>m.hand===a.hand_joint);
+     if(arm){const v=a.target.map((v:number,i:number)=>v-arm.shoulder[i]);
+      check(v[0]*forward[0]+v[2]*forward[2]>=-.01,'wrist target twisted behind body');armFrames++;}
+    }
+  }
+  if(t-since>1.2){
+   check(behindFrames>=12,'insufficient rear-facing physical observations');
+   cmd.push({op:'physics.body.velocity.set',id,velocity:[0,0,0]});stage=4;since=t;
+  }
+ }else if(stage===4){
+  if(measured?.muzzle&&forward?.[2]>.8)frontFrames++;
+  if(ped.combat.shots>baseline){
+   check(frontFrames>0,'no measured forward-facing weapon');
+   check(measured?.muzzle,'no attached weapon muzzle');
+   check(measured.muzzle.direction[2]>0,'barrel fires rearward');
+   const inv=r.items.inventories.find((v:any)=>v.owner_id===id);
+   const item=r.items.definitions.find((v:any)=>v.id===inv?.equipped?.hands),visual=item?.metadata?.presentation;
+   if(visual?.muzzle_point&&!visual?.muzzle_joint){
+    const matches=cmd.some((c:any)=>c.op==='scene.particles.spawn'&&c.items?.some((v:any)=>v.position&&
+     Math.hypot(...v.position.map((x:number,i:number)=>x-measured.muzzle.origin[i]))<.001));
+    check(matches,'static weapon flash is not at the measured muzzle');flashSource='model_point';
+   }
+
+   if(visual?.muzzle_joint)check(cmd.some((c:any)=>c.op==='scene.particles.spawn'&&c.joint===visual.muzzle_joint&&
+    String(c.id).startsWith((record.scene_key??id)+'.equipment.hands.')),'rigged muzzle flash lost its equipped socket');
+   const hand=measured.arms[0],muzzleDistance=Math.hypot(...measured.muzzle.origin.map((v:number,i:number)=>v-hand.wrist[i]));
+   check(muzzleDistance<=hand.reach*2,'muzzle sampled an unrelated attached prop');
+   for(const arm of measured.arms){
+    const v=arm.wrist.map((v:number,i:number)=>v-arm.shoulder[i]);
+    check(v[0]*forward[0]+v[2]*forward[2]>=-.03,'solved wrist behind torso');
+   }
+   cmd.push({op:'console.write',message:'ENDORPHIN_VERIFY_EVIDENCE '+encode({behindFrames,frontFrames,armFrames,flash_source:flashSource,rear_speed:speed,baseline,shots:ped.combat.shots,pose:measured})},
+    {op:'console.write',message:'ENDORPHIN_VERIFY_PASS weapon_aim rear_shot_rejected no_ammo_spent body_turn real_muzzle geometry_bound_arms'}
+    );out.exit_requested=true;stage=5;
+  }
+ }
+ if(t-since>12)throw new Error('WEAPON_AIM timeout '+encode({stage,ped,pose:measured,forward,body}));
+ return out;
+}
+export function on_event(raw:any):any{return Game.on_event(decode(raw));}
+export function on_shutdown(raw:any):any{return Game.on_shutdown(decode(raw));}

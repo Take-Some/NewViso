@@ -1,0 +1,113 @@
+import * as Game from './default_game_base.ysc';
+import {createRuntimeSnapshotDecoder} from './snapshot_delta.ysc';
+import {LivingWorldCommands as World} from './world/living_world.ysc';
+const decode=createRuntimeSnapshotDecoder(),foe='melee.test.enemy',knife='weapon.knife.combat',pistol='weapon.pistol.military';
+let stage=0,since=0,playerId='',owner='',playerBodyId=0,enemyProfile:any,playerProfile:any,captureSent=false;
+let health=0,hits=0,blocks=0,stale=0,generation=0,oldGeneration=0,firstHealth=0,evidence:any={actions:[]};
+const encode=(value:any)=>JSON.stringify(value,(_k:string,v:any)=>typeof v==='bigint'?String(v):v);
+function check(ok:any,message:string):void{if(!ok)throw new Error('MELEE_WEAPONS '+message);}
+function next(n:number,now:number,cmd:any[]):void{stage=n;since=now;cmd.push({op:'console.write',message:'MELEE_WEAPONS_STAGE '+n});}
+function place(cmd:any[],id:string,entity:any,z:number):void{
+ cmd.push(World.upsertActor({id,kind:id===playerId?'player':'pedestrian',position:[0,.05,z],group:id===playerId?'player':'raiders',tags:['combatant']}),
+  {op:'physics.body.pose.set',...(id===playerId?{entity}:{id}),position:[0,.95,z],rotation:[0,0,0,1]},
+  {op:'physics.body.velocity.set',...(id===playerId?{entity}:{id}),velocity:[0,0,0]});
+}
+function pair(cmd:any[],entity:any):void{place(cmd,playerId,playerBodyId,6);place(cmd,foe,entity,5.15);}
+export function on_start(raw:any):any{
+ const p=decode(raw),v=p.project.runtime.variables;playerId=v.engine_player.scene_id;owner=v.engine_items.owner_id;playerBodyId=v.engine_player.physics_entity;
+ const result:any=Game.on_start(p);
+ result.commands.push({op:'items.inventory.add',owner_id:owner,item_id:knife,quantity:1},
+  {op:'items.inventory.add',owner_id:owner,item_id:pistol,quantity:1},
+  {op:'items.inventory.equip',owner_id:owner,slot:'hands',item_id:knife});
+ return result;
+}
+export function on_frame(raw:any):any{
+ const p=decode(raw),r=p.runtime,now=Number(r.living_world?.clock?.world_seconds??p.elapsed_seconds);
+ const press=(stage===0&&!captureSent)||stage===2||stage===5;
+ if(stage===0&&press)captureSent=true;
+ p.frame={...p.frame,platform:{...p.frame.platform,focused:true,cursor_captured:true},camera_navigation_enabled:true,
+  input:{state:{keys:{down:[],pressed:[]},mouse:{down:[],pressed:press?[1]:[],delta:{x:0,y:0}}}}};
+ const result:any=Game.on_frame(p),cmd=result.commands;
+ const player=r.peds?.peds?.find((v:any)=>v.profile.actor_id===playerId),npc=r.peds?.peds?.find((v:any)=>v.profile.actor_id===foe);
+ const record=r.peds?.physics?.bodies?.find((v:any)=>v.actor_id===foe),inv=r.items?.inventories?.find((v:any)=>v.owner_id===owner);
+ const npcInv=r.items?.inventories?.find((v:any)=>v.owner_id===foe),collision=r.peds?.melee_collision,contact=collision?.last_contact;
+ const drops=(r.items?.pickups??[]).filter((v:any)=>v.origin?.owner_id===foe);
+ check(!cmd.some((v:any)=>v.op==='physics.ballistic.fire'),'cold weapon never uses the ballistic path');
+ check(!cmd.some((v:any)=>v.op==='items.inventory.state.set'&&v.item_id===knife&&v.state?.weapon?.magazine!==undefined),'cold weapon has no firearm ammunition');
+ check(drops.length<=1,'cold weapon is transferred once');
+ if(!since)since=now;
+ if(stage===0&&player&&npc&&record?.controlled&&now>2){
+  playerProfile={...player.profile,max_health:200,armour:0};enemyProfile={...npc.profile,max_health:300,armour:0,armed:false,combat:null,block_events:true};
+  cmd.push({op:'ped.upsert',profile:playerProfile,reset:true},{op:'ped.upsert',profile:enemyProfile,reset:true},{op:'agent.tasks.clear',agent_id:foe+'.ai'});
+  pair(cmd,record.entity);next(1,now,cmd);
+ }else if(stage===1&&record.controlled&&now-since>.4&&player.melee.phase==='idle'){
+  check(inv.equipped.hands===knife,'actual knife equipped');health=npc.health;hits=player.melee.hits;next(2,now,cmd);
+ }else if(stage===2&&cmd.some((v:any)=>v.op==='ped.melee.attack')){evidence.shared_input=true;next(3,now,cmd);
+ }else if(stage===3&&npc.health<health){
+  check(contact?.item_id===knife&&contact?.damage_type==='cut'&&contact?.collision==='swept_capsule'&&!!contact.hit_part,'real blade reaches a skeletal receiver '+encode(contact));
+  check(player.melee.hits===hits+1,'one blade contact per action');
+  evidence.actions.push(contact.action);evidence.cut_part=contact.hit_part;generation=Number(contact.equipment_generation);firstHealth=npc.health;
+  next(4,now,cmd);
+ }else if(stage===4&&player.melee.phase==='idle'&&now-since>.7){
+  check(npc.health===firstHealth,'recovery cannot hit again');
+  cmd.push({op:'ped.upsert',profile:enemyProfile,reset:true});pair(cmd,record.entity);next(41,now,cmd);
+ }else if(stage===41&&record.controlled&&now-since>.35){health=npc.health;next(5,now,cmd);
+ }else if(stage===5&&cmd.some((v:any)=>v.op==='ped.melee.attack')){next(6,now,cmd);
+ }else if(stage===6&&npc.health<health){
+  check(contact?.damage_type==='puncture'&&contact.action!==evidence.actions[0],'authored thrust differs from slash '+encode(contact));
+  check(Number(contact.equipment_generation)===generation,'same actual item generation across attacks');
+  evidence.actions.push(contact.action);next(7,now,cmd);
+ }else if(stage===7&&player.melee.phase==='idle'&&now-since>.7){
+  cmd.push({op:'ped.upsert',profile:enemyProfile,reset:true});pair(cmd,record.entity);
+  cmd.push({op:'physics.body.upsert',entity:900060121,body_kind:'static',position:[0,1.3,5.55],shape:{kind:'box',half_extents:[2,2,.06]},participates_in_queries:true,casts_contacts:true});
+  blocks=Number(collision.world_blocks);next(8,now,cmd);
+ }else if(stage===8&&record.controlled&&now-since>.25){
+  health=npc.health;cmd.push({op:'ped.melee.attack',actor_id:playerId,direction:[0,0,-1]});next(9,now,cmd);
+ }else if(stage===9&&player.melee.phase==='idle'&&now-since>.8){
+  check(npc.health===health&&Number(collision.world_blocks)>blocks,'solid intercepts blade before victim '+encode(collision));
+  check(contact.surface_entity_key==='900060121','actual authored wall is the obstruction');
+  evidence.wall_contact=true;cmd.push({op:'physics.body.destroy',entity:900060121},{op:'ped.upsert',profile:enemyProfile,reset:true});
+  pair(cmd,record.entity);next(10,now,cmd);
+ }else if(stage===10&&record.controlled&&now-since>.3){
+  health=npc.health;stale=Number(collision.stale_cancellations);
+  cmd.push({op:'ped.melee.attack',actor_id:playerId,direction:[0,0,-1]});next(11,now,cmd);
+ }else if(stage===11&&player.melee.phase==='windup'){
+  cmd.push({op:'items.inventory.equip',owner_id:owner,slot:'hands',item_id:pistol});next(12,now,cmd);
+ }else if(stage===12&&player.melee.phase==='idle'&&now-since>.6){
+  check(npc.health===health&&Number(collision.stale_cancellations)>stale,'equipped weapon swap invalidates blade action '+encode(collision));
+  check(inv.equipped.hands===pistol,'stale action preserves new firearm');
+  cmd.push({op:'items.inventory.unequip',owner_id:owner,slot:'hands'});next(13,now,cmd);
+ }else if(stage===13&&!inv.equipped?.hands&&now-since>.3){
+  health=npc.health;stale=Number(collision.stale_cancellations);cmd.push({op:'ped.melee.attack',actor_id:playerId,direction:[0,0,-1]});next(14,now,cmd);
+ }else if(stage===14&&player.melee.phase==='windup'){
+  cmd.push({op:'items.inventory.equip',owner_id:owner,slot:'hands',item_id:knife});next(15,now,cmd);
+ }else if(stage===15&&player.melee.phase==='idle'&&now-since>.6){
+  check(npc.health===health&&Number(collision.stale_cancellations)>stale,'empty hands also carry equipment generation');
+  evidence.generation_cancellation=true;
+  cmd.push({op:'ped.upsert',profile:{...enemyProfile,armed:true,combat:{target_actor:playerId,melee_only:true,reaction_seconds:.1}},reset:true},
+   {op:'items.inventory.add',owner_id:foe,item_id:knife,quantity:1},{op:'items.inventory.equip',owner_id:foe,slot:'hands',item_id:knife});
+  pair(cmd,record.entity);health=player.health;next(16,now,cmd);
+ }else if(stage===16&&player.health<health){
+  check(npc.combat.style==='melee'&&npc.combat.shots===0,'AI attacks with the held blade without firearm shots');
+  check(contact.actor_id===foe&&contact.item_id===knife,'AI blade uses actual equipment contact');
+  evidence.npc_blade=true;oldGeneration=Number(npcInv.equipment_generations.hands);
+  cmd.push({op:'ped.weapon.release',actor_id:foe,item_id:knife,equipment_generation:oldGeneration});next(17,now,cmd);
+ }else if(stage===17&&drops[0]?.body_entity){
+  const drop=drops[0];check(drop.item_id===knife&&drop.origin.equipment_generation===oldGeneration,'cold item ownership transferred atomically');
+  check(!drop.state?.weapon?.magazine&&!drop.state?.weapon?.reserve,'release does not invent knife ammunition');
+  check(String(drop.origin.pose_source).startsWith('weapon_attachment'),'cold release inherits real attachment pose');
+  check(!npcInv.equipped?.hands,'NPC is disarmed');evidence.physical_drop=true;
+  cmd.push({op:'ped.damage',actor_id:foe,source:playerId,amount:1000,origin:[0,1,6]});next(18,now,cmd);
+ }else if(stage===18&&npc.dead&&now-since>.7){
+  check(drops.length===1,'death cannot duplicate a released blade');
+  check(record.ragdoll?.active,'same native skeleton handles cold combat death');
+  evidence.death_unique=true;
+  cmd.push({op:'console.write',message:'MELEE_VERIFY_EVIDENCE '+encode(evidence)},
+   {op:'console.write',message:'MELEE_VERIFY_PASS cold_weapon blade_capsules slash thrust skeletal_contact cover equipment_generation npc_blade physical_drop no_duplicate no_ammunition'});
+  result.exit_requested=true;next(19,now,cmd);
+ }
+ check(stage===19||now-since<12,'stage timeout '+stage+' '+encode({player,npc,record,collision,contact,drops}));
+ return result;
+}
+export function on_event(p:any):any{return Game.on_event(p);}
+export function on_shutdown(p:any):any{return Game.on_shutdown(p);}

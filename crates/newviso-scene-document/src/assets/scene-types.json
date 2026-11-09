@@ -1,0 +1,453 @@
+{
+  "components": {
+    "transform": {
+      "id": "transform",
+      "label": "Transform",
+      "defaults": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation_degrees": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "properties": [
+        {
+          "path": "/transform/position",
+          "label": "Position",
+          "kind": "vec3"
+        },
+        {
+          "path": "/transform/rotation_degrees",
+          "label": "Rotation Degrees",
+          "kind": "vec3"
+        },
+        {
+          "path": "/transform/scale",
+          "label": "Scale",
+          "kind": "vec3"
+        },
+        {
+          "path": "/transform/target",
+          "label": "Target",
+          "kind": "vec3"
+        },
+        {
+          "path": "/transform/up",
+          "label": "Up",
+          "kind": "vec3"
+        }
+      ]
+    },
+    "camera": {
+      "id": "camera",
+      "label": "Camera",
+      "defaults": {
+        "projection": "perspective",
+        "fov_y_degrees": 60,
+        "near": 0.05,
+        "far": 500
+      },
+      "properties": [
+        {
+          "path": "/camera/projection",
+          "label": "Projection",
+          "kind": "enum",
+          "choices": [
+            "perspective"
+          ]
+        },
+        {
+          "path": "/camera/fov_y_degrees",
+          "label": "Fov Y Degrees",
+          "kind": "number",
+          "min": 1,
+          "max": 179
+        },
+        {
+          "path": "/camera/near",
+          "label": "Near",
+          "kind": "number",
+          "min": 1e-05
+        },
+        {
+          "path": "/camera/far",
+          "label": "Far",
+          "kind": "number",
+          "min": 2e-05
+        }
+      ],
+      "entity_kinds": [
+        "camera"
+      ]
+    },
+    "mesh": {
+      "id": "mesh",
+      "label": "Mesh",
+      "defaults": {
+        "primitive": "cube"
+      },
+      "properties": [
+        {
+          "path": "/mesh/primitive",
+          "label": "Primitive",
+          "kind": "string"
+        },
+        {
+          "path": "/mesh/asset",
+          "label": "Asset",
+          "kind": "asset"
+        },
+        {
+          "path": "/mesh/model",
+          "label": "Model",
+          "kind": "asset"
+        }
+      ],
+      "entity_kinds": [
+        "mesh"
+      ]
+    },
+    "material": {
+      "id": "material",
+      "label": "Material",
+      "defaults": {
+        "base_color": [
+          0.5,
+          0.5,
+          0.5,
+          1
+        ]
+      },
+      "properties": [
+        {
+          "path": "/material/base_color",
+          "label": "Base Color",
+          "kind": "color4",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "entity_kinds": [
+        "mesh"
+      ],
+      "mesh_primitives": [
+        "cube",
+        "heightfield"
+      ]
+    },
+    "collider": {
+      "id": "collider",
+      "label": "Collider",
+      "defaults": {
+        "solid": true
+      },
+      "properties": [
+        {
+          "path": "/collider/solid",
+          "label": "Solid",
+          "kind": "boolean"
+        }
+      ],
+      "entity_kinds": [
+        "mesh"
+      ]
+    },
+    "lod": {
+      "id": "lod",
+      "label": "Level of Detail",
+      "defaults": {
+        "visible_distance": 200,
+        "stream_distance": 240,
+        "fade_range": 20
+      },
+      "properties": [
+        {
+          "path": "/lod/visible_distance",
+          "label": "Visible Distance",
+          "kind": "number",
+          "min": 0
+        },
+        {
+          "path": "/lod/stream_distance",
+          "label": "Stream Distance",
+          "kind": "number",
+          "min": 0
+        },
+        {
+          "path": "/lod/fade_range",
+          "label": "Fade Range",
+          "kind": "number",
+          "min": 0
+        }
+      ]
+    },
+    "destructible": {
+      "id": "destructible",
+      "label": "Destructible",
+      "defaults": {
+        "enabled": true,
+        "health": 100,
+        "impact_damage_threshold": 8,
+        "impact_damage_scale": 0.5,
+        "break_impulse": 80,
+        "impulse_transfer": 0.85,
+        "density": 40,
+        "friction": 0.65,
+        "restitution": 0.08,
+        "linear_damping": 0.12,
+        "angular_damping": 0.18
+      },
+      "properties": [
+        {
+          "path": "/destructible/enabled",
+          "label": "Enabled",
+          "kind": "boolean"
+        },
+        {
+          "path": "/destructible/health",
+          "label": "Health on Spawn",
+          "kind": "number",
+          "min": 1e-06
+        },
+        {
+          "path": "/destructible/impact_damage_threshold",
+          "label": "Impact Damage Threshold",
+          "kind": "number",
+          "min": 0
+        },
+        {
+          "path": "/destructible/impact_damage_scale",
+          "label": "Impact Damage Scale",
+          "kind": "number",
+          "min": 0
+        },
+        {
+          "path": "/destructible/break_impulse",
+          "label": "Break Impulse",
+          "kind": "number",
+          "min": 1e-06
+        },
+        {
+          "path": "/destructible/impulse_transfer",
+          "label": "Impulse Transfer",
+          "kind": "number",
+          "min": 0
+        },
+        {
+          "path": "/destructible/density",
+          "label": "Density",
+          "kind": "number",
+          "min": 1e-06
+        },
+        {
+          "path": "/destructible/friction",
+          "label": "Friction",
+          "kind": "number",
+          "min": 0
+        },
+        {
+          "path": "/destructible/restitution",
+          "label": "Restitution",
+          "kind": "number",
+          "min": 0
+        },
+        {
+          "path": "/destructible/linear_damping",
+          "label": "Linear Damping",
+          "kind": "number",
+          "min": 0
+        },
+        {
+          "path": "/destructible/angular_damping",
+          "label": "Angular Damping",
+          "kind": "number",
+          "min": 0
+        }
+      ],
+      "entity_kinds": [
+        "mesh"
+      ]
+    },
+    "properties": {
+      "id": "properties",
+      "label": "Game Properties",
+      "defaults": {
+        "data": {}
+      },
+      "properties": [
+        {
+          "path": "/properties/data",
+          "label": "Project-defined data (JSON)",
+          "kind": "object"
+        }
+      ]
+    },
+    "character": {
+      "id": "character",
+      "label": "Character Locomotion",
+      "defaults": {
+        "enabled": false,
+        "phase": "native",
+        "sync_position": true
+      },
+      "properties": [
+        {
+          "path": "/character/enabled",
+          "label": "Enabled",
+          "kind": "boolean"
+        },
+        {
+          "path": "/character/body_id",
+          "label": "Physics Body Name",
+          "kind": "string"
+        },
+        {
+          "path": "/character/body_entity",
+          "label": "Physics Body Key",
+          "kind": "integer",
+          "min": 1
+        },
+        {
+          "path": "/character/foot_placement_profile",
+          "label": "Supporting Limb Profile",
+          "kind": "asset"
+        },
+        {
+          "path": "/character/endorphin_model",
+          "label": "Endorphin Anatomy",
+          "kind": "asset"
+        },
+        {
+          "path": "/character/phase",
+          "label": "Transform Owner Phase",
+          "kind": "enum",
+          "choices": [
+            "native",
+            "script"
+          ]
+        },
+        {
+          "path": "/character/sync_position",
+          "label": "Follow Physics Body",
+          "kind": "boolean"
+        },
+        {
+          "path": "/character/root_offset_y",
+          "label": "Explicit Root Offset (metres)",
+          "kind": "number"
+        }
+      ],
+      "entity_kinds": [
+        "mesh",
+        "entity"
+      ]
+    }
+  },
+  "types": {
+    "cube": {
+      "id": "cube",
+      "label": "Cube",
+      "template": {
+        "kind": "mesh",
+        "name": "Cube",
+        "transform": {
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation_degrees": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ]
+        },
+        "mesh": {
+          "primitive": "cube"
+        },
+        "material": {
+          "base_color": [
+            0.5,
+            0.5,
+            0.5,
+            1
+          ]
+        },
+        "collider": {
+          "solid": true
+        }
+      }
+    },
+    "camera": {
+      "id": "camera",
+      "label": "Camera",
+      "template": {
+        "kind": "camera",
+        "name": "Camera",
+        "transform": {
+          "position": [
+            0,
+            2,
+            6
+          ],
+          "target": [
+            0,
+            0,
+            0
+          ],
+          "up": [
+            0,
+            1,
+            0
+          ]
+        },
+        "camera": {
+          "projection": "perspective",
+          "fov_y_degrees": 60,
+          "near": 0.05,
+          "far": 500
+        }
+      }
+    },
+    "entity": {
+      "id": "entity",
+      "label": "Empty Entity",
+      "template": {
+        "kind": "entity",
+        "name": "Entity",
+        "transform": {
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation_degrees": [
+            0,
+            0,
+            0
+          ],
+          "scale": [
+            1,
+            1,
+            1
+          ]
+        }
+      }
+    }
+  }
+}

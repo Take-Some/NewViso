@@ -68,13 +68,20 @@ impl MainViewMeshVisibility {
 impl Scene3dRuntime {
     pub(super) fn asset_reflections_visible(&self, id: u64) -> bool {
         self.asset_meshes.get(&id).is_some_and(|mesh| {
-            self.main_view_mesh_visibility.reflections_visible(id, mesh.main_view_only)
+            self.main_view_mesh_visibility
+                .reflections_visible(id, mesh.main_view_only)
         })
     }
 
-    pub(super) fn asset_instance_model_matrix(&self, id: u64, transform: SceneTransform) -> [f32; 16] {
+    pub(super) fn asset_instance_model_matrix(
+        &self,
+        id: u64,
+        transform: SceneTransform,
+    ) -> [f32; 16] {
         let mut matrix = geometry::instance_model_matrix(
-            transform.position, transform.rotation_degrees, transform.scale,
+            transform.position,
+            transform.rotation_degrees,
+            transform.scale,
         );
         // Instance transforms are affine. The sign of the otherwise constant
         // homogeneous lane carries the reflection policy; vertex shaders restore
@@ -86,11 +93,12 @@ impl Scene3dRuntime {
     }
 
     pub(super) fn main_view_geometry_state(&self) -> Value {
+        let material_diagnostics = std::env::var_os("NEWVISO_SCENE_MATERIAL_DIAG").is_some();
         let instances = self
             .asset_meshes
             .iter()
             .filter(|(id, mesh)| {
-                mesh.main_view_only || self.main_view_mesh_visibility.has_override(**id)
+                material_diagnostics || mesh.main_view_only || self.main_view_mesh_visibility.has_override(**id)
             })
             .map(|(id, mesh)| {
                 let hidden = mesh
@@ -111,8 +119,20 @@ impl Scene3dRuntime {
                     .find(|(_, stable)| **stable == *id)
                     .map(|(name, _)| name.as_str())
                     .unwrap_or("");
+                let material_bindings = if material_diagnostics {
+                    let slots=mesh.local_draw_ranges.iter().filter(|range|
+                        self.main_view_mesh_visibility.visible(*id,&range.mesh_name,&range.joint_lineage))
+                        .map(|range|range.material_slot).collect::<std::collections::BTreeSet<_>>();
+                    Some(slots.into_iter().map(|slot| {
+                        let material=slot.and_then(|slot|mesh.materials.get(slot as usize));
+                        json!({"slot":slot,"name":material.map(|m|m.name.as_str()),
+                            "base_color_texture":material.and_then(|m|m.textures.base_color.as_ref()).map(|t|t.name.as_str()),
+                            "gpu_ready":slot.is_some_and(|slot|self.asset_gpu_materials.contains_key(&(mesh.model_id.0,slot)))})
+                    }).collect::<Vec<_>>())
+                } else {None};
                 json!({"id":name,"entity":id,"main_view_only":mesh.main_view_only,
                     "reflections_visible":self.asset_reflections_visible(*id),
+                    "material_bindings":material_bindings,
                     "vertices":mesh.vertex_count,"hidden_vertices":hidden,
                     "visible_vertices":mesh.vertex_count as u64-hidden,
                     "in_frame":self.frame_plan.visible_entities.contains(&SceneEntityId(*id)),
@@ -121,7 +141,7 @@ impl Scene3dRuntime {
                 })
             })
             .collect::<Vec<_>>();
-        json!({"instances":instances})
+        json!({"instances":instances,"includes_all_assets":material_diagnostics})
     }
 
     pub fn set_entity_main_view_hidden_meshes(
@@ -142,9 +162,12 @@ impl Scene3dRuntime {
             return Err(format!("mesh visibility target {stable_id} does not exist"));
         }
         let reflected_before = self.main_view_mesh_visibility.has_override(stable_id);
-        self.main_view_mesh_visibility.set(stable_id, prefixes, roots)?;
+        self.main_view_mesh_visibility
+            .set(stable_id, prefixes, roots)?;
         if reflected_before != self.main_view_mesh_visibility.has_override(stable_id)
-            && self.world.entity(SceneEntityId(stable_id))
+            && self
+                .world
+                .entity(SceneEntityId(stable_id))
                 .is_some_and(|entity| entity.mobility == SceneMobility::Static)
         {
             self.static_asset_instance_epoch = self.static_asset_instance_epoch.wrapping_add(1);
@@ -184,8 +207,10 @@ mod tests {
         let mut policy = MainViewMeshVisibility::default();
         policy.set(11, vec![], vec!["SKEL_Neck_1".into()]).unwrap();
         let world_instances = [10, 11, 12, 13];
-        let reflected = world_instances.into_iter()
-            .filter(|id| policy.reflections_visible(*id, *id == 13)).collect::<Vec<_>>();
+        let reflected = world_instances
+            .into_iter()
+            .filter(|id| policy.reflections_visible(*id, *id == 13))
+            .collect::<Vec<_>>();
         assert_eq!(reflected, vec![10, 12]);
         assert!(policy.visible(11, "arms", &["SKEL_L_Hand".into()]));
         policy.set(11, vec![], vec![]).unwrap();

@@ -267,6 +267,24 @@ impl SceneWorld {
         self.entities.get_mut(index)
     }
 
+    pub(crate) fn set_solid(
+        &mut self,
+        id: SceneEntityId,
+        solid: bool,
+        source: SceneMutationSource,
+    ) -> Result<bool, String> {
+        let e = self
+            .entity_mut(id)
+            .ok_or_else(|| format!("scene entity {} does not exist", id.0))?;
+        if e.solid == solid {
+            return Ok(false);
+        }
+        e.solid = solid;
+        self.record_mutation(id, source, SceneDirtyFlags::BOUNDS)?;
+        self.index_spatial_entity(id);
+        Ok(true)
+    }
+
     pub(crate) fn set_mobility(
         &mut self,
         id: SceneEntityId,

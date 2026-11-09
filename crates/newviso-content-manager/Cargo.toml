@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+newviso-editor-viewport.workspace = true
+newviso-project.workspace = true
+newviso-scene-document.workspace = true
 newviso-assets-client.workspace = true
 serde.workspace = true
 serde_json.workspace = true

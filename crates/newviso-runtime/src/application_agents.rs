@@ -3,6 +3,8 @@ use newviso_agent::{AgentActorView, AgentCommand, AgentStimulusView, AgentWorldS
 
 impl EngineApplication {
     pub(super) fn tick_agents(&mut self, dt: f32) -> Result<(), String> {
+        self.tick_ped_weapon_grips(dt)?;
+        self.tick_ped_melee(dt)?;
         let snapshot = AgentWorldSnapshot {
             world_seconds: self.living_world.world_seconds(),
             actors: self
@@ -38,6 +40,7 @@ impl EngineApplication {
                 .collect(),
         };
 
+        self.tick_ped_combat(&snapshot)?;
         self.peds.tick(&snapshot, &mut self.agents)?;
         let commands = self.agents.tick(dt, &snapshot);
         for command in commands {
@@ -91,45 +94,48 @@ pub(super) fn apply_agent_commands(
 
 // Single-command path avoids allocating a one-element Vec for every AI task.
 // The batch API delegates to the same implementation to preserve semantics.
-fn apply_agent_command(world: &mut LivingWorldRuntime, command: AgentCommand) -> Result<(), String> {
-        match command {
-            AgentCommand::StartTravel {
+fn apply_agent_command(
+    world: &mut LivingWorldRuntime,
+    command: AgentCommand,
+) -> Result<(), String> {
+    match command {
+        AgentCommand::StartTravel {
+            actor_id,
+            start_node,
+            destination_node,
+            speed,
+            mode,
+            payload,
+        } => {
+            world.start_travel(WorldTravelRequestDesc {
                 actor_id,
                 start_node,
                 destination_node,
                 speed,
                 mode,
                 payload,
-            } => {
-                world.start_travel(WorldTravelRequestDesc {
-                    actor_id,
-                    start_node,
-                    destination_node,
-                    speed,
-                    mode,
-                    payload,
-                })?;
-            }
-            AgentCommand::MoveToPosition {
-                actor_id,
-                request_id,
+            })?;
+        }
+        AgentCommand::MoveToPosition {
+            actor_id,
+            request_id,
+            position,
+            speed,
+            stop_distance,
+        } => {
+            world.start_travel_to_position(
+                &actor_id,
+                &request_id,
                 position,
                 speed,
                 stop_distance,
-            } => {
-                world.start_travel_to_position(
-                    &actor_id,
-                    &request_id,
-                    position,
-                    speed,
-                    stop_distance,
-                )?;
-            }
-            AgentCommand::Attack { .. } => {}
-            AgentCommand::CancelTravel { actor_id } => {
-                world.cancel_travel(&actor_id);
-            }
+            )?;
         }
+        AgentCommand::Attack { .. } => {}
+        AgentCommand::CancelTravel { actor_id } => {
+            world.cancel_travel(&actor_id);
+        }
+    }
     Ok(())
 }
 

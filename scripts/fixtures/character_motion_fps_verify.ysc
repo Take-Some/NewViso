@@ -1,0 +1,61 @@
+import * as Game from "./default_game_base.ysc";
+import * as FPS from "../fps/game.ysc";
+import { CFG } from "../fps/config.ysc";
+import { Ped } from "./world/peds.ysc";
+import { createRuntimeSnapshotDecoder } from "./snapshot_delta.ysc";
+const decode=createRuntimeSnapshotDecoder();
+let stage=0,elapsed=0,since=0,settle=0,launched=false,landed=false,npcJumped=false,npcs:string[]=[],events:any={},npcEvents:any={};
+function check(ok:any,message:string):void{if(!ok)throw new Error("MOTION_VERIFY "+message);}
+export function on_event(e:any):any{
+ const id=e?.payload?.actor_id;
+ if(id==="player.character"){events[e.topic]=(events[e.topic]??0)+1;if(e.topic==="character.land")landed=true;}
+ if(npcs.includes(id)){const count=npcEvents[id]??(npcEvents[id]={});count[e.topic]=(count[e.topic]??0)+1;}
+ const r:any=Game.on_event(e);
+ if(["character.jump","character.fall","character.land"].includes(e.topic))r.commands.push({op:"console.write",message:"MOTION_AIR "+JSON.stringify({t:elapsed,stage,topic:e.topic,payload:e.payload},(_k,x)=>typeof x==="bigint"?String(x):x)});
+ return r;
+}
+export function on_start(raw:any):any{
+ const p=decode(raw),base:any=Game.on_start(p);
+ // The disposable yard has primitive collision rather than Lifeinvader YBN sectors.
+ (CFG as any).physicsWorld.requiredStreamedMeshColliders=0;
+ (CFG as any).physicsWorld.sceneColliders.enabled=true;
+ const game:any=FPS.startGame(p);
+ const visual=game.commands.find((c:any)=>c.op==="scene.dynamic_entity.upsert"&&c.id===CFG.playerVisual.sceneId);
+ check(visual?.texture_dictionary===CFG.playerVisual.textureDictionary&&visual?.material_library===CFG.playerVisual.materialLibrary,
+  "actual FirstFPS character model/material registration must be part of startup");
+ base.commands.push(...game.commands);
+ npcs=p.project.runtime.variables.motion_verification_npcs??[];
+ for(let i=0;i<npcs.length;i++)base.commands.push(new Ped(npcs[i]).goTo([-3+i*6,.05,-20],1.5));
+ return base;
+}
+export function on_frame(raw:any):any{
+ const p=decode(raw);elapsed+=Number(p.delta_seconds);
+ const body=p.runtime.physics?.bodies?.find((b:any)=>String(b.entity)==="900000000");
+ const jump=stage===3&&!launched;
+ const down=stage===1?[41]:stage===2?[41,60]:[];
+ p.frame={...p.frame,platform:{...p.frame.platform,focused:true,cursor_captured:true},
+ input:{state:{keys:{down,pressed:jump?[58]:[]},mouse:{down:[],pressed:[1],delta:{x:0,y:stage===0&&settle===0?550:0}}}}};
+ const r:any=Game.on_frame(p),game:any=FPS.frameGame(p);r.commands.push(...game.commands);
+ if(stage===3&&!npcJumped){npcJumped=true;for(const id of npcs)r.commands.push(new Ped(id).jump(4.6));}
+ if(body){
+  const eye=[body.position[0],body.position[1]-.9+CFG.eyeHeight,body.position[2]-.18];
+  // Only the verification camera is overridden; movement uses the actual FPS controller.
+  r.commands.push({op:"scene.camera.set",position:eye,target:[eye[0],eye[1]-1,eye[2]-.08],up:[0,1,0],fov_y_degrees:72,near:.04,far:250});
+  if(stage===0){settle+=Number(p.delta_seconds);if(settle>1.5){stage=1;since=elapsed;r.commands.push({op:"console.write",message:"MOTION_CAPTURE first_person"});}}
+  else if(stage===1&&elapsed-since>2.5){stage=2;since=elapsed;}
+  else if(stage===2&&elapsed-since>2.5){stage=3;since=elapsed;}
+  else if(stage===3&&body.linear_velocity[1]>1)launched=true;
+  else if(stage===3&&launched&&landed&&elapsed-since>1.4){
+   check(events["character.footstep"]>3,"actual FirstFPS footsteps "+JSON.stringify(events));
+   check(events["character.jump"]===1&&events["character.land"]===1,"actual FirstFPS air contract "+JSON.stringify(events));
+   for(const id of npcs){const e=npcEvents[id]??{};check(e["character.footstep"]>2&&e["character.jump"]===1&&e["character.land"]===1,"NPC "+id+" "+JSON.stringify(e));}
+   r.commands.push({op:"console.write",message:"CHARACTER_MOTION_VERIFY_PASS "+JSON.stringify({player:events,npcs:npcEvents})});
+   r.exit_requested=true;
+  }
+ }
+ check(elapsed<16,"actual FirstFPS timeout "+JSON.stringify({stage,events,body}));
+ return r;
+}
+export function on_shutdown(p:any):any{
+ const r:any=Game.on_shutdown(p),game:any=FPS.shutdownGame();r.commands.push(...game.commands);return r;
+}

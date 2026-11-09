@@ -1,0 +1,8 @@
+{
+  "model": "models/skydome.ydd@skydome_high",
+  "dome_scale": 20000,
+  "horizon_level": 0,
+  "base_noise_texture": "textures/skydome.ytd@baseperlinnoise3channel",
+  "starfield_texture": "textures/skydome.ytd@starfield",
+  "detail_noise_texture": "textures/skydome.ytd@noise16_p"
+}

@@ -5,6 +5,7 @@ mod animation;
 mod atmosphere;
 mod audio;
 mod camera;
+mod doors;
 mod effects;
 mod entities;
 mod environment;
@@ -26,6 +27,11 @@ impl EngineApplication {
     ) -> Result<u64, String> {
         if let Some(entity) = command.get("entity").and_then(Value::as_u64) {
             return Ok(entity);
+        }
+        if let Some(key) = command.get("entity_key").and_then(Value::as_str) {
+            return key
+                .parse::<u64>()
+                .map_err(|_| format!("script command[{index}] {op} invalid entity_key"));
         }
         let id = command
             .get("id")
@@ -53,7 +59,8 @@ impl EngineApplication {
 
     pub(super) fn apply_script_commands(&mut self, commands: &[Value]) -> Result<(), String> {
         static PROFILE_COMMANDS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let profile = *PROFILE_COMMANDS.get_or_init(|| std::env::var("NEWVISO_PERF_LOG_EVERY_FRAME").as_deref() == Ok("1"));
+        let profile = *PROFILE_COMMANDS
+            .get_or_init(|| std::env::var("NEWVISO_PERF_LOG_EVERY_FRAME").as_deref() == Ok("1"));
         for (index, command) in commands.iter().enumerate() {
             let started = profile.then(std::time::Instant::now);
             let op = command
@@ -64,19 +71,42 @@ impl EngineApplication {
                 // A single script packet may carry several ordered operations.
                 // Retain existing command handlers and their execution ordering.
                 "commands.batch" => {
-                    let items = command.get("commands").and_then(Value::as_array)
-                        .ok_or_else(|| format!("script command[{index}] commands.batch requires an array"))?;
-                    if items.iter().any(|item| item.get("op").and_then(Value::as_str) == Some("commands.batch")) {
-                        return Err(format!("script command[{index}] nested commands.batch is not supported"));
+                    let items = command
+                        .get("commands")
+                        .and_then(Value::as_array)
+                        .ok_or_else(|| {
+                            format!("script command[{index}] commands.batch requires an array")
+                        })?;
+                    if items.iter().any(|item| {
+                        item.get("op").and_then(Value::as_str) == Some("commands.batch")
+                    }) {
+                        return Err(format!(
+                            "script command[{index}] nested commands.batch is not supported"
+                        ));
                     }
-                    self.apply_script_commands(items)
-                        .map_err(|error| format!("script command[{index}] commands.batch: {error}"))?;
+                    self.apply_script_commands(items).map_err(|error| {
+                        format!("script command[{index}] commands.batch: {error}")
+                    })?;
                 }
-                "snow.field.load" | "snow.field.extend" | "snow.actor.bind" | "snow.actor.unbind" | "snow.contact"
-                | "snow.weather.advance" | "snow.layers.configure" | "snow.heat.configure" | "snow.drift.configure" | "snow.dynamics.configure" | "snow.surfaces.configure" | "thermal.environment.set" | "thermal.source.upsert"
-                | "thermal.source.remove" | "thermal.body.upsert" | "thermal.body.remove" =>
-                    self.apply_cold_command(command, index, op)?,
-                "scene.entities.transform.batch" => self.apply_entity_transform_batch(command, index)?,
+                "snow.field.load"
+                | "snow.field.extend"
+                | "snow.actor.bind"
+                | "snow.actor.unbind"
+                | "snow.contact"
+                | "snow.weather.advance"
+                | "snow.layers.configure"
+                | "snow.heat.configure"
+                | "snow.drift.configure"
+                | "snow.dynamics.configure"
+                | "snow.surfaces.configure"
+                | "thermal.environment.set"
+                | "thermal.source.upsert"
+                | "thermal.source.remove"
+                | "thermal.body.upsert"
+                | "thermal.body.remove" => self.apply_cold_command(command, index, op)?,
+                "scene.entities.transform.batch" => {
+                    self.apply_entity_transform_batch(command, index)?
+                }
                 "scene.render.configure"
                 | "scene.entity.process_claim.set"
                 | "scene.entity.process_rate.set"
@@ -85,6 +115,7 @@ impl EngineApplication {
                 | "scene.mass_instance.upsert"
                 | "scene.mass_instance.visible.set"
                 | "scene.mass_instance.clear"
+                | "scene.character.configure"
                 | "scene.dynamic_entity.upsert"
                 | "scene.entity.damage"
                 | "scene.entity.transform.set"
@@ -92,13 +123,31 @@ impl EngineApplication {
                 "runtime.configure" | "console.write" | "events.emit" | "platform.cursor.set" => {
                     self.apply_services_command(command, index, op)?
                 }
-                "character.audio.motion" | "character.audio.reset" =>
-                    self.apply_character_audio_command(command, index, op)?,
-                "audio.route.gain" | "audio.cue.preload" | "audio.cue.play" | "audio.loop.set"
+                "character.audio.motion" | "character.audio.reset" => {
+                    self.apply_character_audio_command(command, index, op)?
+                }
+                "audio.route.gain"
+                | "audio.physics.bind"
+                | "audio.physics.unbind"
+                | "audio.endorphin.bind"
+                | "audio.endorphin.unbind"
+                | "audio.clip.preload"
+                | "audio.clip.play"
+                | "audio.cue.preload"
+                | "audio.cue.play"
+                | "audio.loop.set"
                 | "audio.listener.set" => self.apply_audio_command(command, index, op)?,
-                "physics.world.configure"
+                "door.configure" | "door.remove" | "door.interact" | "door.state.restore" => {
+                    self.apply_door_command(command, index, op)?
+                }
+                "physics.character.drive"
+                | "physics.world.configure"
                 | "physics.water.configure"
                 | "physics.body.water.configure"
+                | "physics.hinge.bind_scene"
+                | "physics.hinge.unbind_scene"
+                | "physics.hinge.upsert"
+                | "physics.hinge.remove"
                 | "physics.body.upsert"
                 | "physics.body.destroy"
                 | "physics.body.velocity.set"
@@ -139,7 +188,9 @@ impl EngineApplication {
                 | "scene.clock.rate.set"
                 | "scene.weather.force"
                 | "scene.weather.transition"
-                | "scene.weather.wind.set" | "scene.weather.wind.clear" | "scene.weather.resume"
+                | "scene.weather.wind.set"
+                | "scene.weather.wind.clear"
+                | "scene.weather.resume"
                 | "scene.weather.dynamic.set"
                 | "scene.timecycle.region.set"
                 | "scene.timecycle.modifier.set"
@@ -161,7 +212,15 @@ impl EngineApplication {
                 | "scene.sky.atmosphere.set" => {
                     self.apply_environment_command(command, index, op)?
                 }
-                "ped.upsert" | "ped.remove" | "ped.damage" | "ped.relationship.set" => {
+                "ped.weapon.release"
+                | "ped.upsert"
+                | "ped.remove"
+                | "ped.damage"
+                | "ped.endorphin.activate"
+                | "ped.relationship.set"
+                | "ped.melee.attack"
+                | "ped.melee.guard"
+                | "ped.melee.cancel" => {
                     self.apply_ped_command(command, index, op)?;
                 }
                 "character.world_actor.bind"
@@ -179,7 +238,8 @@ impl EngineApplication {
                 | "agent.tasks.clear"
                 | "agent.blackboard.set"
                 | "agent.blackboard.remove" => self.apply_agents_command(command, index, op)?,
-                "items.definition.upsert"
+                "items.inventory.state.set"
+                | "items.definition.upsert"
                 | "items.inventory.ensure"
                 | "items.inventory.configure"
                 | "items.inventory.equip"
@@ -273,7 +333,10 @@ impl EngineApplication {
             if let Some(started) = started {
                 let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
                 if elapsed_ms >= 2.0 {
-                    host::info("newviso.perf.command", format!("op={op} index={index} elapsed_ms={elapsed_ms:.3}"));
+                    host::info(
+                        "newviso.perf.command",
+                        format!("op={op} index={index} elapsed_ms={elapsed_ms:.3}"),
+                    );
                 }
             }
         }

@@ -1,0 +1,105 @@
+import * as Game from './default_game_base.ysc';
+import { createRuntimeSnapshotDecoder } from './snapshot_delta.ysc';
+const decode=createRuntimeSnapshotDecoder(),foe='endorphin.test.enemy';
+const encode=(v:any)=>JSON.stringify(v,(_k:string,v:any)=>typeof v==='bigint'?String(v):v);
+function qm(a:any,b:any):any {return [a[3]*b[0]+a[0]*b[3]+a[1]*b[2]-a[2]*b[1],a[3]*b[1]-a[0]*b[2]+a[1]*b[3]+a[2]*b[0],a[3]*b[2]+a[0]*b[1]-a[1]*b[0]+a[2]*b[3],a[3]*b[3]-a[0]*b[0]-a[1]*b[1]-a[2]*b[2]];}
+function qi(q:any):any{return [-q[0],-q[1],-q[2],q[3]];}
+let stage=0,since=0,profile:any=null,evidence:any={},sawBalance=false,sawMotor=false,peakAnchor=0;
+function check(ok:any,message:string):void {if(!ok)throw new Error('ENDORPHIN_CONTROL '+message);}
+function next(n:number,now:number,cmd:any[]):void {stage=n;since=now;cmd.push({op:'console.write',message:'ENDORPHIN_CONTROL_STAGE '+n});}
+export function on_start(raw:any):any {return Game.on_start(decode(raw));}
+export function on_frame(raw:any):any {
+ const p=decode(raw);p.frame={...p.frame,platform:{...p.frame.platform,focused:false}};
+ const result:any=Game.on_frame(p),cmd=result.commands,r=p.runtime,now=Number(r?.peds?.world_seconds??r?.living_world?.clock?.world_seconds??p.elapsed_seconds);
+ const npc=r?.peds?.peds?.find((v:any)=>v.profile.actor_id===foe);
+ const record=r?.peds?.physics?.bodies?.find((v:any)=>v.actor_id===foe),rig=record?.ragdoll,e=record?.endorphin;
+ const standing=p.project.runtime.variables.endorphin_require_standing!==false;
+ if(!since)since=now;
+ if(rig?.active){
+  const s=rig.skeleton_integrity;
+  check(s&&s.max_bone_length_error<.00001&&s.max_relative_scale_error<.0001&&s.max_basis_shear<.0001,'rigid skin '+encode(s));
+  peakAnchor=Math.max(peakAnchor,...rig.joints.map((j:any)=>j.separation));
+  check(peakAnchor<.03,'native anchors remain connected '+peakAnchor);
+  check(rig.joints.every((j:any)=>j.angular_limits),'every humanoid joint has authored anatomy');
+ }
+ if(stage===0&&npc&&record?.controlled&&now>1){
+  check(e.joint_drives_supported,'deployed provider advertises angular limits and motors');
+  profile={...npc.profile,combat:null,melee:null,armed:false,block_events:true,max_health:100,armour:0};
+  cmd.push({op:'ped.upsert',profile,reset:true},{op:'agent.tasks.clear',agent_id:foe+'.ai'},{op:'items.inventory.unequip',owner_id:foe,slot:'hands'});
+  next(1,now,cmd);
+ }else if(stage===1&&record.controlled&&now-since>.5){
+  cmd.push({op:'ped.endorphin.activate',actor_id:foe,direction:[1,0,0],impulse:1});
+  next(2,now,cmd);
+ }else if(stage===2){
+  if(rig?.active){
+   sawMotor=sawMotor||rig.joints.some((j:any)=>j.motor?.max_torque>0);
+   if(standing)check(record.animation?.phase!=='get_up','small perturbation must preserve standing balance');
+   if(standing&&now-since>.25&&e.control.updates>4){
+    const head=rig.parts.find((v:any)=>v.name==='head').joint_position,pelvis=rig.parts.find((v:any)=>v.name==='pelvis').joint_position;
+    const up=head.map((v:number,i:number)=>v-pelvis[i]);
+    check(up[1]/Math.hypot(...up)>.8,'upright balance lost '+encode({e,parts:rig.parts,joints:rig.joints}));
+   }
+   if(p.project.runtime.variables.endorphin_trace_controls&&(e.control.updates%12)===1&&e.control.updates<145)cmd.push({op:'console.write',message:'ENDORPHIN_JOINT_TRACE '+encode({time:now-since,stepping:e.control.stepping,targets:e.control.joint_targets,balance:e.control.balance,feet:rig.parts.filter((p:any)=>p.name.includes('foot')).map((p:any)=>({name:p.name,position:p.position,rotation:p.rotation,sole_up:qm(qm(p.rotation,[0,0,1,0]),qi(p.rotation)).slice(0,3)})),joints:rig.joints.map((j:any)=>{
+    const a=rig.parts.find((p:any)=>p.entity_key===j.parent_key),b=rig.parts.find((p:any)=>p.entity_key===j.child_key);
+    const relative=j.relative_rotation;
+    const error=qm(relative,qi(j.motor?.target_rotation??relative));
+    return {name:b.name,error:2*Math.acos(Math.min(1,Math.abs(error[3]))),relative,motor:j.motor,spin:b.angular_velocity};
+   })})});
+
+   sawBalance=sawBalance||(e.control.balance.supported&&e.control.balance.uprightness>.8);
+   if(e.control.balance.uprightness>.8)evidence.balance=e.control.balance;
+   evidence.control_updates=e.control.updates;
+  }
+  const ready=standing?(record?.controlled&&!rig?.active&&now-since>.5):(rig?.active&&sawMotor&&e.control.updates>4&&now-since>.1);
+  if(ready){
+   if(standing)check(sawMotor&&sawBalance,'physical upright control had resident foot support and real motors '+encode({sawMotor,sawBalance,e}));
+   check(npc.health===100,'physical response preserves vitality');
+   evidence.physical_balance=standing;evidence.physical_muscles=sawMotor;
+   cmd.push({op:'ped.damage',actor_id:foe,source:'endorphin.control.proof',amount:8,origin:[0,1,0],hit_part:'left_calf'});
+   next(3,now,cmd);
+  }
+ }else if(stage===3&&e?.body_damage?.trauma?.left_calf>0){
+  const wound=e.body_damage.trauma;
+  check(!wound.right_calf&&!wound.left_hand,'local leg injury does not injure other limbs');
+  evidence.local_trauma=wound.left_calf;evidence.injured_health=npc.health;
+  cmd.push({op:'ped.remove',actor_id:foe,preserve_vitals:true},{op:'ped.upsert',profile,reset:false});
+  next(4,now,cmd);
+ }else if(stage===4&&record?.controlled&&e?.body_damage?.trauma?.left_calf>0&&now-since>.4){
+  check(Math.abs(e.body_damage.trauma.left_calf-evidence.local_trauma)<1e-5,'body damage survives physical body retirement');
+  evidence.damage_persisted=true;
+  cmd.push({op:'ped.endorphin.activate',actor_id:foe,direction:[1,0,0],impulse:1});
+  next(5,now,cmd);
+ }else if(stage===5&&rig?.active){
+  const left=rig.parts.find((v:any)=>v.name==='left_calf'),right=rig.parts.find((v:any)=>v.name==='right_calf');
+  const lm=rig.joints.find((j:any)=>j.child_key===left.entity_key)?.motor;
+  const rm=rig.joints.find((j:any)=>j.child_key===right.entity_key)?.motor;
+  if(lm?.max_torque>0&&rm?.max_torque>0){
+   const ratio=lm.max_torque/rm.max_torque;
+   check(Math.abs(ratio-left.capacity)<.002&&left.capacity<right.capacity,'local wound reduces the actual native motor '+encode({ratio,left,right,lm,rm}));
+   evidence.motor_capacity_ratio=ratio;
+   cmd.push({op:'ped.damage',actor_id:foe,source:'endorphin.control.proof',amount:1000,origin:[0,1,0]});
+   next(6,now,cmd);
+  }
+ }else if(stage===6&&npc.dead&&rig?.active&&now-since>.3){
+  check(rig.joints.every((j:any)=>!j.motor),'death disables every physical muscle drive');
+  check(e.control.activation===0,'corpse control activation is zero');
+  evidence.death_disables_motors=true;
+  profile={...profile,armour:50};
+  cmd.push({op:'ped.upsert',profile,reset:true});next(7,now,cmd);
+ }else if(stage===7&&!npc.dead&&record.controlled&&!rig?.active&&now-since>.3){
+  check(Object.keys(e.body_damage.trauma).length===0,'explicit reset clears functional damage');
+  cmd.push({op:'ped.damage',actor_id:foe,source:'endorphin.control.proof',amount:8,origin:[0,1,0],hit_part:'left_forearm'});
+  next(8,now,cmd);
+ }else if(stage===8&&now-since>.2){
+  check(npc.health===100&&npc.armour<50,'armour absorbed impact');
+  check(Object.keys(e.body_damage.trauma).length===0,'absorbed armour damage cannot injure muscle tissue');
+  evidence.armour_preserves_tissue=true;evidence.max_anchor_separation=peakAnchor;
+  cmd.push({op:'console.write',message:'ENDORPHIN_VERIFY_EVIDENCE '+encode(evidence)},
+   {op:'console.write',message:'ENDORPHIN_VERIFY_PASS '+(standing?'physical_standing ':'physical_muscles ')+'anatomical_limits local_damage persistence armour death reset'});
+  result.exit_requested=true;next(9,now,cmd);
+ }
+ check(stage===9||now-since<18,'stage timeout '+stage+' '+encode({npc,record}));
+ return result;
+}
+export function on_event(p:any):any {return Game.on_event(p);}
+export function on_shutdown(p:any):any {return Game.on_shutdown(p);}

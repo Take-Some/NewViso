@@ -119,6 +119,15 @@ impl ScenePreparePool {
     fn worker_count(&self) -> usize {
         self.workers.len()
     }
+
+    /// Diagnostic only: never sample the queue lock every ordinary frame.
+    pub(super) fn queued_tasks_for_diagnostics(&self) -> usize {
+        self.shared
+            .queue
+            .lock()
+            .expect("scene prepare queue poisoned")
+            .len()
+    }
 }
 
 impl Drop for ScenePreparePool {
@@ -983,7 +992,11 @@ impl EngineApplication {
     }
 
     pub(super) fn pump_asset_streaming(&mut self) -> Result<(), String> {
+        let trace = crate::application_physics::performance_trace_enabled();
+        let started = trace.then(std::time::Instant::now);
         let report = self.asset_streamer.pump();
+        let pump_ms = started.map_or(0.0, |mark| mark.elapsed().as_secs_f64() * 1000.0);
+        let stage = trace.then(std::time::Instant::now);
         for (address, error) in &report.failed {
             host::warn(
                 "newviso.assets.streaming",
@@ -992,7 +1005,18 @@ impl EngineApplication {
         }
 
         self.apply_scene_streaming_residency(&report)?;
+        let residency_ms = stage.map_or(0.0, |mark| mark.elapsed().as_secs_f64() * 1000.0);
+        let preloads_start = trace.then(std::time::Instant::now);
         self.pump_scene_animation_preloads()?;
+        let preload_ms = preloads_start.map_or(0.0, |mark| mark.elapsed().as_secs_f64() * 1000.0);
+        if trace && (pump_ms + residency_ms + preload_ms >= 4.0 || report.frame % 30 == 0) {
+            host::info("newviso.perf.trace.streaming", format!(
+                "stream_frame={} asset_pump_ms={:.4} residency_ms={:.4} anim_preload_ms={:.4} assets_loaded={} promoted={} evicted={} source_bytes={} resident_bytes={} over_budget={}",
+                report.frame, pump_ms, residency_ms, preload_ms, report.loaded.len(),
+                report.became_resident.len(), report.evicted.len(),
+                report.source_bytes_loaded, report.resident_bytes, report.over_budget
+            ));
+        }
 
         if !report.loaded.is_empty()
             || !report.became_resident.is_empty()

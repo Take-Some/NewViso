@@ -1,6 +1,8 @@
 use newviso_host as host;
 use serde_json::{json, Value};
 
+pub mod key;
+
 const INPUT_SERVICE: &str = "engine.input";
 
 #[derive(Clone, Debug)]

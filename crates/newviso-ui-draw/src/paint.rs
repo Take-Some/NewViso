@@ -40,7 +40,7 @@ pub enum UiPaintPhase {
     Post,
 }
 
-/// Sampling/layout policy for `.ytd@entry` UI textures.
+/// Sampling/layout policy for opaque asset references UI textures.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum UiTextureMode {
@@ -291,7 +291,7 @@ impl Default for UiImagePaintCommand {
 }
 
 /// Renderer-aware quad used for project-owned UI skins and material-backed panels.
-/// `texture_ref` is always a canonical `.ytd@entry` reference when present.
+/// `texture_ref` is always a canonical asset reference when present.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct UiMaterialQuadPaintCommand {

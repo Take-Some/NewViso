@@ -1,3 +1,8 @@
+pub mod physics_audio;
+pub use physics_audio::{
+    AdmittedImpact, ImpactMaterial, PhysicsAudioContact, PhysicsAudioPolicy, PhysicsAudioRouter,
+};
+
 use serde::{Deserialize, Serialize};
 
 pub const ENGINE_AUDIO_SERVICE_ID: &str = "engine.audio";
@@ -8,6 +13,7 @@ pub const AUDIO_PROVIDER_ABI_ID: &str = "newviso.audio.provider.v1";
 pub const AUDIO_METHOD_INFO_JSON: &str = "info_json";
 pub const AUDIO_METHOD_PRELOAD_CLIP_JSON_V1: &str = "preload_clip_json_v1";
 pub const AUDIO_METHOD_PLAY_CLIP_JSON_V1: &str = "play_clip_json_v1";
+pub const AUDIO_METHOD_PLAY_CUE_JSON_V1: &str = "play_cue_json_v1";
 pub const AUDIO_METHOD_STOP_VOICE_JSON_V1: &str = "stop_voice_json_v1";
 pub const AUDIO_METHOD_SET_VOICE_JSON_V1: &str = "set_voice_json_v1";
 pub const AUDIO_METHOD_SET_LISTENER_JSON_V1: &str = "set_listener_json_v1";
@@ -18,6 +24,7 @@ pub const AUDIO_PLAYBACK_METHODS_V1: &[&str] = &[
     AUDIO_METHOD_INFO_JSON,
     AUDIO_METHOD_PRELOAD_CLIP_JSON_V1,
     AUDIO_METHOD_PLAY_CLIP_JSON_V1,
+    AUDIO_METHOD_PLAY_CUE_JSON_V1,
     AUDIO_METHOD_STOP_VOICE_JSON_V1,
     AUDIO_METHOD_SET_VOICE_JSON_V1,
     AUDIO_METHOD_SET_LISTENER_JSON_V1,
@@ -91,6 +98,15 @@ pub struct AudioPlayRequest {
     pub looping: bool,
     #[serde(default)]
     pub paused: bool,
+    /// Optional source position. Provider must advertise / implement spatial clip playback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<[f32; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
 }
 
 impl AudioPlayRequest {
@@ -102,6 +118,10 @@ impl AudioPlayRequest {
             speed: 1.0,
             looping: false,
             paused: false,
+            position: None,
+            route: None,
+            scope_id: None,
+            seed: None,
         }
     }
 
@@ -113,8 +133,105 @@ impl AudioPlayRequest {
             ));
         }
         self.clip.uri = normalize_audio_uri(&self.clip.uri)?;
+        if self
+            .position
+            .is_some_and(|p| p.iter().any(|x| !x.is_finite()))
+        {
+            return Err("audio clip position must contain finite coordinates".to_owned());
+        }
+        if self.route.as_deref().is_some_and(|r| r.trim().is_empty()) {
+            return Err("audio clip route must not be empty".to_owned());
+        }
         self.gain = sanitize_gain(self.gain);
         self.speed = sanitize_speed(self.speed);
+        Ok(self)
+    }
+}
+
+/// Strict XVAG VFS reference (no selectors, cue dictionaries, absolute paths).
+pub fn normalize_xvag_uri(uri: &str) -> Result<String, String> {
+    if uri.trim().starts_with('/') || uri.trim().starts_with('\\') {
+        return Err("XVAG audio paths must be relative to the VFS root".to_owned());
+    }
+    let normalized = normalize_audio_uri(uri)?;
+    if !normalized.to_ascii_lowercase().ends_with(".xvag")
+        || normalized.contains('@')
+        || normalized.contains(':')
+        || normalized.contains('?')
+        || normalized.contains('#')
+        || normalized.starts_with("//")
+    {
+        return Err(format!(
+            "expected a plain XVAG asset reference, got '{normalized}'"
+        ));
+    }
+    Ok(normalized)
+}
+
+/// Authored sound-cue reference resolved by AssetManager (YSCD dictionary).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct AudioCueRef {
+    pub logical_path: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AudioCuePlayRequest {
+    #[serde(default = "default_version")]
+    pub version: u32,
+    pub cue: AudioCueRef,
+    #[serde(default = "default_gain")]
+    pub gain: f32,
+    #[serde(default = "default_speed")]
+    pub pitch: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<[f32; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
+}
+
+impl AudioCuePlayRequest {
+    pub fn new(logical_path: impl Into<String>) -> Self {
+        Self {
+            version: 1,
+            cue: AudioCueRef {
+                logical_path: logical_path.into(),
+            },
+            gain: 1.0,
+            pitch: 1.0,
+            position: None,
+            scope_id: None,
+            seed: None,
+            route: None,
+        }
+    }
+
+    pub fn sanitized(mut self) -> Result<Self, String> {
+        if self.version != 1 {
+            return Err(format!(
+                "unsupported AudioCuePlayRequest version {}",
+                self.version
+            ));
+        }
+        self.cue.logical_path = normalize_audio_uri(&self.cue.logical_path)?;
+        if self
+            .position
+            .is_some_and(|point| point.iter().any(|c| !c.is_finite()))
+        {
+            return Err("audio cue position must be finite".to_owned());
+        }
+        if self
+            .route
+            .as_deref()
+            .is_some_and(|route| route.trim().is_empty())
+        {
+            return Err("audio cue route must not be empty".to_owned());
+        }
+        self.gain = sanitize_gain(self.gain);
+        self.pitch = sanitize_speed(self.pitch);
         Ok(self)
     }
 }
@@ -260,6 +377,73 @@ mod tests {
     use super::*;
 
     #[test]
+    fn xvag_reference_disallows_cue_dictionary_and_selectors() {
+        assert_eq!(
+            normalize_xvag_uri(r".\audio\impact.xvag").unwrap(),
+            "audio/impact.xvag"
+        );
+        for invalid in [
+            "audio/old.yscd",
+            "audio/old.yscd@impact",
+            "audio/clip.xvag@selector",
+            "../audio/clip.xvag",
+            "C:/audio/clip.xvag",
+            "/audio/clip.xvag",
+            "audio/clip.xvag?take=1",
+        ] {
+            assert!(normalize_xvag_uri(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn xvag_playback_serializes_optional_spatial_metadata() {
+        let mut req = AudioPlayRequest::new("audio/impacts/metal.xvag");
+        req.position = Some([1.0, 2.0, 3.0]);
+        req.route = Some("sfx".into());
+        req.scope_id = Some(71);
+        req.seed = Some(12);
+        let req = req.sanitized().unwrap();
+        let wire = serde_json::to_value(&req).unwrap();
+        assert_eq!(wire["clip"]["uri"], "audio/impacts/metal.xvag");
+        assert_eq!(wire["position"], serde_json::json!([1., 2., 3.]));
+        assert_eq!(wire["route"], "sfx");
+        assert_eq!(wire["scope_id"], 71);
+        let mut invalid = AudioPlayRequest::new("audio/a.xvag");
+        invalid.position = Some([f32::INFINITY, 0., 0.]);
+        assert!(invalid.sanitized().is_err());
+    }
+
+    #[test]
+    fn cue_request_preserves_native_yscd_contract_and_validates_coordinates() {
+        let mut request = AudioCuePlayRequest::new("./audio/vehicles/impact.yscd@metal");
+        request.gain = 8.0;
+        request.pitch = f32::NAN;
+        request.position = Some([2.0, 0.0, 1.0]);
+        request.scope_id = Some(42);
+        request.seed = Some(121);
+        let sanitized = request.sanitized().unwrap();
+        assert_eq!(
+            sanitized.cue.logical_path,
+            "audio/vehicles/impact.yscd@metal"
+        );
+        assert_eq!(sanitized.gain, 4.0);
+        assert_eq!(sanitized.pitch, 1.0);
+        assert_eq!(sanitized.scope_id, Some(42));
+        let encoded = serde_json::to_value(&sanitized).unwrap();
+        assert_eq!(
+            encoded["cue"]["logical_path"],
+            "audio/vehicles/impact.yscd@metal"
+        );
+        assert_eq!(encoded["position"], serde_json::json!([2.0, 0.0, 1.0]));
+        assert_eq!(encoded["seed"], 121);
+        assert!(encoded.get("route").is_none());
+
+        let mut invalid = AudioCuePlayRequest::new("audio/valid.yscd");
+        invalid.position = Some([f32::NAN, 0.0, 0.0]);
+        assert!(invalid.sanitized().is_err());
+    }
+
+    #[test]
     fn play_request_is_sanitized() {
         let request = AudioPlayRequest {
             version: 1,
@@ -268,6 +452,10 @@ mod tests {
             speed: f32::NAN,
             looping: false,
             paused: false,
+            position: None,
+            route: None,
+            scope_id: None,
+            seed: None,
         }
         .sanitized()
         .unwrap();

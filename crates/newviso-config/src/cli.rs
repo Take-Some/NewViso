@@ -7,6 +7,9 @@ pub(super) struct CliOverrides {
     pub(super) project_path: Option<PathBuf>,
     pub(super) values: HashMap<String, String>,
     pub(super) applied: Vec<String>,
+    pub(super) runtime_profile: Option<String>,
+    pub(super) runtime_layers: Vec<String>,
+    pub(super) runtime_overrides: Vec<SettingOverride>,
 }
 
 impl CliOverrides {
@@ -74,6 +77,45 @@ where
             continue;
         }
 
+        if let Some((flag, inline)) = ["--runtime-profile", "--runtime-layer", "--runtime-set"]
+            .into_iter()
+            .find_map(|flag| {
+                if arg == flag {
+                    Some((flag, None))
+                } else {
+                    arg.strip_prefix(&format!("{flag}="))
+                        .map(|v| (flag, Some(v.to_owned())))
+                }
+            })
+        {
+            let value = inline
+                .map(Ok)
+                .unwrap_or_else(|| next_arg(&mut args, flag))?;
+            if value.trim().is_empty() {
+                return Err(BootstrapConfigError::Cli(format!(
+                    "'{flag}' requires a non-empty value"
+                )));
+            }
+            match flag {
+                "--runtime-profile" => {
+                    out.runtime_profile = Some(value.clone());
+                    out.applied.push(format!("runtime_profile={value}"));
+                }
+                "--runtime-layer" => {
+                    out.runtime_layers.push(value.clone());
+                    out.applied.push(format!("runtime_layer={value}"));
+                }
+                _ => {
+                    let setting =
+                        SettingOverride::parse(&value).map_err(BootstrapConfigError::Cli)?;
+                    out.applied
+                        .push(format!("runtime_override:{}", setting.path));
+                    out.runtime_overrides.push(setting);
+                }
+            }
+            continue;
+        }
+
         if let Some(value) = arg.strip_prefix("--set=") {
             apply_set(&mut out, value)?;
             continue;
@@ -113,6 +155,10 @@ where
         }
         if arg == "--run-platform" {
             set_override(&mut out, "runtime.skip_platform", "false".to_owned())?;
+            continue;
+        }
+        if arg == "--editor" {
+            set_override(&mut out, "runtime.editor_mode", "true".to_owned())?;
             continue;
         }
         if arg == "--safe-mode" {
@@ -169,6 +215,7 @@ fn set_override(
         "runtime.max_frames",
         "runtime.skip_platform",
         "runtime.safe_mode",
+        "runtime.editor_mode",
         "providers.logging",
         "providers.input",
         "providers.assets",
@@ -186,4 +233,29 @@ fn set_override(
     out.values.insert(key.to_owned(), value.clone());
     out.applied.push(format!("{key}={value}"));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn runtime_arguments_are_separate_from_bootstrap_and_keep_order() {
+        let c = parse_cli([
+            "--runtime-profile=quality",
+            "--runtime-layer",
+            "config/local.json",
+            "--runtime-set",
+            "streaming.parallel_loads=8",
+            "--runtime-set=/variables/mode=debug",
+        ])
+        .unwrap();
+        assert_eq!(c.runtime_profile.as_deref(), Some("quality"));
+        assert_eq!(c.runtime_layers, ["config/local.json"]);
+        assert_eq!(c.runtime_overrides.len(), 2);
+        assert_eq!(c.runtime_overrides[0].value, serde_json::json!(8));
+        assert!(c.applied.iter().all(|s| !s.contains("=debug")));
+        for args in [["--runtime-profile", ""], ["--runtime-set", "bad"]] {
+            assert!(parse_cli(args).is_err());
+        }
+    }
 }

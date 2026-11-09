@@ -1,0 +1,112 @@
+import * as Game from './default_game_base.ysc';
+import { createRuntimeSnapshotDecoder } from './snapshot_delta.ysc';
+import { LivingWorldCommands as World } from './world/living_world.ysc';
+const decode=createRuntimeSnapshotDecoder();
+let stage=0,since=0,time=0,health=0,attacks=0,hits=0,hand=0,entity=0,poseSeen=false,guardSeen=false,stunnedSeen=false,npcPoseSeen=false;
+let targetProfile:any=null,playerProfile:any=null,captureSent=false;
+function check(ok:any,message:string):void{if(!ok)throw new Error('MELEE_VERIFY '+message);}
+function next(value:number,commands:any[]):void{stage=value;since=time;commands.push({op:'console.write',message:'MELEE_STAGE '+stage});}
+function place(commands:any[],id:string,body:number,x:number,z:number):void{
+ commands.push(World.upsertActor({id,kind:id==='player.character'?'player':'pedestrian',position:[x,.05,z],group:id==='player.character'?'player':'raiders',tags:['combatant']}),
+  {op:'physics.body.pose.set',...(id==='player.character'?{entity:body}:{id}),position:[x,.95,z],rotation:[0,0,0,1]},
+  {op:'physics.body.velocity.set',...(id==='player.character'?{entity:body}:{id}),velocity:[0,0,0]});
+}
+function reset(commands:any[],profile:any):void{commands.push({op:'ped.upsert',reset:true,profile});}
+function strike(commands:any[],id:string,d:number[]):void{commands.push({op:'ped.melee.attack',actor_id:id,direction:d});}
+export function on_start(raw:any):any{
+ const p=decode(raw),r:any=Game.on_start(p);
+ r.commands.push({op:'items.inventory.add',owner_id:'player',item_id:'weapon.pistol.military',quantity:1},
+  {op:'items.inventory.equip',owner_id:'player',slot:'hands',item_id:'weapon.pistol.military'});return r;
+}
+export function on_frame(raw:any):any{
+ const p=decode(raw);time=Number(p.runtime?.peds?.world_seconds??p.runtime?.living_world?.clock?.world_seconds??p.elapsed_seconds);
+ // Drive the actual Shared input path, including capture, holster, punch, guard and weapon equip.
+ const press=stage===3||(stage===0&&!captureSent),block=stage>=11&&stage<=15;
+ if(stage===0&&press)captureSent=true;
+ p.frame={...p.frame,platform:{...p.frame.platform,focused:true,cursor_captured:true},camera_navigation_enabled:true,
+  input:{state:{keys:{down:[],pressed:stage===1?[9]:[]},mouse:{down:block?[2]:[],pressed:press?[1]:[],delta:{x:0,y:0}}}}};
+ const result:any=Game.on_frame(p),cmd=result.commands,r=p.runtime;
+ const enemy=r.peds?.peds?.find((v:any)=>v.profile.actor_id==='melee.test.enemy'),player=r.peds?.peds?.find((v:any)=>v.profile.actor_id==='player.character');
+ const record=r.peds?.physics?.bodies?.find((v:any)=>v.actor_id==='melee.test.enemy');
+ const body=r.physics?.bodies?.find((v:any)=>String(v.entity)===String(record?.entity_key));
+ const playerBody=r.physics?.bodies?.find((v:any)=>Number(v.entity)===900000000);
+ if((stage===12||stage===15)&&enemy.melee.phase==='active'&&!record.hit_reaction)
+  check(cmd.some((v:any)=>v.op==='scene.entity.arm_ik.set'&&v.id==='melee.test.enemy'&&v.arms.length===2),'active NPC pose survives throttled world snapshots');
+ if(!since)since=time;
+ if(stage===0&&body&&playerBody&&record.joint_positions?.SKEL_R_Hand&&time>2){
+  entity=Number(record.entity);targetProfile={...enemy.profile,combat:null,armed:false,block_events:true,melee:{...enemy.profile.melee,windup_seconds:.18,damage:20}};
+  playerProfile=player.profile;reset(cmd,targetProfile);cmd.push({op:'agent.tasks.clear',agent_id:'melee.test.enemy.ai'});next(1,cmd);
+ }else if(stage===1){check(!cmd.some((v:any)=>v.op==='physics.ballistic.fire'),'holster never fires');next(2,cmd);
+ }else if(stage===2&&time-since>.35){
+  check(!r.items?.inventories?.find((v:any)=>v.owner_id==='player')?.equipped?.hands,'4 holsters');
+  place(cmd,'melee.test.enemy',entity,0,5.35);place(cmd,'player.character',900000000,0,6);next(21,cmd);
+ }else if(stage===21&&time-since>.25){next(3,cmd);
+ }else if(stage===3){attacks=player.melee.attacks;hits=player.melee.hits;health=enemy.health;next(4,cmd);
+ }else if(stage===4){
+
+  const arms=r.arm_ik?.find((v:any)=>v.arms?.some((a:any)=>a.hand==='r_wrist'))?.arms??[];
+  poseSeen=poseSeen||arms.length===2;
+  if(player.melee.phase==='windup')check(enemy.health===health,'no damage before contact');
+  if(enemy.health<health){
+   check(player.melee.attacks===attacks+1&&player.melee.hits===hits+1,'one timed native strike');check(poseSeen,'original player arms receive fist pose');
+   check(!!record.hit_reaction,'fist hit plays directional reaction');
+   check(!cmd.some((v:any)=>v.op==='scene.entity.arm_ik.set'&&v.id==='melee.test.enemy'&&v.arms.length),'hit releases NPC arm overlay');
+   hand=player.melee.hand;next(5,cmd);
+  }
+ }else if(stage===5&&player.melee.phase==='idle'){
+  health=enemy.health;hits=player.melee.hits;strike(cmd,'player.character',[0,0,-1]);next(6,cmd);
+ }else if(stage===6&&player.melee.phase==='windup'){
+  check(player.melee.hand!==hand,'alternating left/right');place(cmd,'melee.test.enemy',entity,0,4.7);next(7,cmd);
+ }else if(stage===7&&player.melee.phase==='idle'){
+  check(enemy.health===health&&player.melee.hits===hits,'outside the actual hand sweep misses even inside nominal melee range');
+  place(cmd,'melee.test.enemy',entity,0,5.35);next(8,cmd);
+ }else if(stage===8&&time-since>.2){
+  cmd.push({op:'physics.body.upsert',entity:900060111,body_kind:'static',position:[0,1.3,5.6],shape:{kind:'box',half_extents:[2,2,.08]},participates_in_queries:true,casts_contacts:true});
+  strike(cmd,'player.character',[0,0,-1]);health=enemy.health;hits=player.melee.hits;next(9,cmd);
+ }else if(stage===9&&player.melee.phase==='idle'&&time-since>.6){
+  check(enemy.health===health&&player.melee.hits===hits,'close solid cover blocks fists');cmd.push({op:'physics.body.destroy',entity:900060111});
+  strike(cmd,'player.character',[0,0,-1]);next(10,cmd);
+ }else if(stage===10&&player.melee.phase==='windup'){
+  cmd.push({op:'ped.damage',actor_id:'player.character',source:'melee.test.enemy',amount:1,origin:[0,1,4.7]});next(101,cmd);
+ }else if(stage===101&&player.melee.phase==='idle'&&time-since>.5){
+  check(enemy.health===health&&player.melee.hits===hits,'hit stun cancels a pending strike');
+  reset(cmd,playerProfile);reset(cmd,targetProfile);place(cmd,'melee.test.enemy',entity,0,5.35);next(11,cmd);
+ }else if(stage===11&&player.melee.blocking){
+  guardSeen=true;health=player.health+player.armour;strike(cmd,'melee.test.enemy',[0,0,1]);next(12,cmd);
+ }else if(stage===12&&enemy.melee.hits>0){
+  const received=health-player.health-player.armour;check(guardSeen&&received>0&&received<5&&player.melee.blocks===1,'frontal guard reduces damage and costs stamina');
+  check(player.melee.stamina<100,'guard has stamina cost');next(13,cmd);
+ }else if(stage===13&&enemy.melee.phase==='idle'){
+  // Keep facing -Z but move the enemy behind the player; attack bypasses frontal guard.
+  place(cmd,'melee.test.enemy',entity,0,6.65);health=player.health+player.armour;next(14,cmd);
+ }else if(stage===14&&time-since>.2){
+  // Placement commands are queued; verify the physical and world positions before testing a rear hit.
+  const actor=r.living_world?.simulation?.actors?.find((v:any)=>v.id==='melee.test.enemy');
+  if(body&&actor&&Math.abs(body.position[2]-6.65)<.02&&Math.abs(actor.position[2]-6.65)<.02){
+   strike(cmd,'melee.test.enemy',[0,0,-1]);next(15,cmd);
+  }else place(cmd,'melee.test.enemy',entity,0,6.65);
+
+ }else if(stage===15&&enemy.melee.phase==='idle'&&time-since>.6){
+  const expected=Number(enemy.profile.melee.damage)*(1+Number(enemy.profile.melee.combo_damage_bonus??.12)*Math.max(0,Number(enemy.melee.combo_step)-1));
+  check(Math.abs(health-player.health-player.armour-expected)<.02,'rear attack bypasses guard with combo damage '+JSON.stringify({expected,health,received:health-player.health-player.armour,melee:enemy.melee,player:player.melee}));
+  reset(cmd,playerProfile);reset(cmd,{...targetProfile,combat:{target_actor:'player.character',melee_only:true,reaction_seconds:.1},melee:{...targetProfile.melee,damage:8}});
+  place(cmd,'melee.test.enemy',entity,0,5.35);next(16,cmd);
+ }else if(stage===16){
+  npcPoseSeen=npcPoseSeen||cmd.some((v:any)=>v.op==='scene.entity.arm_ik.set'&&v.id==='melee.test.enemy'&&v.arms.length===2);
+  stunnedSeen=stunnedSeen||Number(player.stunned_until)>time;
+  if(enemy.melee.hits>0){check(enemy.combat.shots===0&&enemy.combat.style==='fists','AI uses actual fist attacks without consuming firearm ammo');
+   check(npcPoseSeen,'male NPC uses original skeleton fists '+JSON.stringify({time,stun:enemy.stunned_until,hit:record.hit_reaction,combat:enemy.combat,commands:cmd.filter((v:any)=>v.id==='melee.test.enemy')},(_k:string,v:any)=>typeof v==='bigint'?String(v):v));
+   cmd.push({op:'ped.damage',actor_id:'melee.test.enemy',source:'player.character',amount:500,origin:[0,1,6]});health=player.health+player.armour;next(17,cmd);}
+ }else if(stage===17&&enemy.dead&&time-since>.7){
+  check(player.health+player.armour===health,'dead attacker has no delayed ghost damage');
+  check(record.ragdoll?.active,'fist combat lethal damage uses native ragdoll');
+  cmd.push({op:'items.inventory.equip',owner_id:'player',slot:'hands',item_id:'weapon.pistol.military'});next(18,cmd);
+ }else if(stage===18&&time-since>.2){
+  check(!cmd.some((v:any)=>v.op==='scene.entity.arm_ik.set'&&v.id==='player.character'&&v.arms.some((a:any)=>a.tip_joint==='r_wrist')),'equipping weapon releases fist IK');
+  cmd.push({op:'console.write',message:'MELEE_VERIFY_PASS shared_input holster closed_fists windup single_contact alternating_hands range_miss cover interrupted_attack frontal_guard stamina rear_hit male_ai no_firearm_ammo death_no_ghost_hit ragdoll weapon_return'});
+  next(19,cmd);result.exit_requested=true;
+ }
+ check(stage===19||time-since<12,'timeout stage '+stage+' '+JSON.stringify({enemy,player,collision:r.peds?.melee_collision,actors:r.living_world?.simulation?.actors,bodies:r.physics?.bodies?.filter((v:any)=>String(v.entity_key)===String(record?.entity_key)||Number(v.entity)===900000000)},(_k:string,v:any)=>typeof v==='bigint'?String(v):v));return result;
+}
+export function on_event(p:any):any{return Game.on_event(p);}
+export function on_shutdown(p:any):any{return Game.on_shutdown(p);}

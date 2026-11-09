@@ -1,0 +1,213 @@
+import * as Game from './default_game_base.ysc';
+import { createRuntimeSnapshotDecoder } from './snapshot_delta.ysc';
+const decode=createRuntimeSnapshotDecoder();
+const foe='combat.loot.enemy',other=foe+'.control';
+let stage=0,since=0,dropId='',dropBody='',oldToken=0,shots=0,expectedDrops=1,lastDamage=0,pendingHealth=Infinity,releasePain=0;
+let expectedAmmo:any=null,sawPhysical=false,sawSocket=false,evidence:any={},momentumBody:any=null;
+const supportedHits=[false,false];
+function check(value:any,reason:string):void{if(!value)throw new Error('LOOT_VERIFY '+reason);}
+function advance(n:number,now:number,commands:any[]):void{stage=n;since=now;commands.push({op:'console.write',message:'LOOT_STAGE '+n});}
+function damage(commands:any[],amount:number,zone='torso',actor=foe):void{
+ commands.push({op:'ped.damage',actor_id:actor,source:'loot.test',amount,origin:[0,1,0],hit_zone:zone});
+}
+function placePlayer(commands:any[],pos:number[]):void{
+ commands.push({op:'physics.body.pose.set',entity:900000000,position:[pos[0],pos[1]+.8,pos[2]],rotation:[0,0,0,1]},
+  {op:'physics.body.velocity.set',entity:900000000,velocity:[0,0,0]});
+}
+export function on_start(raw:any):any{return Game.on_start(decode(raw));}
+export function on_frame(raw:any):any{
+ const p=decode(raw),scenario=p.project?.runtime?.variables?.loot_verification_scenario??'death';
+ const defs=p.project.runtime.variables.engine_combat.enemies,gun=defs.find((v:any)=>v.id===foe).weapon;
+ const handReserved=!!p.runtime?.endorphin?.protection?.actors?.some((a:any)=>a.actor_id===p.project.runtime.variables.engine_player.scene_id&&a.combat_reserved);
+ p.frame={...p.frame,platform:{...p.frame.platform,focused:stage===6||stage===40||stage===41||(stage===39&&handReserved)}};
+ if(stage===40||stage===41||(stage===39&&handReserved)){
+  p.frame.platform.cursor_captured=true;
+  p.frame.input={state:{keys:{down:[],pressed:[]},mouse:{down:[1],pressed:[1],delta:{x:0,y:0}}}};
+ }
+ if(stage===6)p.frame.input={state:{keys:{down:[],pressed:[24]},mouse:{down:[],pressed:[],delta:{x:0,y:0}}}};
+ const result:any=Game.on_frame(p),commands:any[]=result.commands,r=p.runtime;
+ const now=Number(r?.peds?.world_seconds??r?.living_world?.clock?.world_seconds??p.elapsed_seconds);
+ const npc=r?.peds?.peds?.find((v:any)=>v.profile?.actor_id===foe),control=r?.peds?.peds?.find((v:any)=>v.profile?.actor_id===other);
+ const inv=r?.items?.inventories?.find((v:any)=>v.owner_id===foe);
+ const records=(r?.items?.pickups??[]).filter((v:any)=>v.origin?.owner_id===foe);
+ const loot=records.find((v:any)=>!v.collected&&v.quantity>0&&v.item_id===gun);
+ const collector=r?.items?.inventories?.find((v:any)=>v.owner_id==='player');
+ const playerBody=r?.physics?.bodies?.find((v:any)=>Number(v.entity)===900000000);
+ const record=r?.peds?.physics?.bodies?.find((v:any)=>v.actor_id===foe);
+ const npcBody=r?.physics?.bodies?.find((v:any)=>String(v.entity_key??v.entity)===String(record?.entity_key??record?.entity));
+ if(stage===20){
+  const peer=r?.peds?.physics?.bodies?.find((v:any)=>v.actor_id===other);
+  for(const [index,body] of [record,peer].entries()){
+   if(body?.hit_reaction){
+    check(body.controlled&&!body.ragdoll?.active,'supported hit reaction preserves capsule ownership '+JSON.stringify({actor:body.actor_id,recovery_seconds:body.recovery_seconds,controlled:body.controlled}));
+    supportedHits[index]=true;
+   }
+  }
+ }
+ check(!commands.some((v:any)=>v.op==='items.inventory.drop'&&v.owner_id===foe),'Shared may not duplicate native release');
+ check(records.length<=expectedDrops,'duplicate native release '+records.length+'/'+expectedDrops);
+ if(stage===0&&npc&&!npc.dead&&inv?.equipped?.hands===gun&&npcBody&&playerBody&&now>1
+   &&npc.weapon_grip?.held_item===gun&&npc.weapon_grip?.force_demand>0){
+  const nativeDefinition=r.items.definitions.find((v:any)=>v.id===gun);
+  check(nativeDefinition?.metadata?.physics?.mass>0,'canonical physical metadata survives authored overrides');
+  const authoredDefinition=p.project.runtime.variables.engine_items.definitions?.find((v:any)=>v.id===gun);
+  if(authoredDefinition?.metadata?.weapon?.reserve_capacity!==undefined)
+   check(nativeDefinition.metadata.weapon.reserve_capacity===authoredDefinition.metadata.weapon.reserve_capacity,'project reserve override remains applied');
+  if(scenario==='adaptive'||scenario==='data_override'){
+   check(control&&!control.dead,'adaptive comparison needs two living NPCs');
+   damage(commands,20);damage(commands,20,'torso',other);advance(20,now,commands);
+  }else{
+   damage(commands,scenario==='death'?1000:20);advance(scenario==='death'?1:10,now,commands);
+  }
+ }else if(stage===10&&npc?.armour===10){
+  check(npc.health===100&&!npc.weapon_grip.lost&&records.length===0,'armour preserves actual hand support');
+  damage(commands,15);advance(11,now,commands);
+ }else if(stage===11&&npc?.health===95){
+  check(!npc.weapon_grip.lost&&inv?.equipped?.hands===gun&&records.length===0,'light injury preserves grip');
+  if(scenario==='arm'){damage(commands,25,'hand');advance(1,now,commands);}
+  else if(scenario==='heavy'){damage(commands,35);advance(1,now,commands);}
+  else if(scenario==='action'||scenario==='rearm'){
+   oldToken=inv.equipment_generations.hands;
+   if(scenario==='action'){
+    momentumBody={position:[...npcBody.position],velocity:[2,0,0],angular:[...npcBody.angular_velocity]};
+    commands.push({op:'physics.body.velocity.set',id:foe,velocity:[2,0,0]},
+     {op:'ped.weapon.release',actor_id:foe,item_id:gun,equipment_generation:oldToken});
+    advance(1,now,commands);
+   }else{
+    commands.push({op:'ped.weapon.release',actor_id:foe,item_id:gun,equipment_generation:oldToken});
+    advance(1,now,commands);
+   }
+  }else if(scenario==='ballistic'){
+   commands.push({op:'physics.ballistic.fire',source:900000000,source_actor:'player.character',
+    origin:[npcBody.position[0],npcBody.position[1],npcBody.position[2]+2],direction:[0,0,-1],
+    damage:35,impulse:2,max_distance:4,ignore_entity:900000000,max_hits:1});
+   advance(1,now,commands);
+  }else{pendingHealth=npc.health;lastDamage=now;damage(commands,10);advance(12,now,commands);}
+ }else if(stage===12){
+  if(npc?.weapon_grip?.lost){advance(1,now,commands);}
+  else if(npc?.health<pendingHealth&&now-lastDamage>.25){
+   check(!npc.dead,'accumulated injury must be resolved while NPC survives');
+   pendingHealth=npc.health;lastDamage=now;damage(commands,10);
+  }
+ }else if(stage===20&&now-since>.6){
+  check(npc.health===80&&control.health===80,'same damage yields equal vitality');
+  check(supportedHits.every(Boolean),'both supported actors play actual hit reactions');
+  if(scenario==='data_override'){
+   check(!npc.weapon_grip.lost&&!control.weapon_grip.lost&&records.length===0,'increased authored support retains both weapons');
+   check(npc.profile.weapon_grip.model.hand_force[0]===p.project.runtime.variables.grip_override_force,'project VFS grip model overrides Shared asset');
+   evidence={scenario,rifle_health:npc.health,pistol_health:control.health,
+    authored_hand_force:npc.profile.weapon_grip.model.hand_force,
+    rifle_force_demand:npc.weapon_grip.force_demand,rifle_force_capacity:npc.weapon_grip.force_capacity};
+   commands.push({op:'console.write',message:'COMBAT_LOOT_VERIFY_EVIDENCE '+JSON.stringify(evidence)},
+    {op:'console.write',message:'COMBAT_LOOT_VERIFY_PASS data_override adaptive_asset_no_recompile'});
+   result.exit_requested=true;advance(8,now,commands);return result;
+  }
+  check(npc.weapon_grip.lost&&!control.weapon_grip.lost,
+   'same injury must release rifle but retain pistol '+JSON.stringify({rifle:npc.weapon_grip,pistol:control.weapon_grip}));
+  const otherInv=r.items.inventories.find((v:any)=>v.owner_id===other);
+  check(otherInv?.equipped?.hands==='weapon.pistol.military','lighter weapon remains owned and held');
+  evidence.equal_injury={rifle_health:npc.health,pistol_health:control.health,pistol_retained:!control.weapon_grip.lost};
+  advance(1,now,commands);
+ }else if(stage===1&&(scenario==='death'?npc?.dead:npc?.weapon_grip?.lost)&&loot){
+  if(scenario!=='death')check(!npc.dead&&npc.health>0,'disarm must not require death');
+  check(records.length===expectedDrops,'one ownership transfer per equipped generation');
+  shots=Number(npc.combat?.shots??0);
+  releasePain=(npc.weapon_grip.pain??[]).reduce((a:number,b:number)=>a+b,0);
+  expectedAmmo=loot.state?.weapon;
+  check(expectedAmmo&&Number.isInteger(expectedAmmo.magazine)&&Number.isInteger(expectedAmmo.reserve),'pickup carries actual ammunition');
+  check(loot.origin?.initial_pose?.rotation?.length===4,'native release preserves orientation');
+  sawSocket=String(loot.origin.pose_source).startsWith('weapon_attachment')||String(loot.origin.pose_source).startsWith('hand_socket');
+  check(sawSocket,'release uses weapon/hand pose after assets are resident: '+loot.origin.pose_source);
+  if(scenario==='action'){
+   const offset=loot.origin.initial_pose.position.map((v:number,i:number)=>v-momentumBody.position[i]),w=momentumBody.angular;
+   const tangent=[w[1]*offset[2]-w[2]*offset[1],w[2]*offset[0]-w[0]*offset[2],w[0]*offset[1]-w[1]*offset[0]];
+   check(loot.origin.initial_pose.linear_velocity.every((v:number,i:number)=>Math.abs(v-momentumBody.velocity[i]-tangent[i])<.001),
+    'released gun inherits observed physical owner point velocity '+JSON.stringify({momentumBody,pose:loot.origin.initial_pose}));
+  }
+  evidence={...evidence,scenario,ammunition:expectedAmmo,pose_source:loot.origin.pose_source,
+   initial_velocity:loot.origin.initial_pose.linear_velocity,equipment_generation:loot.origin.equipment_generation,release_count:records.length};
+  advance(2,now,commands);
+ }else if(stage===2&&loot?.body_entity&&loot?.physical_pose?.position&&playerBody){
+  check(!inv?.equipped?.hands,'released weapon no longer belongs to NPC hands');
+  if(scenario!=='death'){
+   check(Number(npc.combat?.shots??0)===shots,'disarmed NPC must not fire phantom bullets');
+   check(npc.combat?.reload_until===0,'release cancels active reload');
+  }
+  if(scenario!=='death'&&now-since>.2&&releasePain>0){
+   const pain=npc.weapon_grip.pain.reduce((a:number,b:number)=>a+b,0);
+   check(pain<releasePain,'transient hand inhibition recovers while the NPC is unarmed');
+  }
+  sawPhysical=true;dropId=loot.id;dropBody=String(loot.body_entity);
+  if(scenario==='rearm'&&expectedDrops===1&&now-since>.25){
+   const feet=[npcBody.position[0],npcBody.position[1]-Number(record.center_offset??.9),npcBody.position[2]];
+   check(Math.hypot(...feet.map((v:number,i:number)=>v-loot.position[i]))<loot.collection_radius,'NPC is physically close to its released gun');
+   commands.push({op:'items.pickup.collect',id:loot.id,owner_id:foe,position:feet,equip_slot:'hands'});
+   advance(30,now,commands);
+  }else if(now-since>.35){placePlayer(commands,loot.physical_pose.position);advance(3,now,commands);}
+ }else if(stage===30&&inv?.equipped?.hands===gun&&!npc?.weapon_grip?.lost){
+  const token=inv.equipment_generations.hands;
+  check(token!==oldToken,'reacquired weapon has a new equipped generation');
+  evidence.reacquire={previous_generation:oldToken,new_generation:token};
+  commands.push({op:'ped.weapon.release',actor_id:foe,item_id:gun,equipment_generation:oldToken});
+  advance(31,now,commands);
+ }else if(stage===31&&now-since>.2){
+  check(inv?.equipped?.hands===gun&&records.length===1,'late old release cannot disarm new equipment');
+  expectedDrops=2;
+  commands.push({op:'ped.weapon.release',actor_id:foe,item_id:gun,equipment_generation:inv.equipment_generations.hands});
+  advance(1,now,commands);
+ }else if(stage===3&&playerBody&&loot){
+  const pos=loot.physical_pose?.position??loot.position,feet=[playerBody.position[0],playerBody.position[1]-.9,playerBody.position[2]];
+  if(Math.hypot(...feet.map((v:number,i:number)=>v-pos[i]))<loot.collection_radius){
+   commands.push({op:'items.pickup.collect',id:loot.id,owner_id:'player',position:feet,equip_slot:'hands'});advance(4,now,commands);
+  }else placePlayer(commands,pos);
+ }else if(stage===4&&r?.items?.last_collection?.pickup_id===dropId&&now-since>.1){
+  const outcome=r.items.last_collection,owned=collector?.entries?.find((v:any)=>v.item_id===gun)?.state?.weapon;
+  check(outcome.status==='collected'&&collector?.equipped?.hands===gun,'player collects and equips physical weapon');
+  check(owned?.magazine===expectedAmmo.magazine&&owned?.reserve===expectedAmmo.reserve,'native inventory preserves remaining ammunition');
+  check(result.ui.bindings['engine.weapon.magazine']===expectedAmmo.magazine&&result.ui.bindings['engine.weapon.reserve']===expectedAmmo.reserve,
+   'player firearm uses collected ammunition, without free refill '+JSON.stringify({expectedAmmo,bindings:result.ui.bindings}));
+  check(sawPhysical&&sawSocket,'socket release and body must exist before collection');
+  if(scenario==='adaptive'&&expectedAmmo.magazine>0){
+   // The collected gun is tested after leaving the living owner's contact zone.
+   placePlayer(commands,[0,.1,6]);advance(39,now,commands);
+  }
+  else if(scenario!=='death'){
+   damage(commands,1000);if(control&&!control.dead)damage(commands,1000,'torso',other);
+   advance(5,now,commands);
+  }else{
+   commands.push({op:'console.write',message:'COMBAT_LOOT_VERIFY_EVIDENCE '+JSON.stringify(evidence)});
+   commands.push({op:'console.write',message:'COMBAT_LOOT_VERIFY_PASS death native_transfer socket_momentum ammo collect equip'});
+   result.exit_requested=true;advance(8,now,commands);
+  }
+ }else if(stage===39){
+  if(handReserved){
+   check(!commands.some((v:any)=>v.op==='physics.ballistic.fire'&&Number(v.source)===900000000),'reserved hands reject the requested shot');
+   const owned=collector?.entries?.find((v:any)=>v.item_id===gun)?.state?.weapon;
+   check(owned?.magazine===expectedAmmo.magazine,'blocked protective shot preserves ammunition');
+   evidence.protective_shot_blocked=true;
+  }else if(now-since>.25){advance(40,now,commands);}
+ }else if(stage===40){advance(41,now,commands);}
+ else if(stage===41){
+  check(commands.some((v:any)=>v.op==='physics.ballistic.fire'&&Number(v.source)===900000000),'collected firearm produces a real player projectile');
+  advance(42,now,commands);
+ }else if(stage===42&&now-since>.1){
+  const owned=collector?.entries?.find((v:any)=>v.item_id===gun)?.state?.weapon;
+  check(owned?.magazine===expectedAmmo.magazine-1&&owned?.reserve===expectedAmmo.reserve,'firing consumes inherited magazine without refill');
+  damage(commands,1000);if(control&&!control.dead)damage(commands,1000,'torso',other);
+  advance(5,now,commands);
+ }else if(stage===5&&npc?.dead&&now-since>.3){
+  check(records.length===expectedDrops,'death after disarm cannot duplicate the transferred weapon');advance(6,now,commands);
+ }else if(stage===6){advance(7,now,commands);}
+ else if(stage===7&&!npc?.dead&&inv?.equipped?.hands===gun&&now-since>.25){
+  check(!npc.weapon_grip.lost&&npc.weapon_grip.wound.every((v:number)=>v===0),'new encounter restores native grip');
+  check(!(r.items?.pickups??[]).some((v:any)=>v.origin?.owner_id===foe),'restart removes encounter pickups');
+  check(!(r.physics?.bodies??[]).some((v:any)=>String(v.entity_key??v.entity)===dropBody),'restart removes old pickup body');
+  commands.push({op:'console.write',message:'COMBAT_LOOT_VERIFY_EVIDENCE '+JSON.stringify(evidence)});
+  commands.push({op:'console.write',message:'COMBAT_LOOT_VERIFY_PASS '+scenario+' native_transfer adaptive_load socket_momentum ammo collect equip no_duplicate restart'});
+  result.exit_requested=true;advance(8,now,commands);
+ }
+ check(stage===8||now-since<10,'stage timeout '+stage+' scenario '+scenario+' '+JSON.stringify({npc,inv,loot,records,player:playerBody?.position}));
+ return result;
+}
+export function on_event(event:any):any{return Game.on_event(event);}
+export function on_shutdown(event:any):any{return Game.on_shutdown(event);}

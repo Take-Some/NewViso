@@ -1,5 +1,7 @@
 //! Continuous sphere queries against immutable triangle collision geometry.
 //! The BVH is built at residency time, never in the camera's per-frame path.
+#[cfg(test)]
+use std::io::Write as _;
 type V = [f32; 3];
 fn add(a: V, b: V) -> V {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
@@ -52,6 +54,7 @@ pub struct TriangleSurfaceHit {
 pub struct SphereSweepMesh {
     triangles: Vec<IndexedTriangle>,
     nodes: Vec<Node>,
+    support: Option<crate::support::SupportSurfaceIndex>,
 }
 
 impl SphereSweepMesh {
@@ -74,9 +77,13 @@ impl SphereSweepMesh {
                     .map_err(|_| "sphere sweep mesh triangle index exceeds u32")?,
             });
         }
+        let support = crate::support::SupportSurfaceIndex::new(
+            &triangles.iter().map(|t| t.vertices).collect::<Vec<_>>(),
+        );
         let mut mesh = Self {
             triangles,
             nodes: Vec::new(),
+            support: Some(support),
         };
         if !mesh.triangles.is_empty() {
             mesh.build(0, mesh.triangles.len());
@@ -86,33 +93,100 @@ impl SphereSweepMesh {
 
     /// Refit bounds and triangle positions for unchanged topology. This does
     /// not re-sort leaves, allocate a tree or change source triangle identity.
-    pub fn refit_vertices(&mut self, vertices:&[V])->Result<(),String> {
-        if vertices.iter().flatten().any(|v|!v.is_finite()) ||
-            self.triangles.iter().any(|t|t.vertex_indices.iter().any(|i|*i as usize>=vertices.len())) {
+    pub fn refit_vertices(&mut self, vertices: &[V]) -> Result<(), String> {
+        if vertices.iter().flatten().any(|v| !v.is_finite())
+            || self.triangles.iter().any(|t| {
+                t.vertex_indices
+                    .iter()
+                    .any(|i| *i as usize >= vertices.len())
+            })
+        {
             return Err("invalid sphere sweep refit vertices".into());
         }
         for triangle in &mut self.triangles {
-            triangle.vertices=triangle.vertex_indices.map(|i|vertices[i as usize]);
+            triangle.vertices = triangle.vertex_indices.map(|i| vertices[i as usize]);
         }
         // Build stores parents before children; reverse order visits the leaves
         // first, so every internal bound can be reduced from its two children.
         for index in (0..self.nodes.len()).rev() {
-            let (min,max)=if let Some((a,b))=self.nodes[index].children {
-                (std::array::from_fn(|k|self.nodes[a].min[k].min(self.nodes[b].min[k])),
-                 std::array::from_fn(|k|self.nodes[a].max[k].max(self.nodes[b].max[k])))
+            let (min, max) = if let Some((a, b)) = self.nodes[index].children {
+                (
+                    std::array::from_fn(|k| self.nodes[a].min[k].min(self.nodes[b].min[k])),
+                    std::array::from_fn(|k| self.nodes[a].max[k].max(self.nodes[b].max[k])),
+                )
             } else {
-                let node=&self.nodes[index];
-                let mut min=[f32::INFINITY;3];let mut max=[f32::NEG_INFINITY;3];
+                let node = &self.nodes[index];
+                let mut min = [f32::INFINITY; 3];
+                let mut max = [f32::NEG_INFINITY; 3];
                 for t in &self.triangles[node.start..node.end] {
-                    for p in &t.vertices {for k in 0..3 {
-                        min[k]=min[k].min(p[k]);max[k]=max[k].max(p[k]);
-                    }}
+                    for p in &t.vertices {
+                        for k in 0..3 {
+                            min[k] = min[k].min(p[k]);
+                            max[k] = max[k].max(p[k]);
+                        }
+                    }
                 }
-                (min,max)
+                (min, max)
             };
-            self.nodes[index].min=min;self.nodes[index].max=max;
+            self.nodes[index].min = min;
+            self.nodes[index].max = max;
         }
+        // Deforming heightfields invalidate only support metadata. Foot queries
+        // rebuild a bounded local region through this BVH, never the whole grid.
+        self.support = None;
         Ok(())
+    }
+
+    /// BVH-selected support regions; no all-surface scan in the per-foot path.
+    pub fn support_surfaces_near(
+        &self,
+        min: V,
+        max: V,
+    ) -> Vec<std::borrow::Cow<'_, crate::SupportSurface>> {
+        use std::borrow::Cow;
+        if self.nodes.is_empty() {
+            return Vec::new();
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        let mut local = Vec::new();
+        let mut stack = vec![0usize];
+        while let Some(i) = stack.pop() {
+            let n = &self.nodes[i];
+            if (0..3).any(|k| min[k] > n.max[k] || max[k] < n.min[k]) {
+                continue;
+            }
+            if let Some((a, b)) = n.children {
+                stack.push(a);
+                stack.push(b);
+            } else {
+                for t in &self.triangles[n.start..n.end] {
+                    if (0..3).any(|k| {
+                        t.vertices.iter().all(|v| v[k] < min[k])
+                            || t.vertices.iter().all(|v| v[k] > max[k])
+                    }) {
+                        continue;
+                    }
+                    if let Some(index) = &self.support {
+                        if let Some(id) = index.triangle_surfaces[t.source_index as usize] {
+                            ids.insert(id);
+                        }
+                    } else {
+                        local.push(t.vertices);
+                    }
+                }
+            }
+        }
+        if let Some(index) = &self.support {
+            ids.into_iter()
+                .map(|i| Cow::Borrowed(&index.surfaces[i]))
+                .collect()
+        } else {
+            crate::support::SupportSurfaceIndex::new(&local)
+                .surfaces
+                .into_iter()
+                .map(Cow::Owned)
+                .collect()
+        }
     }
 
     fn build(&mut self, start: usize, end: usize) -> usize {
@@ -159,6 +233,18 @@ impl SphereSweepMesh {
 
     /// Returns the nearest contact together with a stable outward normal.
     pub fn sweep_hit(&self, origin: V, delta: V, radius: f32) -> Option<SphereSweepHit> {
+        self.sweep_hit_filtered(origin, delta, radius, |_| true)
+    }
+
+    /// Filter contacts before choosing the nearest hit or pruning BVH branches.
+    /// Rejecting a resting floor must not hide a ceiling in the same mesh.
+    pub fn sweep_hit_filtered(
+        &self,
+        origin: V,
+        delta: V,
+        radius: f32,
+        accept: impl Fn(SphereSweepHit) -> bool,
+    ) -> Option<SphereSweepHit> {
         if self.nodes.is_empty() {
             return None;
         }
@@ -178,7 +264,9 @@ impl SphereSweepMesh {
             } else {
                 for tri in &self.triangles[node.start..node.end] {
                     if let Some(hit) = sweep_triangle_hit(origin, delta, radius, tri.vertices) {
-                        if best.is_none_or(|current| hit.fraction <= current.fraction) {
+                        if accept(hit)
+                            && best.is_none_or(|current| hit.fraction <= current.fraction)
+                        {
                             best = Some(hit);
                         }
                     }
@@ -188,6 +276,43 @@ impl SphereSweepMesh {
         best
     }
 
+    /// Swept limb/weapon capsule against resident triangle geometry, including shaft contacts.
+    pub fn sweep_capsule_hit(
+        &self,
+        previous: crate::StrikeCapsule,
+        current: crate::StrikeCapsule,
+    ) -> Option<(crate::StrikeContact, u32)> {
+        if self.nodes.is_empty() || !previous.valid() || !current.valid() {
+            return None;
+        }
+        let (min, max) = previous.bounds(current);
+        let mut best: Option<(crate::StrikeContact, u32)> = None;
+        let mut stack = vec![0usize];
+        while let Some(index) = stack.pop() {
+            let n = &self.nodes[index];
+            if (0..3).any(|i| max[i] < n.min[i] || min[i] > n.max[i]) {
+                continue;
+            }
+            if let Some((a, b)) = n.children {
+                stack.push(a);
+                stack.push(b);
+            } else {
+                for triangle in &self.triangles[n.start..n.end] {
+                    if let Some(hit) =
+                        crate::strike::sweep_strike_triangle(previous, current, triangle.vertices)
+                    {
+                        if best.is_none_or(|(old, id)| {
+                            hit.fraction < old.fraction
+                                || (hit.fraction == old.fraction && triangle.source_index < id)
+                        }) {
+                            best = Some((hit, triangle.source_index));
+                        }
+                    }
+                }
+            }
+        }
+        best
+    }
     /// Resolve the authored source triangle nearest to a local-space contact point.
     ///
     /// BVH construction reorders triangles for locality, therefore every BVH triangle
@@ -289,6 +414,17 @@ fn point_triangle_distance_squared(point: V, triangle: [V; 3]) -> f32 {
         .min(point_segment_distance_squared(point, c, a))
 }
 
+#[cfg(test)]
+#[test]
+fn resting_overlap_reports_the_geometric_escape_normal() {
+    let min = [-4.0, -1.0, -4.0];
+    let max = [4.0, 0.0, 4.0];
+    for d in [[0.0, 0.1, 0.0], [0.0, -0.1, 0.0], [0.1, 0.0, 0.0]] {
+        let h = sweep_sphere_aabb_hit([0.0, 0.29999, 0.0], d, 0.3, min, max).unwrap();
+        assert_eq!(h.normal, [0.0, 1.0, 0.0]);
+        assert_eq!(h.fraction, 0.0);
+    }
+}
 /// Conservative sphere sweep for primitive bounds; also used as BVH broad phase.
 pub fn sweep_sphere_aabb(o: V, d: V, r: f32, min: V, max: V) -> Option<f32> {
     let mut enter: f32 = 0.0;
@@ -351,11 +487,19 @@ pub fn sweep_sphere_aabb_hit(o: V, d: V, r: f32, min: V, max: V) -> Option<Spher
         return None;
     }
     if starts_inside {
-        let normal = if dot(d, d) > 1.0e-12 {
-            normalize(mul(d, -1.0))
-        } else {
-            [0.0, 1.0, 0.0]
-        };
+        // Stable geometric escape face, including native resting-contact slop.
+        // Separating upward sweeps must not see the floor as a ceiling.
+        let mut distance = f32::INFINITY;
+        let mut normal = [0.0, 1.0, 0.0];
+        for k in 0..3 {
+            for (depth, sign) in [(o[k] - (min[k] - r), -1.0), (max[k] + r - o[k], 1.0)] {
+                if depth < distance {
+                    distance = depth;
+                    normal = [0.0; 3];
+                    normal[k] = sign;
+                }
+            }
+        }
         return Some(SphereSweepHit {
             fraction: 0.0,
             normal,
@@ -462,6 +606,20 @@ fn sweep_triangle_hit(o: V, d: V, r: f32, t: [V; 3]) -> Option<SphereSweepHit> {
     if len > 1.0e-8 {
         let n = mul(raw_n, 1.0 / len);
         let distance = dot(sub(o, t[0]), n);
+        // A ray has no rounded edge envelope. Its plane normal must oppose
+        // travel independently of triangle winding, including shared edges.
+        if r <= 0.0 {
+            let speed = dot(d, n);
+            if speed.abs() <= 1.0e-8 {
+                return None;
+            }
+            let time = -distance / speed;
+            return ((0.0..=1.0).contains(&time) && point_in_triangle(add(o, mul(d, time)), t, n))
+                .then_some(SphereSweepHit {
+                    fraction: time,
+                    normal: if speed > 0.0 { mul(n, -1.0) } else { n },
+                });
+        }
         if distance.abs() <= r && point_in_triangle(sub(o, mul(n, distance)), t, n) {
             let normal = if distance.abs() > 1.0e-6 {
                 mul(n, distance.signum())
@@ -529,59 +687,108 @@ mod tests {
     }
     #[test]
     fn deformation_refit_matches_rebuilt_queries_and_preserves_triangle_ids() {
-        let n=17;
-        let mut vertices=Vec::new();let mut indices=Vec::new();
-        for z in 0..n {for x in 0..n {vertices.push([x as f32,0.0,z as f32]);}}
-        for z in 0..n-1 {for x in 0..n-1 {
-            let a=(z*n+x) as u32;let b=a+1;let c=a+n as u32;let d=c+1;
-            indices.extend([[a,b,c],[b,d,c]]);
-        }}
-        let mut refitted=SphereSweepMesh::new(&vertices,&indices).unwrap();
-        let node_count=refitted.nodes.len();
-        for p in &mut vertices {p[1]=(p[0]*0.31).sin()+(p[2]*0.17).cos();}
+        let n = 17;
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        for z in 0..n {
+            for x in 0..n {
+                vertices.push([x as f32, 0.0, z as f32]);
+            }
+        }
+        for z in 0..n - 1 {
+            for x in 0..n - 1 {
+                let a = (z * n + x) as u32;
+                let b = a + 1;
+                let c = a + n as u32;
+                let d = c + 1;
+                indices.extend([[a, b, c], [b, d, c]]);
+            }
+        }
+        let mut refitted = SphereSweepMesh::new(&vertices, &indices).unwrap();
+        let node_count = refitted.nodes.len();
+        for p in &mut vertices {
+            p[1] = (p[0] * 0.31).sin() + (p[2] * 0.17).cos();
+        }
         refitted.refit_vertices(&vertices).unwrap();
-        assert_eq!(refitted.nodes.len(),node_count);
-        let rebuilt=SphereSweepMesh::new(&vertices,&indices).unwrap();
-        for z in 1..15 {for x in 1..15 {
-            let origin=[x as f32+0.23,6.0,z as f32+0.37];
-            let delta=[0.0,-10.0,0.0];
-            let a=refitted.sweep_hit(origin,delta,0.2).unwrap();
-            let b=rebuilt.sweep_hit(origin,delta,0.2).unwrap();
-            assert!((a.fraction-b.fraction).abs()<1e-6);
-            for k in 0..3 {assert!((a.normal[k]-b.normal[k]).abs()<1e-5);}
-            let a=refitted.nearest_triangle(origin,8.0).unwrap();
-            let b=rebuilt.nearest_triangle(origin,8.0).unwrap();
-            assert!((a.distance-b.distance).abs()<1e-5);
-            assert_eq!(a.triangle_index,b.triangle_index);
-        }}
+        assert_eq!(refitted.nodes.len(), node_count);
+        let rebuilt = SphereSweepMesh::new(&vertices, &indices).unwrap();
+        for z in 1..15 {
+            for x in 1..15 {
+                let origin = [x as f32 + 0.23, 6.0, z as f32 + 0.37];
+                let delta = [0.0, -10.0, 0.0];
+                let a = refitted.sweep_hit(origin, delta, 0.2).unwrap();
+                let b = rebuilt.sweep_hit(origin, delta, 0.2).unwrap();
+                assert!((a.fraction - b.fraction).abs() < 1e-6);
+                for k in 0..3 {
+                    assert!((a.normal[k] - b.normal[k]).abs() < 1e-5);
+                }
+                let a = refitted.nearest_triangle(origin, 8.0).unwrap();
+                let b = rebuilt.nearest_triangle(origin, 8.0).unwrap();
+                assert!((a.distance - b.distance).abs() < 1e-5);
+                assert_eq!(a.triangle_index, b.triangle_index);
+            }
+        }
     }
     #[test]
     fn invalid_refit_leaves_collision_queries_unchanged() {
-        let mut mesh=wall();
-        let before=mesh.sweep_hit([0.0,0.0,2.0],[0.0,0.0,-4.0],0.2);
-        assert!(mesh.refit_vertices(&[[0.0;3];2]).is_err());
-        let invalid=[[0.0;3],[1.0;3],[2.0;3],[f32::NAN,0.0,0.0]];
+        let mut mesh = wall();
+        let before = mesh.sweep_hit([0.0, 0.0, 2.0], [0.0, 0.0, -4.0], 0.2);
+        assert!(mesh.refit_vertices(&[[0.0; 3]; 2]).is_err());
+        let invalid = [[0.0; 3], [1.0; 3], [2.0; 3], [f32::NAN, 0.0, 0.0]];
         assert!(mesh.refit_vertices(&invalid).is_err());
-        assert_eq!(before,mesh.sweep_hit([0.0,0.0,2.0],[0.0,0.0,-4.0],0.2));
+        assert_eq!(
+            before,
+            mesh.sweep_hit([0.0, 0.0, 2.0], [0.0, 0.0, -4.0], 0.2)
+        );
     }
     #[test]
-    #[ignore="CPU microbenchmark; invoke explicitly with --ignored --nocapture"]
+    #[ignore = "CPU microbenchmark; invoke explicitly with --ignored --nocapture"]
     fn benchmark_heightfield_bvh_refit() {
-        let n=33;
-        let vertices=(0..n*n).map(|i|[(i%n) as f32,(i as f32*0.03).sin(),(i/n) as f32]).collect::<Vec<_>>();
-        let mut indices=Vec::new();
-        for z in 0..n-1 {for x in 0..n-1 {
-            let a=(z*n+x) as u32;let b=a+1;let c=a+n as u32;indices.extend([[a,b,c],[b,c+1,c]]);
-        }}
-        let mut mesh=SphereSweepMesh::new(&vertices,&indices).unwrap();
-        let count=100;
-        let start=std::time::Instant::now();
-        for _ in 0..count {std::hint::black_box(SphereSweepMesh::new(&vertices,&indices).unwrap());}
-        let rebuild_ms=start.elapsed().as_secs_f64()*1000.0/count as f64;
-        let start=std::time::Instant::now();
-        for _ in 0..count {mesh.refit_vertices(&vertices).unwrap();std::hint::black_box(&mesh);}
-        let refit_ms=start.elapsed().as_secs_f64()*1000.0/count as f64;
-        eprintln!("heightfield 33x33: rebuild_ms={rebuild_ms:.6} refit_ms={refit_ms:.6} speedup={:.3}",rebuild_ms/refit_ms);
+        let n = 33;
+        let vertices = (0..n * n)
+            .map(|i| [(i % n) as f32, (i as f32 * 0.03).sin(), (i / n) as f32])
+            .collect::<Vec<_>>();
+        let mut indices = Vec::new();
+        for z in 0..n - 1 {
+            for x in 0..n - 1 {
+                let a = (z * n + x) as u32;
+                let b = a + 1;
+                let c = a + n as u32;
+                indices.extend([[a, b, c], [b, c + 1, c]]);
+            }
+        }
+        let mut mesh = SphereSweepMesh::new(&vertices, &indices).unwrap();
+        let count = 100;
+        let start = std::time::Instant::now();
+        for _ in 0..count {
+            std::hint::black_box(SphereSweepMesh::new(&vertices, &indices).unwrap());
+        }
+        let rebuild_ms = start.elapsed().as_secs_f64() * 1000.0 / count as f64;
+        let start = std::time::Instant::now();
+        for _ in 0..count {
+            mesh.refit_vertices(&vertices).unwrap();
+            std::hint::black_box(&mesh);
+        }
+        let refit_ms = start.elapsed().as_secs_f64() * 1000.0 / count as f64;
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "heightfield 33x33: rebuild_ms={rebuild_ms:.6} refit_ms={refit_ms:.6} speedup={:.3}",
+            rebuild_ms / refit_ms
+        );
+    }
+    #[test]
+    fn zero_radius_ray_uses_the_plane_normal_for_both_windings_and_edges() {
+        let v = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        for ids in [[[0, 1, 2]], [[0, 2, 1]]] {
+            let mesh = SphereSweepMesh::new(&v, &ids).unwrap();
+            for x in [0.0, 0.2, 0.5] {
+                let hit = mesh
+                    .sweep_hit([x, 0.7, 0.5], [0.0, -1.3, 0.0], 0.0)
+                    .unwrap();
+                assert_eq!(hit.normal, [0.0, 1.0, 0.0]);
+                assert!((hit.fraction - 0.7 / 1.3).abs() < 1e-6);
+            }
+        }
     }
     #[test]
     fn sweep_hit_reports_surface_normal() {

@@ -1,6 +1,7 @@
+mod ui;
 use newviso_host as host;
 use newviso_render_api as render_api;
-pub use render_api::{TextureId, BindingKind, GraphTextureSemantic};
+pub use render_api::{UiLayerDomain, TextureId, BindingKind, GraphTextureSemantic};
 pub use render_api::{
     EnvironmentAmbientParams, EnvironmentColorParams, EnvironmentExposureParams,
     EnvironmentFogParams, EnvironmentHeatHazeParams, EnvironmentRenderParams, Extent2D,
@@ -1035,9 +1036,6 @@ impl<'a> RenderClient<'a> {
             x:0, y:0, w:i32::try_from(width).map_err(|_| "scissor width exceeds i32")?,
             h:i32::try_from(height).map_err(|_| "scissor height exceeds i32")?,
         }))
-    }
-    pub fn set_ui_draw_list(&self, draw_list: Value) -> Result<(), String> {
-        self.unit(json!({"SetUiDrawList":draw_list}))
     }
     pub fn set_render_phase(&self, phase: Option<&str>) -> Result<(), String> {
         self.unit(json!({"SetRenderPhase":{"phase":phase}}))

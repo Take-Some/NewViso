@@ -1,3 +1,9 @@
+mod configuration;
+pub use configuration::*;
+mod settings_document;
+mod settings_schema;
+pub use settings_document::{RuntimeSettingField, RuntimeSettingsDocument};
+
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -33,6 +39,8 @@ pub struct ProjectManifest {
     pub capabilities: ProjectCapabilities,
     #[serde(default)]
     pub providers: ProjectProviders,
+    #[serde(default)]
+    pub configuration: ProjectConfiguration,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -81,6 +89,9 @@ pub struct ProjectScriptEntrypoint {
     /// Opt in to Shared's immutable runtime snapshot decoder.
     #[serde(default)]
     pub runtime_delta: bool,
+    /// Opt-in cache for immutable project config in the script VM.
+    #[serde(default)]
+    pub project_context_cache: bool,
     #[serde(default)]
     pub lifecycle: ProjectScriptLifecycle,
     #[serde(default)]
@@ -116,6 +127,7 @@ impl ProjectScriptEntrypoint {
             modules: vec![ProjectScriptModule {
                 asset: self.entrypoint.clone(),
                 runtime_delta: self.runtime_delta,
+                project_context_cache: self.project_context_cache,
                 on_start: self.lifecycle.start.clone(),
                 on_frame: self.lifecycle.frame.clone(),
                 on_event: self.lifecycle.event.clone(),
@@ -290,17 +302,8 @@ pub struct ProjectSkyEnvironment {
 
 impl Default for ProjectSkyEnvironment {
     fn default() -> Self {
-        Self {
-            model: "models/skydome.ydd@skydome_high".to_owned(),
-            dome_scale: default_sky_dome_scale(),
-            horizon_level: 0.0,
-            base_noise_texture: None,
-            starfield_texture: None,
-            detail_noise_texture: None,
-            billboard_texture: None,
-            clouds: ProjectSkyClouds::default(),
-            volumetric_clouds: ProjectVolumetricClouds::default(),
-        }
+        serde_json::from_str(include_str!("assets/sky-defaults.json"))
+            .expect("built-in sky defaults must match ProjectSkyEnvironment")
     }
 }
 
@@ -921,6 +924,9 @@ pub struct ProjectScriptModule {
     pub asset: String,
     #[serde(default)]
     pub runtime_delta: bool,
+    /// Must be true only for modules that reconstruct __project_cached.
+    #[serde(default)]
+    pub project_context_cache: bool,
     #[serde(default)]
     pub on_start: Option<String>,
     #[serde(default)]
@@ -1152,7 +1158,7 @@ mod tests {
         let sky = environment
             .sky
             .expect("default world must include a sky dome");
-        assert_eq!(sky.model, "models/skydome.ydd@skydome_high");
+        assert_eq!(sky.model, ProjectSkyEnvironment::default().model);
         assert!(sky.clouds.enabled);
         assert!(sky.clouds.coverage > 0.0);
         assert!(sky.clouds.density > 0.0);
@@ -1314,10 +1320,6 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../Projects/FirstFPS/environments/yard.environment.json");
         if !path.is_file() {
-            eprintln!(
-                "skipping local FirstFPS environment fixture: {}",
-                path.display()
-            );
             return;
         }
         let bytes = std::fs::read(&path).expect("read FirstFPS environment fixture");

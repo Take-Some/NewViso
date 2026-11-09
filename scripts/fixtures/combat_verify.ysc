@@ -1,0 +1,85 @@
+import * as Game from './default_game_base.ysc';
+import { createRuntimeSnapshotDecoder } from './snapshot_delta.ysc';
+const decode=createRuntimeSnapshotDecoder();
+let stage=0,since=0,time=0,shots=0,health=0,reloadSeen=false,damageSeen=false,wallHit=false,gunPoseSeen=false;
+let enemyEntity=0,corpseShots=0,dropRequested=false,dropVisible=false,dropBound=false;
+function check(ok:any,message:string):void{if(!ok)throw new Error('COMBAT_VERIFY '+message);}
+function next(value:number,commands:any[]):void{stage=value;since=time;commands.push({op:'console.write',message:'COMBAT_STAGE '+stage});}
+function shot(source:number,target:any,damage:number):any{return {op:'physics.ballistic.fire',source,source_actor:source===900000000?'player.character':'combat.test.enemy',
+ origin:[target.position[0],target.position[1],target.position[2]+2],direction:[0,0,-1],damage,impulse:2,max_distance:4,ignore_entity:source,max_hits:1};}
+export function on_start(p:any):any{
+ p=decode(p);const result:any=Game.on_start(p);
+ result.commands.push({op:'items.inventory.add',owner_id:'player',item_id:'weapon.pistol.military',quantity:1},
+  {op:'items.inventory.equip',owner_id:'player',slot:'hands',item_id:'weapon.pistol.military'});
+ return result;
+}
+export function on_frame(raw:any):any {
+ const p=decode(raw);p.frame={...p.frame,platform:{...p.frame.platform,focused:false}};time=Number(p.runtime?.living_world?.clock?.world_seconds??p.elapsed_seconds);
+ // The fixture delivers input into the real shared lifecycle, with no native controller replacement.
+ if(stage===7){p.frame.platform.focused=true;p.frame.platform.cursor_captured=true;p.frame.input={state:{keys:{down:[41],pressed:[]},mouse:{down:[1],pressed:[1],delta:{x:0,y:0}}}};}
+ if(stage===8){p.frame.platform.focused=true;p.frame.input={state:{keys:{down:[],pressed:[24]},mouse:{down:[],pressed:[],delta:{x:0,y:0}}}};}
+ const result:any=Game.on_frame(p),commands=result.commands;
+ const r=p.runtime,enemy=r.peds?.peds?.find((v:any)=>v.profile.actor_id==='combat.test.enemy'),player=r.peds?.peds?.find((v:any)=>v.profile.actor_id==='player.character');
+ gunPoseSeen=gunPoseSeen||commands.some((v:any)=>v.op==='scene.entity.arm_ik.set'&&v.id==='combat.test.enemy'&&v.arms.length===2);
+ const record=r.peds?.physics?.bodies?.find((v:any)=>v.actor_id==='combat.test.enemy');
+ const body=r.physics?.bodies?.find((v:any)=>String(v.entity)===String(record?.entity_key));
+ const playerBody=r.physics?.bodies?.find((v:any)=>Number(v.entity)===900000000);
+ const groundWeapon=(r.items?.pickups??[]).find((v:any)=>v.origin?.owner_id==='combat.test.enemy'&&v.item_id==='weapon.pistol.military');
+ dropVisible=dropVisible||!!groundWeapon;
+ dropBound=dropBound||!!groundWeapon?.body_entity;
+ dropRequested=dropRequested||!!groundWeapon?.origin;
+ if(stage===3)wallHit=wallHit||(r.physics?.ballistic_impacts??[]).some((h:any)=>String(h.target_key??h.target)==='900060001');
+ if(!since)since=time;
+ if(stage===0&&body&&playerBody&&enemy?.combat?.shots>0){
+  enemyEntity=Number(record.entity);damageSeen=player.health+player.armour<130;next(1,commands);
+ }else if(stage===1){
+  damageSeen=damageSeen||player.health+player.armour<130;
+  reloadSeen=reloadSeen||enemy.combat.reload_until>0;
+  if(enemy.combat.shots>=3&&reloadSeen&&damageSeen){
+   check(enemy.combat.reserve<4,'reload consumes reserve');check(gunPoseSeen,'NPC uses Shared firearm grip and recoil presentation');
+   const x=(body.position[0]+playerBody.position[0])*.5,z=(body.position[2]+playerBody.position[2])*.5;
+   commands.push({op:'physics.body.upsert',entity:900060001,body_kind:'static',position:[x,1.2,z],
+    shape:{kind:'box',half_extents:[3,2,.2]},rotation:[0,0,0,1],participates_in_queries:true,casts_contacts:true});
+   next(2,commands);
+  }
+ }else if(stage===2&&enemy.combat.mode==='search'&&!enemy.combat.visible){shots=enemy.combat.shots;health=player.health+player.armour;
+  commands.push({op:'physics.ballistic.fire',source:900000000,source_actor:'player.character',origin:playerBody.position,
+   direction:body.position.map((v:number,i:number)=>v-playerBody.position[i]),damage:40,impulse:0,max_distance:30,ignore_entity:900000000,max_hits:1});next(3,commands);
+ }else if(stage===3&&time-since>1){
+  check(enemy.combat.shots===shots,'wall blocks target acquisition and firing');check(player.health+player.armour===health,'wall prevents damage');check(wallHit&&enemy.health===100,'real projectile hits cover instead of the enemy');
+  commands.push({op:'physics.body.destroy',entity:900060001});next(4,commands);
+ }else if(stage===4&&enemy.combat.mode==='engage'&&enemy.combat.visible){
+  commands.push({op:'ped.upsert',reset:true,profile:{...enemy.profile,max_health:100,armour:20,combat:null,armed:false,block_events:true}},
+   {op:'agent.tasks.clear',agent_id:'combat.test.enemy.ai'});next(40,commands);
+ }else if(stage===40&&time-since>.3){commands.push(shot(900000000,body,30));next(5,commands);
+ }else if(stage===5&&enemy.health<100){
+  check(enemy.health<100&&enemy.health>0&&enemy.armour===0,'real bullet consumes armour before health '+enemy.health+'/'+enemy.armour);
+  check(!!record.hit_reaction,'nonlethal bullet plays original hit reaction');
+  check(!commands.some((v:any)=>v.op==='scene.entity.arm_ik.set'&&v.id==='combat.test.enemy'&&v.arms.length),'hit reaction releases gun arm IK');
+  commands.push(shot(900000000,body,200));next(6,commands);
+ }else if(stage===6&&enemy.dead&&record.ragdoll?.active){
+  check(record.ragdoll.parts.length===15,'lethal damage enables native ragdoll');
+  commands.push(shot(900060002,playerBody,200));next(7,commands);
+ }else if(stage===7&&player.dead){
+  check(dropRequested,'death issues inventory drop '+JSON.stringify({inventory:r.items?.inventories?.find((v:any)=>v.owner_id==='combat.test.enemy'),commands:commands.filter((v:any)=>String(v.op).startsWith('items.')),livingWorldKeys:Object.keys(r.living_world??{}),simulationKeys:Object.keys(r.living_world?.simulation??{}),actor:r.living_world?.simulation?.actors?.find((v:any)=>v.id==='combat.test.enemy'),defs:p.project?.runtime?.variables?.engine_combat?.enemies?.map((v:any)=>({id:v.id,weapon:v.weapon})),itemDef:r.items?.definitions?.find((v:any)=>v.id==='weapon.pistol.military'),dead:enemy.dead}));
+  check(dropVisible,'dropped weapon appears in ItemsRuntime '+JSON.stringify({pickups:r.items?.pickups,dropRequested}));
+  check(player.health===0,'enemy projectile kills player');
+  check(result.ui.bindings['engine.player.captured']===false,'death releases movement capture');
+  check(!commands.some((v:any)=>v.op==='physics.ballistic.fire'&&v.source===900000000),'dead player cannot fire');
+  next(8,commands);
+ }else if(stage===8){check(dropBound,'dropped weapon has a native physics body');next(9,commands);
+ }else if(stage===9&&!player.dead&&!enemy.dead){
+  check(player.health===100&&player.armour===30,'restart restores player health and armour');
+  check(enemy.health===100&&enemy.combat.shots===0,'restart restores encounter and ammunition');
+  check(!record.ragdoll,'restart clears ragdoll');
+  const inventory=r.items?.inventories?.find((v:any)=>v.owner_id==='combat.test.enemy');
+  check(inventory?.equipped?.hands==='weapon.pistol.military','restart restores NPC weapon');
+  check(!(r.items?.pickups??[]).some((v:any)=>v.origin?.owner_id==='combat.test.enemy'),'encounter restart removes previous-round loot');
+  commands.push({op:'console.write',message:'COMBAT_VERIFY_PASS male_original_assets native_detection ranged_attack player_damage armour reload_reserve occlusion search reacquire hit_reaction ragdoll death_input_gate encounter_restart'});
+  result.exit_requested=true;next(10,commands);
+ }
+ check(stage===10||time-since<18,'timeout stage '+stage+' '+JSON.stringify({time,since,enemy,player,record:record?{entity:record.entity,controlled:record.controlled,ragdoll:record.ragdoll?.active}:null},(_k:string,v:any)=>typeof v==='bigint'?String(v):v));
+ return result;
+}
+export function on_event(p:any):any{return Game.on_event(p);}
+export function on_shutdown(p:any):any{return Game.on_shutdown(p);}

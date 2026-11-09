@@ -3,7 +3,9 @@ use super::*;
 #[derive(Clone, Debug, Default)]
 pub(super) struct PoseLayers {
     physical: Option<PhysicalPose>,
+    recovery: Option<recovery::RecoveryBlend>,
     additive: Option<AdditivePlayback>,
+    ground_offset: [f32; 3],
 }
 
 #[derive(Clone, Debug)]
@@ -11,6 +13,7 @@ struct PhysicalPose {
     frozen_locals: Arc<[[f32; 16]]>,
     globals: Arc<[[f32; 16]]>,
     palette: Arc<[[f32; 16]]>,
+    integrity: PhysicalSkeletonIntegrity,
 }
 
 #[derive(Clone, Debug)]
@@ -23,12 +26,17 @@ struct AdditivePlayback {
 #[derive(Clone, Default)]
 pub(super) struct PoseLayerSample {
     physical_palette: Option<Arc<[[f32; 16]]>>,
+    recovery: Option<recovery::RecoveryBlend>,
     additive: Option<AdditivePlayback>,
+    ground_offset: [f32; 3],
 }
 
 impl PoseLayerSample {
     pub(super) fn is_physical(&self) -> bool {
         self.physical_palette.is_some()
+    }
+    pub(super) fn requires_rigid_presentation(&self) -> bool {
+        self.is_physical() || self.recovery.is_some()
     }
 }
 
@@ -36,13 +44,33 @@ impl PoseLayers {
     pub(super) fn sample(&self) -> PoseLayerSample {
         PoseLayerSample {
             physical_palette: self.physical.as_ref().map(|p| p.palette.clone()),
+            recovery: self.recovery.clone(),
             additive: self.additive.clone(),
+            ground_offset: self.ground_offset,
         }
     }
     pub(super) fn is_physical(&self) -> bool {
         self.physical.is_some()
     }
+    pub(super) fn bind_recovery_clip(&mut self, name: &str) -> bool {
+        let matches = self
+            .recovery
+            .as_mut()
+            .is_some_and(|r| r.start_for_clip(name));
+        if !matches {
+            self.recovery = None;
+        }
+        matches
+    }
+    pub(super) fn cancel_recovery(&mut self) {
+        self.recovery = None;
+    }
     pub(super) fn advance(&mut self, dt: f32) -> bool {
+        if self.physical.is_none() {
+            if let Some(recovery) = self.recovery.as_mut() {
+                recovery.advance(dt);
+            }
+        }
         let Some(additive) = self.additive.as_mut() else {
             return false;
         };
@@ -97,6 +125,11 @@ fn palette_from_globals(
         .collect()
 }
 
+mod recovery;
+pub use recovery::ScenePhysicalRecovery;
+mod physical;
+use physical::{physical_globals, PhysicalSkeletonIntegrity};
+
 fn locals_from_globals(
     skeleton: &ModelSkeleton,
     globals: &[[f32; 16]],
@@ -128,8 +161,17 @@ pub(super) fn apply_layers(
     if let Some(physical) = &sample.physical_palette {
         return Ok(physical.to_vec());
     }
+    if let Some(recovery) = &sample.recovery {
+        palette = recovery.apply(
+            palette,
+            skeleton,
+            derived_joint_drivers,
+            source_to_model,
+            model_to_source,
+        )?;
+    }
     let Some(additive) = &sample.additive else {
-        return Ok(palette);
+        return Ok(ground_palette(palette, sample.ground_offset));
     };
     let globals: Vec<_> = palette
         .iter()
@@ -191,10 +233,45 @@ pub(super) fn apply_layers(
         });
     }
     palette = palette_from_globals(skeleton, &result, model_to_source);
-    Ok(palette)
+    Ok(ground_palette(palette, sample.ground_offset))
+}
+
+fn ground_palette(mut palette: Vec<[f32; 16]>, offset: [f32; 3]) -> Vec<[f32; 16]> {
+    for p in &mut palette {
+        for i in 0..3 {
+            p[12 + i] += offset[i];
+        }
+    }
+    palette
 }
 
 impl Scene3dRuntime {
+    /// A coherent translation of the complete animated hierarchy. Physics keeps
+    /// the capsule; lower-limb IK owns the bounded visual posture correction.
+    pub fn set_entity_ground_pose_offset(
+        &mut self,
+        entity: u64,
+        world: [f32; 3],
+    ) -> Result<(), String> {
+        if world.iter().any(|v| !v.is_finite()) {
+            return Err("invalid ground pose offset".into());
+        }
+        let Some(transform) = self.entity_transform_matrix(entity) else {
+            return Ok(());
+        };
+        let inverse = inverse_affine(transform).ok_or("singular ground pose transform")?;
+        let offset = transform_vector_mat4(inverse, Vec3::new(world[0], world[1], world[2]));
+        if let Some(state) = self.skinned_entities.get_mut(&entity) {
+            state.pose_layers.ground_offset =
+                if state.pose_layers.is_physical() || state.pose_layers.recovery.is_some() {
+                    [0.0; 3]
+                } else {
+                    [offset.x, offset.y, offset.z]
+                };
+        }
+        Ok(())
+    }
+
     /// Lowest authored contact point relative to the scene model origin.
     /// Uses the same blended/additive pose as skinning, including helper drivers.
     pub fn entity_skeletal_floor_offset(
@@ -271,6 +348,45 @@ impl Scene3dRuntime {
         )
     }
 
+    /// Samples an authored candidate without changing playback, physical ownership,
+    /// IK, or the entity transform. Results use the installed model coordinate system.
+    pub fn entity_clip_joint_model_matrices(
+        &self,
+        entity: u64,
+        clip: &ModelAnimationClip,
+        time_seconds: f32,
+        names: &[&str],
+    ) -> Result<Vec<[f32; 16]>, String> {
+        if !time_seconds.is_finite() || time_seconds < 0.0 {
+            return Err("invalid recovery candidate sample time".into());
+        }
+        let state = self
+            .skinned_entities
+            .get(&entity)
+            .ok_or_else(|| format!("entity {entity} has no installed animated skeleton"))?;
+        let palette = build_skin_palette(
+            &state.skeleton,
+            &state.derived_joint_drivers,
+            clip,
+            time_seconds,
+            state.source_to_model,
+            state.model_to_source,
+        )?;
+        let globals = globals_from_palette(state, &palette)?;
+        names
+            .iter()
+            .map(|name| {
+                let index = state
+                    .skeleton
+                    .joints
+                    .iter()
+                    .position(|joint| joint.name.eq_ignore_ascii_case(name))
+                    .ok_or_else(|| format!("recovery candidate has no installed joint {name}"))?;
+                Ok(globals[index])
+            })
+            .collect()
+    }
+
     pub(super) fn entity_pose_model_matrices(&self, entity: u64) -> Result<Vec<[f32; 16]>, String> {
         let state = self
             .skinned_entities
@@ -335,13 +451,15 @@ impl Scene3dRuntime {
             state.source_to_model,
             state.model_to_source,
         )?;
-        arm_ik::apply_to_palette(
-            &mut palette,
-            &state.skeleton,
-            &state.derived_joint_drivers,
-            state.source_to_model,
-            &self.model_arm_ik(entity)?,
-        )?;
+        if state.pose_layers.recovery.is_none() {
+            arm_ik::apply_to_palette(
+                &mut palette,
+                &state.skeleton,
+                &state.derived_joint_drivers,
+                state.source_to_model,
+                &self.model_arm_ik(entity)?,
+            )?;
+        }
         globals_from_palette(state, &palette)
     }
 
@@ -369,6 +487,7 @@ impl Scene3dRuntime {
         );
         let inverse =
             inverse_affine(model).ok_or_else(|| "singular physical model transform".to_owned())?;
+        self.leg_ik_constraints.remove(&entity);
         let state = self
             .skinned_entities
             .get_mut(&entity)
@@ -386,45 +505,59 @@ impl Scene3dRuntime {
             }
             requested.insert(index, mul_mat4(inverse, *world));
         }
-        if let Some(globals) = frozen {
-            let locals = locals_from_globals(&state.skeleton, &globals)?;
-            state.pose_layers.physical = Some(PhysicalPose {
-                frozen_locals: locals.into(),
-                globals: globals.into(),
-                palette: Vec::new().into(),
-            });
+        let first = state.pose_layers.physical.is_none();
+        let frozen_locals: Arc<[[f32; 16]]> = if let Some(globals) = frozen {
+            locals_from_globals(&state.skeleton, &globals)?.into()
+        } else {
+            state
+                .pose_layers
+                .physical
+                .as_ref()
+                .expect("physical pose")
+                .frozen_locals
+                .clone()
+        };
+        let (globals, integrity) = physical_globals(
+            &state.skeleton,
+            &frozen_locals,
+            &requested,
+            &state.derived_joint_drivers,
+        )?;
+        let palette = palette_from_globals(&state.skeleton, &globals, state.model_to_source);
+        state.pose_layers.ground_offset = [0.0; 3];
+        state.pose_layers.recovery = None;
+        state.pose_layers.physical = Some(PhysicalPose {
+            frozen_locals,
+            globals: globals.into(),
+            palette: palette.into(),
+            integrity,
+        });
+        if first {
             state.pose_layers.additive = None;
             invalidate_pose(state);
         }
-        let pose = state
-            .pose_layers
-            .physical
-            .as_mut()
-            .expect("physical pose installed");
-        let mut globals = Vec::with_capacity(state.skeleton.joints.len());
-        for (index, joint) in state.skeleton.joints.iter().enumerate() {
-            let global = if let Some(matrix) = requested.get(&index) {
-                *matrix
-            } else if let Some(driver) = state.derived_joint_drivers[index] {
-                mul_mat4(globals[driver.joint as usize], driver.bind_offset)
-            } else if let Some(parent) = joint.parent {
-                mul_mat4(globals[parent as usize], pose.frozen_locals[index])
-            } else {
-                pose.frozen_locals[index]
-            };
-            globals.push(global);
-        }
-        pose.palette =
-            palette_from_globals(&state.skeleton, &globals, state.model_to_source).into();
-        pose.globals = globals.into();
         Ok(())
+    }
+
+    /// Cached metrics from the same hierarchy used by the rendered skin.
+    pub fn entity_physical_skeleton_integrity(&self, entity: u64) -> Option<serde_json::Value> {
+        let state = self.skinned_entities.get(&entity)?;
+        let pose = state.pose_layers.physical.as_ref()?;
+        let mut value =
+            serde_json::to_value(&pose.integrity).expect("finite physical skeleton integrity");
+        value["palette_interpolation_active"] = serde_json::json!(state.palette_blend.is_some());
+        value["vertex_interpolation_active"] =
+            serde_json::json!(state.presentation_blend.is_some());
+        Some(value)
     }
 
     pub fn clear_entity_physical_pose(&mut self, entity: u64) -> bool {
         let Some(state) = self.skinned_entities.get_mut(&entity) else {
             return false;
         };
-        if state.pose_layers.physical.take().is_none() {
+        let physical = state.pose_layers.physical.take().is_some();
+        let recovery = state.pose_layers.recovery.take().is_some();
+        if !physical && !recovery {
             return false;
         }
         invalidate_pose(state);
@@ -486,6 +619,8 @@ mod tests {
         ];
         let sample = PoseLayerSample {
             physical_palette: None,
+            recovery: None,
+            ground_offset: [0.0; 3],
             additive: Some(AdditivePlayback {
                 clip: Arc::new(clip),
                 time: 0.0,
@@ -500,7 +635,15 @@ mod tests {
                 bind_offset: trs_matrix([0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0], [1.0; 3]),
             }),
         ];
-        let result = apply_layers(base, &sample, &skeleton, &drivers, identity, identity).unwrap();
+        let result = apply_layers(
+            base.clone(),
+            &sample,
+            &skeleton,
+            &drivers,
+            identity,
+            identity,
+        )
+        .unwrap();
         assert!((result[0][12] - 3.0).abs() < 1e-5);
         assert!((result[1][12] - 2.0).abs() < 1e-5);
         assert!(result[1][13].abs() < 1e-5);
@@ -511,5 +654,36 @@ mod tests {
         assert!((distance - 1.0).abs() < 1e-5);
         assert!((result[2][12] - 2.0).abs() < 1e-5);
         assert!((result[2][13] + 1.0).abs() < 1e-5);
+        let mut shifted = sample.clone();
+        shifted.ground_offset = [0.2, -0.15, 0.3];
+        let ground = apply_layers(
+            base.clone(),
+            &shifted,
+            &skeleton,
+            &drivers,
+            identity,
+            identity,
+        )
+        .unwrap();
+        for (a, b) in ground.iter().zip(&result) {
+            for k in 0..12 {
+                assert!((a[k] - b[k]).abs() < 1e-5);
+            }
+            for k in 0..3 {
+                assert!((a[12 + k] - b[12 + k] - shifted.ground_offset[k]).abs() < 1e-5);
+            }
+        }
+        // External physical globals must never receive the animated posture twice.
+        shifted.physical_palette = Some(base.clone().into());
+        let physical = apply_layers(
+            base.clone(),
+            &shifted,
+            &skeleton,
+            &drivers,
+            identity,
+            identity,
+        )
+        .unwrap();
+        assert_eq!(physical, base);
     }
 }

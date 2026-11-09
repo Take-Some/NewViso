@@ -8,6 +8,7 @@ impl Scene3dRuntime {
         let focus = self.world.focus();
         json!({
             "scene": {
+                "characters":self.character_bindings_snapshot(),
                 "surface_marks": {
                     "count": self.surface_marks.len(),
                     "attached": self.surface_marks.iter().filter(|mark| mark.owner.is_some()).count(),
@@ -147,6 +148,7 @@ impl Scene3dRuntime {
 
         json!({
             "scene": {
+                "characters":self.character_bindings_snapshot(),
                 "title": self.title,
                 "render_settings": self.render_policy,
                 "mesh_count": self.cubes.len(),

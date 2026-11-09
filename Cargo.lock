@@ -308,6 +308,7 @@ name = "newviso-audio-api"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -372,6 +373,7 @@ dependencies = [
 name = "newviso-config"
 version = "0.1.0"
 dependencies = [
+ "quick-xml",
  "serde",
  "serde_json",
 ]
@@ -381,6 +383,9 @@ name = "newviso-content-manager"
 version = "0.1.0"
 dependencies = [
  "newviso-assets-client",
+ "newviso-editor-viewport",
+ "newviso-project",
+ "newviso-scene-document",
  "serde",
  "serde_json",
 ]
@@ -392,6 +397,29 @@ version = "0.1.0"
 [[package]]
 name = "newviso-core"
 version = "0.1.0"
+
+[[package]]
+name = "newviso-doors"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "newviso-editor-viewport"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "newviso-endorphin"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "newviso-environment"
@@ -509,7 +537,19 @@ dependencies = [
 name = "newviso-project"
 version = "0.1.0"
 dependencies = [
+ "newviso-config",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "newviso-project-tool"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "newviso-config",
+ "newviso-project",
+ "newviso-scene-document",
  "serde_json",
 ]
 
@@ -568,6 +608,9 @@ dependencies = [
  "newviso-config",
  "newviso-content-manager",
  "newviso-core",
+ "newviso-doors",
+ "newviso-editor-viewport",
+ "newviso-endorphin",
  "newviso-environment",
  "newviso-events",
  "newviso-host",
@@ -588,6 +631,7 @@ dependencies = [
  "newviso-steering",
  "newviso-textures",
  "newviso-ui-client",
+ "newviso-ui-draw",
  "newviso-vehicle",
  "newviso-world",
  "quick-xml",
@@ -601,13 +645,23 @@ dependencies = [
 name = "newviso-scene"
 version = "0.1.0"
 dependencies = [
+ "newviso-character",
  "newviso-host",
  "newviso-input-client",
  "newviso-materials",
  "newviso-model",
  "newviso-render-client",
  "newviso-resource-runtime",
+ "newviso-scene-document",
  "newviso-textures",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "newviso-scene-document"
+version = "0.1.0"
+dependencies = [
  "serde",
  "serde_json",
 ]

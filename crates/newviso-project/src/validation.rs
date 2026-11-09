@@ -19,6 +19,8 @@ pub(super) fn validate_manifest(manifest: &ProjectManifest) -> Result<(), Projec
         ));
     }
 
+    manifest.configuration.validate()?;
+
     validate_project_relative_path("paths.assets", &manifest.paths.assets)?;
     validate_project_relative_path("paths.content", &manifest.paths.content)?;
     validate_project_relative_path("paths.cache", &manifest.paths.cache)?;

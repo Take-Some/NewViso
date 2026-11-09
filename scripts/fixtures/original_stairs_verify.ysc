@@ -1,0 +1,68 @@
+import * as Game from "./default_game_base.ysc";
+import * as FPS from "../fps/game.ysc";
+import {CFG} from "../fps/config.ysc";
+import {Ped} from "./world/peds.ysc";
+import {createRuntimeSnapshotDecoder} from "./snapshot_delta.ysc";
+const decode=createRuntimeSnapshotDecoder();
+let config:any,course:any,npcs:string[]=[],physical:any[]=[],elapsed=0,stage=0,since=0,events:any={},peakFootError=0,trace=false,soleFrames:any={},soleHeights:any={},maxSoleError=0,middleCaptured=false;
+function check(v:any,m:string):void{if(!v)throw new Error("ORIGINAL_STAIRS "+m);}
+const dot=(a:number[],b:number[])=>a.reduce((s,v,i)=>s+v*b[i],0);
+const advance=(p:number[])=>dot(p.map((v,i)=>v-course.start[i]),course.axis);
+export function on_event(e:any):any{const id=e?.payload?.actor_id;if(id){const a=events[id]??(events[id]={});a[e.topic]=(a[e.topic]??0)+1;}const r:any=Game.on_event(e);if(["character.jump","character.fall","character.land"].includes(e.topic))r.commands.push({op:"console.write",message:"STAIR_AIR "+JSON.stringify({t:elapsed,stage,topic:e.topic,payload:e.payload})});return r;}
+export function on_start(raw:any):any{
+ const p=decode(raw);config=p.project.runtime.variables.engine_player;course=p.project.runtime.variables.original_stair_course;trace=p.project.runtime.variables.stair_verification_trace;npcs=p.project.runtime.variables.stair_verification_npcs;
+ const r:any=Game.on_start(p);(CFG as any).physicsWorld.requiredStreamedMeshColliders=1;
+ r.commands.push(...FPS.startGame(p).commands);return r;
+}
+export function on_frame(raw:any):any{
+ const p=decode(raw);elapsed+=Number(p.delta_seconds);
+ const bodies=p.runtime.physics?.bodies??[],player=bodies.find((b:any)=>String(b.entity_key??b.entity)==="900000000");
+ if(p.runtime.peds?.physics?.bodies)physical=p.runtime.peds.physics.bodies;
+ const actors=physical.filter((b:any)=>npcs.includes(b.actor_id)).map((a:any)=>{
+  const b=bodies.find((b:any)=>String(b.entity_key??b.entity)===String(a.entity_key??a.entity));
+  return {id:a.actor_id,p:b?.position,v:b?.linear_velocity,offset:a.center_offset,s:b?.stair_support,rotation:b?.rotation,authority:a.authority,recovery:a.endorphin?.recovery};
+ });
+ const up=stage===1&&player&&advance(player.position)<course.length-.3;
+ const down=stage===2&&player&&advance(player.position)>.2;
+ p.frame={...p.frame,platform:{...p.frame.platform,focused:true,cursor_captured:true},input:{state:{keys:{down:up?[41]:down?[37]:[],pressed:[]},mouse:{down:[],pressed:[1],delta:{x:0,y:0}}}}};
+ const r:any=Game.on_frame(p);r.commands.push(...FPS.frameGame(p).commands);
+ const side=[-course.axis[2],0,course.axis[0]],mid=course.start.map((v:any,i:number)=>v+course.axis[i]*course.length*.5);
+ r.commands.push({op:"scene.camera.set",position:[mid[0]+side[0]*5,mid[1]+4,mid[2]+side[2]*5],target:[mid[0],mid[1]+1,mid[2]],up:[0,1,0],fov_y_degrees:62,near:.04,far:200});
+
+ for(const actor of p.runtime.endorphin?.feet??[]){
+  for(const leg of actor.legs??[]){
+   const s=leg.support;if(!s?.contact_point||s.contact_gap===null||s.contact_gap>.005||!s.actual_sole||!leg.position)continue;
+   soleFrames[actor.entity_key]=(soleFrames[actor.entity_key]??0)+1;
+   const distance=(a:number[],b:number[])=>Math.hypot(...a.map((v,i)=>v-b[i]));
+   peakFootError=Math.max(peakFootError,distance(leg.position,leg.target));
+   for(let i=0;i<4;i++)maxSoleError=Math.max(maxSoleError,distance(s.actual_sole[i],s.target_sole[i]));
+   check(maxSoleError<.01,"actual sole disagrees with solved support "+JSON.stringify({t:elapsed,entity:actor.entity_key,error:maxSoleError,leg}));
+   const y=s.contact_point[1];
+   if(y>course.start[1]+.1&&y<course.upper_y-.1){
+    const heights=soleHeights[actor.entity_key]??(soleHeights[actor.entity_key]={});heights[Math.round(y*100)]=true;
+   }
+  }
+ }
+ if(!middleCaptured&&stage===1&&player&&advance(player.position)>course.length*.5){middleCaptured=true;r.commands.push({op:"console.write",message:"STAIR_CAPTURE middle"});}
+ const ready=actors.length===2&&actors.every((a:any)=>a.p);
+ if(stage===0&&player&&ready&&elapsed>2.0&&(p.runtime.endorphin?.feet??[]).length>=3){
+  stage=1;since=elapsed;for(let i=0;i<npcs.length;i++)r.commands.push(new Ped(npcs[i]).goTo(course.goals[i],1.1));
+ }else if(stage===1&&player&&ready&&advance(player.position)>course.length-.4&&actors.every((a:any)=>advance(a.p)>course.length-.4)){
+  check(Math.abs(player.position[1]-config.body_height/2-course.upper_y)<.1,"player missed original landing");
+  for(const a of actors)check(Math.abs(a.p[1]-a.offset-course.upper_y)<.1,"NPC missed original landing "+JSON.stringify(a));
+  stage=2;since=elapsed;for(let i=0;i<npcs.length;i++)r.commands.push(new Ped(npcs[i]).goTo(course.returns[i],1.0));
+  r.commands.push({op:"console.write",message:"STAIR_CAPTURE upper"});
+ }else if(stage===2&&player&&ready&&advance(player.position)<.4&&actors.every((a:any)=>advance(a.p)<.4)&&Math.abs(player.position[1]-config.body_height/2-course.start[1])<.04&&actors.every((a:any)=>Math.abs(a.p[1]-a.offset-course.start[1])<.04)){
+  check(Math.abs(player.position[1]-config.body_height/2-course.start[1])<.1,"player missed original lower floor");
+  for(const a of actors)check(Math.abs(a.p[1]-a.offset-course.start[1])<.1,"NPC missed original lower floor");
+  for(const[id,e]of Object.entries(events)as any)check(!e["character.jump"]&&!e["character.fall"]&&!e["character.land"],"false stair air event "+id+" "+JSON.stringify(e));
+  check(Object.keys(soleHeights).length>=3&&Object.values(soleHeights).every((h:any)=>Object.keys(h).length>=5),"missing original tread support coverage "+JSON.stringify({soleFrames,soleHeights}));
+  r.commands.push({op:"console.write",message:"STAIR_VERIFY_PASS "+JSON.stringify({original_firstfps_collision:true,player:player.position,actors,events,soleFrames,soleHeights,maxSoleError,peakFootError})});r.exit_requested=true;
+ }
+ if(trace&&elapsed>5.5&&elapsed<8.5)r.commands.push({op:'console.write',message:'STAIR_FINE '+JSON.stringify({t:elapsed,tick:p.runtime.physics?.fixed_tick,actors,feet:p.runtime.endorphin?.feet},(_k,x)=>typeof x==='bigint'?String(x):x)});
+ if(Math.floor(elapsed*2)!==Math.floor((elapsed-Number(p.delta_seconds))*2))
+  r.commands.push({op:"console.write",message:"STAIR_SAMPLE "+JSON.stringify({t:elapsed,stage,player:player?.position,actors,navigation:p.runtime.physical_characters})});
+ check(elapsed<45,"timeout "+JSON.stringify({stage,player,actors,course}));
+ return r;
+}
+export function on_shutdown(p:any):any{const r:any=Game.on_shutdown(p);r.commands.push(...FPS.shutdownGame().commands);return r;}

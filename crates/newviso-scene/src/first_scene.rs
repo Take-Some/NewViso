@@ -30,7 +30,9 @@ mod surface_marks;
 pub use surface_caps::SceneSnowCap;
 
 mod animation_skinning;
-pub use animation_skinning::SceneArmIkConstraint;
+pub use animation_skinning::{
+    SceneArmIkConstraint, SceneFootSupport, SceneLegIkConstraint, ScenePhysicalRecovery,
+};
 mod asset_models;
 mod atmospheric_clouds;
 #[cfg(test)]
@@ -49,38 +51,38 @@ use particle_interiors::*;
 mod particle_styles;
 use particle_styles::*;
 pub use particle_styles::{SceneParticleMesh, SceneParticleStyle};
+mod geometry_upload;
 mod portal_visibility;
+mod primitive_geometry_cache;
 mod render_math;
 mod render_policy;
 mod renderer_atmosphere;
 mod renderer_frame;
-mod geometry_upload;
-mod primitive_geometry_cache;
 mod renderer_geometry;
 mod renderer_gpu_geometry;
-mod renderer_skinning;
 mod renderer_init;
 mod renderer_materials;
-mod renderer_terrain_material;
-mod renderer_water;
-mod renderer_water_geometry;
-mod renderer_water_bump;
-mod renderer_water_underwater;
 mod renderer_pipelines;
 mod renderer_resources;
 mod renderer_shutdown;
+mod renderer_skinning;
 mod renderer_sky;
+mod renderer_terrain_material;
+mod renderer_water;
+mod renderer_water_bump;
+mod renderer_water_geometry;
+mod renderer_water_underwater;
 use renderer_pipelines::{create_scene_pipelines, ScenePipelines};
 mod renderer_asset_submission;
-mod renderer_graph;
-mod renderer_passes;
-mod renderer_draw_stream;
-mod renderer_shadow_pass;
 mod renderer_cloud_passes;
-mod renderer_primitive_pass;
+mod renderer_draw_stream;
+mod renderer_graph;
 mod renderer_indexed_terrain;
 mod renderer_instance_submission;
-use renderer_draw_stream::{compact_direct_draws,draw_direct_draws};
+mod renderer_passes;
+mod renderer_primitive_pass;
+mod renderer_shadow_pass;
+use renderer_draw_stream::{compact_direct_draws, draw_direct_draws};
 mod renderer_submission;
 #[cfg(test)]
 mod renderer_submission_tests;
@@ -90,22 +92,27 @@ use renderer_graph::main_deferred_hdr_render_graph;
 use renderer_resources::{create_frame_buffer_ring, scene_pipeline_desc};
 use renderer_submission::*;
 mod renderer_uniforms;
+mod scene_authoring;
+pub use scene_authoring::SceneAuthoringCamera;
+mod characters;
+mod physics_binding;
+use characters::SceneCharacterBinding;
+mod scene_camera_state;
 mod scene_entities;
+pub use physics_binding::ScenePhysicsSource;
 mod scene_lighting;
 mod scene_load;
-mod scene_state;
-mod scene_weather_state;
-mod scene_snapshot;
-mod scene_camera_state;
 mod scene_particles;
 mod scene_physics_geometry;
+mod scene_snapshot;
+mod scene_state;
 mod scene_transients;
+mod scene_weather_state;
 mod vehicle_dashboard;
 pub use vehicle_dashboard::SceneVehicleDashboard;
 mod volumetric_clouds;
-mod weather_gpu_fx;
 mod weather_collision;
-use weather_collision::*;
+mod weather_gpu_fx;
 pub use asset_models::{
     prepare_model_geometry, SceneModelDent, SceneModelPartPose, ScenePreparedModelGeometry,
     SceneResolvedMaterial,
@@ -122,6 +129,7 @@ use portal_visibility::PortalVisibilityGraph;
 use render_policy::RenderPolicy;
 pub use volumetric_clouds::VolumetricCloudDesc;
 use volumetric_clouds::*;
+use weather_collision::*;
 use weather_gpu_fx::*;
 pub use weather_gpu_fx::{
     WeatherGpuFxEmitterDesc, WeatherGpuFxLayerDesc, WeatherGpuFxRenderDesc, WeatherGpuFxResources,
@@ -988,12 +996,14 @@ struct WaterImpact {
 pub struct Scene3dRuntime {
     title: String,
     camera_entity_id: u64,
+    authoring_entity_ids: Vec<Option<u64>>,
+    editor_camera_detached: bool,
     camera: Camera,
     orbit: OrbitCamera,
     render_policy: RenderPolicy,
     cubes: Vec<Cube>,
     terrain_meshes: BTreeMap<usize, heightfield::HeightfieldPatch>,
-    snow_cap_depths: BTreeMap<String,f32>,
+    snow_cap_depths: BTreeMap<String, f32>,
     terrain_texture_paths: Option<[String; 5]>,
     terrain_gpu_material: Option<renderer_terrain_material::TerrainGpuMaterial>,
     water_texture_paths: Option<[String; 5]>,
@@ -1011,6 +1021,9 @@ pub struct Scene3dRuntime {
     // Weapons use this to keep gun_gripr exactly aligned with PH_R_Hand.
     joint_attachments: BTreeMap<u64, SceneJointAttachment>,
     arm_ik_constraints: BTreeMap<u64, Vec<SceneArmIkConstraint>>,
+    protective_arm_ik_constraints: BTreeMap<u64, Vec<SceneArmIkConstraint>>,
+    leg_ik_constraints: BTreeMap<u64, Vec<SceneLegIkConstraint>>,
+    character_bindings: BTreeMap<u64, std::sync::Arc<SceneCharacterBinding>>,
     animation_skinning_pool: animation_skinning::SkinningWorkerPool,
     animation_skinning_in_flight: BTreeSet<u64>,
     main_view_mesh_visibility: mesh_visibility::MainViewMeshVisibility,
@@ -1206,7 +1219,8 @@ mod tests {
         let one_frame = track_shadow_focus(Some(Vec3::ZERO), camera, 1.0 / 30.0);
         let two_frames = track_shadow_focus(
             Some(track_shadow_focus(Some(Vec3::ZERO), camera, 1.0 / 60.0)),
-            camera, 1.0 / 60.0,
+            camera,
+            1.0 / 60.0,
         );
         assert!((one_frame.x - two_frames.x).abs() < 1.0e-4);
         // Do not smear shadows across a cut or teleport.
@@ -1224,10 +1238,16 @@ mod tests {
         let texel = shadow_distance * 1.1 / shadow_resolution as f32;
         let (right, _, _) = view_basis(direction, Vec3::Y);
         let origin = directional_shadow_view_projection(
-            direction, Vec3::ZERO, shadow_distance, shadow_resolution,
+            direction,
+            Vec3::ZERO,
+            shadow_distance,
+            shadow_resolution,
         );
         let quarter = directional_shadow_view_projection(
-            direction, right.mul(texel * 0.25), shadow_distance, shadow_resolution,
+            direction,
+            right.mul(texel * 0.25),
+            shadow_distance,
+            shadow_resolution,
         );
         let projection_delta = (quarter[12] - origin[12]).abs();
         assert!(projection_delta > 1.0e-8);
@@ -1368,13 +1388,20 @@ mod tests {
     }
 }
 
-
 impl Scene3dRuntime {
     /// Exact triangle-mesh colliders for procedurally authored terrain.
     /// Kept independent of AABB scene solids; supports sloping surfaces.
-    pub fn heightfield_collision_meshes(&self) -> Vec<(u64, Vec<[f32;3]>, Vec<[u32;3]>)> {
-        self.terrain_meshes.values().filter(|mesh| mesh.collides).map(|mesh| (
-            mesh.entity, mesh.physics_vertices.clone(), mesh.triangles.clone()
-        )).collect()
+    pub fn heightfield_collision_meshes(&self) -> Vec<(u64, Vec<[f32; 3]>, Vec<[u32; 3]>)> {
+        self.terrain_meshes
+            .values()
+            .filter(|mesh| mesh.collides)
+            .map(|mesh| {
+                (
+                    mesh.entity,
+                    mesh.physics_vertices.clone(),
+                    mesh.triangles.clone(),
+                )
+            })
+            .collect()
     }
 }

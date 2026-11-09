@@ -9,14 +9,16 @@ impl Scene3dRuntime {
     }
 
     pub(super) fn update_scene_world(&mut self, dt: f32) -> Result<(), String> {
-        self.world.update_transform(
-            SceneEntityId(self.camera_entity_id),
-            SceneTransform {
-                position: self.camera.position,
-                rotation_degrees: Vec3::ZERO,
-                scale: Vec3::ONE,
-            },
-        )?;
+        if !self.editor_camera_detached {
+            self.world.update_transform(
+                SceneEntityId(self.camera_entity_id),
+                SceneTransform {
+                    position: self.camera.position,
+                    rotation_degrees: Vec3::ZERO,
+                    scale: Vec3::ONE,
+                },
+            )?;
+        }
         self.world.pre_update(self.camera.position, dt);
         self.world.update();
         Ok(())
@@ -64,4 +66,3 @@ impl Scene3dRuntime {
         Ok(())
     }
 }
-
