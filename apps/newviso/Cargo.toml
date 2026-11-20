@@ -1,9 +1,14 @@
 [package]
 name = "newviso"
+autobins = false
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 build = "build.rs"
+
+[[bin]]
+name = "newviso"
+path = "src/main.rs"
 
 [dependencies]
 newviso-bugtrap.workspace = true

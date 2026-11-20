@@ -1,3 +1,8 @@
+pub mod ink_navigation;
+pub mod ink_hud;
+pub mod ink_game_state;
+pub mod ink_virtual_lists;
+
 use newviso_host as host;
 use serde_json::{json, Value};
 

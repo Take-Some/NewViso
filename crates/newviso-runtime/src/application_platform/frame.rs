@@ -21,12 +21,44 @@ impl EngineApplication {
             return Err("frame delta must be finite and non-negative".into());
         }
 
+        // Present the project front-end before CPU/GPU map streaming begins.
+        // The engine controls menu state; the selected engine.ui provider draws it.
+        let input = InputSnapshot::sample()?;
+        if self.main_menu.as_ref().is_some_and(|menu| menu.visible) {
+            return self.step_main_menu(dt, surface, input);
+        }
         if !self.startup_map_ready {
             self.pump_startup_map_loading(surface)?;
+            if self.main_menu.as_ref().is_some_and(|menu| menu.launch_requested) {
+                self.render_startup_loading_ui(dt, surface)?;
+            }
+            if self.startup_map_ready && self.main_menu.as_ref().is_some_and(|menu| menu.launch_requested && !menu.started) {
+                self.start_project_scripts()?;
+            }
             return Ok(false);
+        }
+        self.hide_startup_loading_ui()?;
+        if self.main_menu.as_ref().is_some_and(|menu| menu.started) && !self.editor_mode
+            && input.key_pressed(newviso_input_client::key::ESCAPE)
+        {
+            let menu = self.main_menu.as_mut().expect("menu checked");
+            menu.visible = true;
+            if let Some(router) = menu.ink_navigation.as_mut() {
+                if let Err(error) = router.open(
+                    "pause_menu", newviso_ui_client::ink_navigation::InkOpenMode::Push
+                ) {
+                    host::warn("newviso.ink", format!("pause screen route: {error}"));
+                }
+            }
+            self.cursor_captured = false;
+            self.publish_bound_ui_if_changed()?;
+            return self.step_main_menu(dt, surface, input);
         }
 
         let perf_start = std::time::Instant::now();
+        // Sector IO/decode proceeds off-thread; create/delete a bounded number
+        // of static mesh records before physics to detect teleports safely.
+        self.tick_scene_sectors()?;
         self.world_save_allowed = false;
         self.elapsed_seconds += f64::from(dt);
         self.advance_climate_clock(dt)?;
@@ -39,7 +71,6 @@ impl EngineApplication {
         let perf_scene_render_ms;
 
         bugtrap::set_phase("frame.input");
-        let input = InputSnapshot::sample()?;
         host::publish_event_json(
             event_topic::RUNTIME_FRAME_BEGIN,
             "newviso.runtime",
@@ -55,6 +86,7 @@ impl EngineApplication {
 
         let mut ui_frame = None;
         let mut editor_pointer_gated = false;
+        let mut game_ui_pointer_gated = false;
         if has_ui {
             let ui = UiClient::new();
             let input_frame = input.ui_input_frame();
@@ -78,15 +110,28 @@ impl EngineApplication {
             }
             self.apply_content_dispatch(&dispatch)?;
 
-            ui_frame = Some(ui.frame(
-                self.ui_frame_index,
-                dt,
-                surface_size,
-                surface.pixels_per_point,
-            )?);
+            if self.editor_mode {
+                // Editor navigation uses this draw response before simulation;
+                // its frame ownership and interaction contract are unchanged.
+                ui_frame = Some(ui.frame(
+                    self.ui_frame_index,
+                    dt,
+                    surface_size,
+                    surface.pixels_per_point,
+                )?);
+            } else {
+                // Gameplay receives input immediately, but its paint must be
+                // sampled AFTER gameplay scripts and bound UI publication.
+                // Drawing here would produce the previous state and then
+                // invalidate its texture delta when a live HUD value changes.
+                game_ui_pointer_gated = dispatch
+                    .pointer("/capture_state/active")
+                    .and_then(Value::as_bool) == Some(true);
+            }
         }
 
         let camera_navigation_enabled = !editor_pointer_gated
+            && !game_ui_pointer_gated
             && ui_frame
                 .as_ref()
                 .and_then(|frame| frame.input_capture.get("camera_navigation_gated"))
@@ -118,7 +163,9 @@ impl EngineApplication {
 
         let perf_pre_physics_ms = perf_mark.elapsed().as_secs_f64() * 1000.0;
         perf_mark = std::time::Instant::now();
-        if self.physics.is_some() && !self.editor_mode {
+        let sector_collision_guard = self.sector_streamer.as_ref()
+            .is_some_and(|sectors| sectors.collision_guard_active());
+        if self.physics.is_some() && !self.editor_mode && !sector_collision_guard {
             self.suspend_physical_character_drives();
             self.physics
                 .as_mut()
@@ -397,6 +444,8 @@ impl EngineApplication {
         perf_scripts_ms = perf_mark.elapsed().as_secs_f64() * 1000.0;
         perf_mark = std::time::Instant::now();
         let streaming_interest_started = std::time::Instant::now();
+        // Script/vehicle camera updates may move the observer far this frame.
+        self.tick_scene_sectors()?;
         self.sync_scene_streaming_interests()?;
         let streaming_interest_ms = streaming_interest_started.elapsed().as_secs_f64() * 1000.0;
         let streaming_pump_started = std::time::Instant::now();
@@ -437,6 +486,20 @@ impl EngineApplication {
         self.publish_bound_ui_if_changed()?;
         self.publish_content_manager_if_changed()?;
 
+        // Late gameplay UI paint: scripts, streamed assets and bound values
+        // have reached their final state before the provider emits glyph/
+        // texture updates. This removes the stale-frame/one-shot-delta race.
+        // The editor still retains its early paint because it uses that
+        // response to drive viewport interaction.
+        if has_ui && !self.editor_mode {
+            ui_frame = Some(UiClient::new().frame(
+                self.ui_frame_index,
+                dt,
+                surface_size,
+                surface.pixels_per_point,
+            )?);
+        }
+
         host::publish_event_json(
             event_topic::RUNTIME_FRAME_END,
             "newviso.runtime",
@@ -455,6 +518,7 @@ impl EngineApplication {
 
         let perf_publish_ms = publish_start.elapsed().as_secs_f64() * 1000.0;
         let scene_render_start = std::time::Instant::now();
+        let hud_ui = self.screen_hud_draw_list(surface.width, surface.height)?;
         if let Some(mut ui) = ui_frame {
             if self.editor_mode {
                 if let Some(manager) = self.content_manager.as_ref() {
@@ -549,14 +613,29 @@ impl EngineApplication {
                 }
             }
             self.ui_frame_index = self.ui_frame_index.wrapping_add(1);
+            let ui_domain = if self.editor_mode {
+                newviso_render_client::UiLayerDomain::Editor
+            } else {
+                newviso_render_client::UiLayerDomain::GameViewport
+            };
             bugtrap::native_boundary("render.scene");
             self.scene
                 .render_frame_with_overlay(surface.width, surface.height, move || {
+                    if let Some(hud) = hud_ui {
+                        RenderClient::new().composite_ui_draw_list(
+                            hud, newviso_render_client::UiLayerDomain::GameViewport,
+                        )?;
+                    }
                     RenderClient::new().composite_ui_draw_list(
                         ui.draw_list,
-                        newviso_render_client::UiLayerDomain::Editor,
+                        ui_domain,
                     )
                 })?;
+        } else if let Some(hud) = hud_ui {
+            bugtrap::native_boundary("render.scene");
+            self.scene.render_frame_with_overlay(surface.width, surface.height, move || {
+                RenderClient::new().composite_ui_draw_list(hud, newviso_render_client::UiLayerDomain::GameViewport)
+            })?;
         } else {
             bugtrap::native_boundary("render.scene");
             self.scene.render_frame(surface.width, surface.height)?;
@@ -617,6 +696,27 @@ impl EngineApplication {
                     physics: self.physics.as_ref().map(PhysicsRuntime::frame_perf),
                 }
                 .emit();
+                // Opt-in provider inspection; never add the synchronous service
+                // call to ordinary gameplay frames. Sample only every 10th
+                // already-traced frame to avoid profiling overhead dominating.
+                if perf_frame % 10 == 0
+                    && std::env::var("NEWVISO_GPU_INSPECTOR_TRACE").as_deref() == Ok("1")
+                {
+                    match RenderClient::new().renderer_inspector() {
+                        Ok(snapshot) => {
+                            if let Some(gpu) = snapshot.get("gpu_timing") {
+                                host::info(
+                                    "newviso.perf.trace.gpu",
+                                    format!("app_frame={} gpu_stats={gpu}", perf_frame),
+                                );
+                            }
+                        }
+                        Err(error) => host::warn(
+                            "newviso.perf.trace.gpu",
+                            format!("inspector unavailable: {error}"),
+                        ),
+                    }
+                }
             }
         }
         if perf_total_ms >= 25.0 || perf_frame % 60 == 0 || all_frame_perf_logging_enabled() {

@@ -150,10 +150,10 @@ fn pack_bind_vertices(
     // each exact attribute/influence tuple once, then scatter it to every
     // original corner. Material ranges, indices, UV seams and shadow geometry
     // retain their existing ABI and full detail.
-    let mut lookup = std::collections::HashMap::<[u32; 34], usize>::new();
-    let mut rows = Vec::<[f32; 34]>::new();
+    let mut lookup = std::collections::HashMap::<[u32; 36], usize>::new();
+    let mut rows = Vec::<[f32; 36]>::new();
     let mut duplicates = Vec::<Vec<u32>>::new();
-    let mut scratch = Vec::with_capacity(34);
+    let mut scratch = Vec::with_capacity(36);
     for (index, vertex) in vertices.iter().enumerate() {
         let count = vertex.skin_influences as usize;
         if count > vertex.joints.len()
@@ -174,11 +174,12 @@ fn pack_bind_vertices(
             vertex.tangent,
             vertex.color,
             vertex.uv,
+            vertex.uv1,
         );
         scratch.extend(vertex.joints.map(f32::from));
         scratch.extend(vertex.weights);
         scratch.push(count as f32);
-        let row: [f32; 34] = scratch.as_slice().try_into().unwrap();
+        let row: [f32; 36] = scratch.as_slice().try_into().unwrap();
         let key = row.map(f32::to_bits);
         let unique = *lookup.entry(key).or_insert_with(|| {
             let unique = rows.len();
@@ -203,7 +204,7 @@ fn pack_bind_vertices(
         for (row, indices) in rows.into_iter().zip(duplicates) {
             for index in indices {
                 let begin = index as usize * BIND_FLOATS;
-                data[begin..begin + 34].copy_from_slice(&row);
+                data[begin..begin + 36].copy_from_slice(&row);
             }
         }
         return Ok(PackedBindGeometry {
@@ -327,11 +328,17 @@ impl Scene3dRuntime {
             state.entities.remove(&id).unwrap().destroy(render);
         }
         for (id, animation) in &self.skinned_entities {
-            let Some(mesh) = self.asset_meshes.get(id) else { continue };
-            if mesh.skinned_first_vertex.is_none() { continue; }
+            let Some(mesh) = self.asset_meshes.get(id) else {
+                continue;
+            };
+            if mesh.skinned_first_vertex.is_none() {
+                continue;
+            }
             let palette = animation.presented_skin_palette();
             let source = mesh.source_model_id.0;
-            let vertices = self.asset_model_cache.get(&source)
+            let vertices = self
+                .asset_model_cache
+                .get(&source)
                 .ok_or_else(|| format!("GPU skin source {source} is not resident"))?;
             state.prepare_model(render, source, vertices, palette.len())?;
             let model = &state.models[&source];
@@ -407,7 +414,9 @@ impl Scene3dRuntime {
         slot: usize,
     ) -> Result<(), String> {
         self.prepare_gpu_skinning_entities(render)?;
-        let state = self.gpu_skinning.as_mut()
+        let state = self
+            .gpu_skinning
+            .as_mut()
             .ok_or_else(|| "GPU skinning was not initialized".to_owned())?;
         let mut dispatches = Vec::new();
         // Include resident offscreen skeletons: their shadows and reflection
@@ -512,6 +521,7 @@ mod tests {
             tangent: [1., 0., 0., 1.],
             color: [1.; 4],
             uv: [0.; 2],
+            uv1: [0.0; 2],
             joints: [0; 8],
             weights: [0.; 8],
             skin_influences: 0,
@@ -541,6 +551,7 @@ mod tests {
             tangent: [1., 0., 0., 1.],
             color: [1.; 4],
             uv: [0.; 2],
+            uv1: [0.0; 2],
             joints: [0; 8],
             weights: [0.; 8],
             skin_influences: 0,
@@ -562,6 +573,7 @@ mod tests {
             tangent: [1., 0., 0., 1.],
             color: [1.; 4],
             uv: [0.; 2],
+            uv1: [0.0; 2],
             joints: [0; 8],
             weights: [0.; 8],
             skin_influences: 0,
@@ -570,12 +582,12 @@ mod tests {
         seam.uv[0] = 1.;
         let packed = pack_bind_vertices(&[vertex, vertex, seam], 1).unwrap();
         assert_eq!(packed.unique_vertices, 2);
-        assert_eq!(packed.data[34].to_bits(), 72);
-        assert_eq!(packed.data[35].to_bits(), 2);
-        assert_eq!(packed.data[70].to_bits(), 74);
-        assert_eq!(packed.data[71].to_bits(), 1);
+        assert_eq!(packed.data[36].to_bits(), 76);
+        assert_eq!(packed.data[37].to_bits(), 2);
+        assert_eq!(packed.data[74].to_bits(), 78);
+        assert_eq!(packed.data[75].to_bits(), 1);
         assert_eq!(
-            packed.data[72..]
+            packed.data[76..]
                 .iter()
                 .map(|x| x.to_bits())
                 .collect::<Vec<_>>(),
@@ -591,6 +603,7 @@ mod tests {
             tangent: [1., 0., 0., 1.],
             color: [1.; 4],
             uv: [0.; 2],
+            uv1: [0.0; 2],
             joints: [0; 8],
             weights: [0.; 8],
             skin_influences: 1,
@@ -601,9 +614,9 @@ mod tests {
         let data = packed.data;
         assert!(packed.linear);
         assert_eq!(data.len(), BIND_FLOATS);
-        assert_eq!(&data[17..25], &[0.; 8]);
-        assert_eq!(data[25], 1.);
-        assert_eq!(data[33], 1.);
+        assert_eq!(&data[19..27], &[0.; 8]);
+        assert_eq!(data[27], 1.);
+        assert_eq!(data[35], 1.);
         vertex.joints[0] = 1;
         assert!(pack_bind_vertices(&[vertex], 1).is_err());
         vertex.joints[0] = 0;

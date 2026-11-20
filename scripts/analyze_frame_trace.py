@@ -61,7 +61,7 @@ def normalized_trace_lines(lines: list[str]) -> list[str]:
                 continue
             source = entry.get("source") or {}
             category = source.get("name")
-            if category not in (TRACE_PREFIX, RENDER_PREFIX, STREAM_PREFIX):
+            if category not in (TRACE_PREFIX, RENDER_PREFIX, STREAM_PREFIX, GPU_PREFIX):
                 continue
             normalized.append(f"[{category}] {entry.get('message', '')}")
         else:
@@ -107,6 +107,74 @@ def parse_stream_trace(lines: list[str]) -> list[dict[str, float]]:
         ):
             samples.append(entry)
     return samples
+
+
+GPU_PREFIX = "newviso.perf.trace.gpu"
+GPU_PHASES = (
+    "frame_span_ms", "profiled_ms", "compute_ms", "targets_ms",
+    "transparent_ms", "water_ms", "shadow_ms", "opaque_ms",
+    "postfx_ms", "ui_ms",
+)
+
+
+def parse_gpu_trace(lines: list[str]) -> list[dict[str, float]]:
+    """Read Vulkan query results with separate host and completed-GPU frame IDs.
+
+    app_frame is when the snapshot was collected; gpu_frame is the completed
+    timestamp query, which can lag the host and MUST NOT be relabelled.
+    """
+    samples: list[dict[str, float]] = []
+    for line in lines:
+        if " gpu_stats=" not in line or "app_frame=" not in line:
+            continue
+        prefix, payload = line.split(" gpu_stats=", 1)
+        match = re.search(r"\bapp_frame=(\d+)", prefix)
+        if match is None:
+            continue
+        try:
+            gpu = json.loads(payload.strip())
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(gpu, dict) or not gpu.get("enabled"):
+            continue
+        frame = gpu.get("frame_index")
+        if isinstance(frame, bool) or not isinstance(frame, int) or frame <= 0:
+            continue
+        row: dict[str, float] = {
+            "app_frame": float(match.group(1)), "gpu_frame": float(frame)
+        }
+        for key in GPU_PHASES:
+            value = gpu.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                value = float(value)
+                if math.isfinite(value) and value >= 0:
+                    row[key] = value
+        if "profiled_ms" in row:
+            samples.append(row)
+    return samples
+
+
+def summarize_gpu_trace(samples: list[dict[str, float]]) -> dict[str, Any]:
+    """Deduplicate completed GPU queries and give explicit coverage metadata."""
+    by_gpu_frame = {int(s["gpu_frame"]): s for s in samples}
+    unique = list(by_gpu_frame.values())
+    phases: dict[str, Any] = {}
+    for key in GPU_PHASES:
+        values = [sample[key] for sample in unique if key in sample]
+        if values:
+            phases[key] = {
+                "samples": len(values), "avg": round(fmean(values), 4),
+                "p50": round(median(values), 4),
+                "p95": round(percentile(values, 0.95), 4),
+                "p99": round(percentile(values, 0.99), 4),
+                "max": round(max(values), 4)
+            }
+    return {
+        "inspector_polls": len(samples),
+        "unique_completed_gpu_frames": len(unique),
+        "sampled_host_frames": len({int(s["app_frame"]) for s in samples}),
+        "metrics": phases,
+    }
 
 
 def percentile(values: list[float], q: float) -> float:
@@ -190,6 +258,20 @@ def self_test() -> None:
     assert r["frame_sequence"] == {"first": 10, "last": 11}
     assert r["sample_stride"] == 1
     assert percentile([1, 2, 3, 4], .95) == 4
+    gpu_lines = [
+        '[newviso.perf.trace.gpu] app_frame=21 gpu_stats={"enabled":true,"frame_index":19,"profiled_ms":4.5,"postfx_ms":1.2}',
+        '[newviso.perf.trace.gpu] app_frame=31 gpu_stats={"enabled":true,"frame_index":19,"profiled_ms":4.5}',
+        '[newviso.perf.trace.gpu] app_frame=40 gpu_stats={"enabled":false,"frame_index":20,"profiled_ms":0.0}',
+        '[newviso.perf.trace.gpu] app_frame=50 gpu_stats={invalid}',
+    ]
+    gpu = parse_gpu_trace(gpu_lines)
+    assert len(gpu) == 2
+    assert int(gpu[0]["app_frame"]) == 21
+    assert int(gpu[0]["gpu_frame"]) == 19
+    gpu_summary = summarize_gpu_trace(gpu)
+    assert gpu_summary["unique_completed_gpu_frames"] == 1
+    assert gpu_summary["sampled_host_frames"] == 2
+    assert gpu_summary["metrics"]["profiled_ms"]["p99"] == 4.5
 
 
 def main() -> None:
@@ -212,16 +294,23 @@ def main() -> None:
     frames = parse_trace(lines)
     render_frames = parse_render_trace(lines)
     stream_samples = parse_stream_trace(lines)
+    gpu_samples = parse_gpu_trace(lines)
     if args.skip_first < 0:
         parser.error("--skip-first must be >= 0")
     if args.skip_first:
         frames = frames[args.skip_first:]
         render_frames = render_frames[args.skip_first:]
+        # GPU query and host frame counters are not guaranteed to be identical.
+        # Filter using the host frame at which the query was inspected.
+        remaining_host_frames = {int(frame["frame"]) for frame in frames}
+        gpu_samples = [s for s in gpu_samples if int(s["app_frame"]) in remaining_host_frames]
     report = summarize(frames)
     if render_frames:
         report["renderer"] = render_summary(render_frames)
     if stream_samples:
         report["streaming_stages"] = render_summary(stream_samples)
+    if gpu_samples:
+        report["gpu_completed_queries"] = summarize_gpu_trace(gpu_samples)
     print(f"Samples: {report['samples']} | frames: {report['frame_sequence']}")
     print("Timings are wall-clock; render stages can include CPU-to-provider waits.")
     for metric in TIMINGS:
@@ -247,6 +336,15 @@ def main() -> None:
             v = report["streaming_stages"]["metrics"].get(metric)
             if v:
                 print(f"{metric:28s} avg={v['avg']:9.3f} ms p95={v['p95']:9.3f} max={v['max']:9.3f}")
+    if gpu_samples:
+        stats = report["gpu_completed_queries"]
+        print(f"GPU timestamp queries: {stats['unique_completed_gpu_frames']} unique completed "
+              f"frames ({stats['inspector_polls']} inspector polls; separate GPU counter)")
+        for key in GPU_PHASES:
+            metric = stats["metrics"].get(key)
+            if metric:
+                print(f"{key:28s} avg={metric['avg']:9.3f} ms "
+                      f"p95={metric['p95']:9.3f} p99={metric['p99']:9.3f}")
     if args.json:
         args.json.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print(f"Saved JSON: {args.json}")

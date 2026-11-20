@@ -114,7 +114,10 @@ pub struct MeshRenderPasses {
 
 impl Default for MeshRenderPasses {
     fn default() -> Self {
-        Self { color: true, shadow: true }
+        Self {
+            color: true,
+            shadow: true,
+        }
     }
 }
 

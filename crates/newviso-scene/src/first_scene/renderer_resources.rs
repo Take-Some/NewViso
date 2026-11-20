@@ -47,7 +47,7 @@ pub(super) fn scene_pipeline_desc<'a>(
         depth_format: Some("Depth32Float"),
         depth_test: true,
         depth_write: true,
-        depth_compare: "LessOrEqual",
+        depth_compare: if experimental_reverse_z_enabled() {"GreaterOrEqual"} else {"LessOrEqual"},
         cull_mode: "None",
         blend_mode: "Opaque",
         cache_key,

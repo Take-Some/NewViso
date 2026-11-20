@@ -405,8 +405,8 @@ impl EngineApplication {
             plans.sort_by(|a, b| a.4.total_cmp(&b.4));
             let mut allowed = (-max_drop, 0.0_f32);
             for p in &plans {
-                let lo = allowed.0.max(p.6.0);
-                let hi = allowed.1.min(p.6.1);
+                let lo = allowed.0.max(p.6 .0);
+                let hi = allowed.1.min(p.6 .1);
                 if lo <= hi {
                     allowed = (lo, hi);
                 }

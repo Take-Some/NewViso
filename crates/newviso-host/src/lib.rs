@@ -20,7 +20,9 @@ use std::{
     },
 };
 
-type ServiceSlot = Arc<Mutex<ServiceV1Dyn<'static>>>;
+// ServiceV1 is Send + Sync and call(&self) is reentrant by contract.
+// Never serialize every decode and source read behind a host-wide service mutex.
+type ServiceSlot = Arc<ServiceV1Dyn<'static>>;
 type SinkSlot = Arc<Mutex<EventSinkV1Dyn<'static>>>;
 
 const LOGGING_SERVICE_ID: &str = "logging.api";
@@ -128,6 +130,23 @@ pub fn registered_service_ids() -> Vec<String> {
     let mut ids = state.services.keys().cloned().collect::<Vec<_>>();
     ids.sort();
     ids
+}
+
+/// Inspect a service's advertised contract through the current gateway alias.
+/// Clone the ABI service reference and release the host registry lock before
+/// invoking foreign code, just like normal service dispatch.
+pub fn service_description(service_id: &str) -> Result<String, String> {
+    let slot = {
+        let host = state().read().expect("NewViso host state poisoned");
+        let resolved = host
+            .aliases
+            .get(service_id)
+            .map(String::as_str)
+            .unwrap_or(service_id);
+        host.services.get(resolved).cloned()
+    };
+    let service = slot.ok_or_else(|| format!("service '{service_id}' is not registered"))?;
+    Ok(service.describe().to_string())
 }
 
 pub fn unregister_service(service_id: &str) -> bool {
@@ -269,9 +288,6 @@ fn write_log_record(service: &ServiceSlot, record: &PendingLog) -> Result<(), St
     }))
     .map_err(|error| error.to_string())?;
 
-    let service = service
-        .lock()
-        .map_err(|_| "NewViso logging service slot poisoned".to_owned())?;
     match service.call(MethodName::from(LOGGING_WRITE_METHOD), Blob::from(payload)) {
         RResult::ROk(_) => Ok(()),
         RResult::RErr(error) => Err(error.to_string()),
@@ -312,7 +328,7 @@ extern "C" fn register_service_v1(service: ServiceV1Dyn<'static>) -> RResult<(),
         ));
     }
 
-    let slot = Arc::new(Mutex::new(service));
+    let slot = Arc::new(service);
     let (logging_slot, pending_logs) = {
         let mut host = state().write().expect("NewViso host state poisoned");
         if host.services.contains_key(&id) {
@@ -414,8 +430,7 @@ extern "C" fn call_service_v1(
         )));
     };
 
-    let service = slot.lock().expect("NewViso service slot poisoned");
-    service.call(method, payload)
+    slot.call(method, payload)
 }
 
 fn call_platform_service(method: &str) -> RResult<Blob, RString> {
@@ -576,4 +591,65 @@ extern "C" fn subscribe_events_v1(sink: EventSinkV1Dyn<'static>) -> RResult<(), 
         .push(Arc::new(Mutex::new(sink)));
     info("newviso.host", "event sink subscribed");
     RResult::ROk(())
+}
+
+#[cfg(test)]
+mod service_concurrency_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::time::Duration;
+
+    struct ConcurrentService {
+        active: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+    }
+
+    impl ServiceV1 for ConcurrentService {
+        fn id(&self) -> CapabilityId {
+            CapabilityId::from("newviso.host.test.concurrent")
+        }
+
+        fn describe(&self) -> RString {
+            RString::from("Parallel service ABI test")
+        }
+
+        fn call(&self, _method: MethodName, _payload: Blob) -> RResult<Blob, RString> {
+            let active = self.active.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+            self.peak.fetch_max(active, AtomicOrdering::SeqCst);
+            std::thread::sleep(Duration::from_millis(50));
+            self.active.fetch_sub(1, AtomicOrdering::SeqCst);
+            RResult::ROk(Blob::from(vec![42]))
+        }
+    }
+
+    #[test]
+    fn sync_service_calls_do_not_hold_a_host_mutex_across_provider_execution() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let service = ServiceV1_TO::from_value(
+            ConcurrentService {
+                active: Arc::clone(&active),
+                peak: Arc::clone(&peak),
+            },
+            TD_Opaque,
+        );
+        assert!(matches!(register_service_v1(service), RResult::ROk(())));
+
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    call_service("newviso.host.test.concurrent", "test", &[])
+                        .expect("concurrent provider call must succeed")
+                })
+            })
+            .collect();
+        for worker in workers {
+            assert_eq!(worker.join().expect("worker panicked"), vec![42]);
+        }
+        assert!(
+            peak.load(AtomicOrdering::SeqCst) >= 2,
+            "host unexpectedly serialized concurrent ServiceV1::call requests"
+        );
+        assert!(unregister_service("newviso.host.test.concurrent"));
+    }
 }

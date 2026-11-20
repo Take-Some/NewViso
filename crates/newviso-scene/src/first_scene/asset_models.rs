@@ -1,18 +1,16 @@
 use super::*;
-mod materials;
+mod bounds;
 mod fragment_geometry;
 mod fragments;
-mod vertex_decode;
-mod triangles;
-mod bounds;
+mod geometry_reuse;
+mod materials;
 #[cfg(test)]
 mod tests;
-use fragment_geometry::*;
-use vertex_decode::{decode_indices, read_vec2, read_vec3, read_vec4, read_skin_influences};
-use triangles::expand_model_triangles;
-pub(super) use triangles::append_local_asset_vertices;
-use bounds::transformed_model_bounds;
+mod triangles;
+mod vertex_decode;
 pub(super) use bounds::transformed_local_bounds;
+use bounds::transformed_model_bounds;
+use fragment_geometry::*;
 use newviso_materials::{BlendMode, MaterialParamValue, MaterialResource};
 use newviso_model::{
     IndexFormat as ModelIndexFormat, ModelResource, VertexFormat as ModelVertexFormat,
@@ -20,6 +18,9 @@ use newviso_model::{
 };
 use newviso_resource_runtime::AssetId;
 use std::sync::Arc;
+pub(super) use triangles::append_local_asset_vertices;
+use triangles::expand_model_triangles;
+use vertex_decode::{decode_indices, read_skin_influences, read_vec2, read_vec3, read_vec4};
 
 #[derive(Clone, Debug)]
 pub struct SceneResolvedMaterial {
@@ -64,6 +65,23 @@ pub(super) struct CpuAssetMaterial {
     pub(super) metallic_roughness: bool,
     pub(super) metallic_factor: f32,
     pub(super) roughness_factor: f32,
+    /// NewViso multilayer parameters loaded from original Cyberpunk MLSetup metadata.
+    /// [material tile, microblend tile, microblend contrast, layer opacity]
+    pub(super) newviso_multilayer_params: [f32; 4],
+    pub(super) newviso_multilayer: bool,
+    pub(super) newviso_ml_layer_index: u32,
+    pub(super) newviso_ml_uv_offsets: [f32; 4],
+    /// Independent source coordinate selectors for color, normal, roughness,
+    /// MLMask and microblend (0 = UV0, 1 = UV1).
+    pub(super) newviso_ml_uv_channels: [u32; 5],
+    /// Source roughness level remapping [input_white, input_black,
+    /// output_white, output_black]; identity [1,0,1,0].
+    pub(super) newviso_ml_rough_levels: [f32; 4],
+    /// Signed source microblend relief strength; separate UV/normal detail
+    /// orientation is reconstructed from screen-space derivatives.
+    pub(super) newviso_ml_micro_normal_strength: f32,
+    /// Exact source constant metalness (0 or 1); -1 means sample the R map.
+    pub(super) newviso_ml_metalness_mode: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -73,6 +91,7 @@ pub(super) struct AssetTriangleVertex {
     pub(super) tangent: [f32; 4],
     pub(super) color: [f32; 4],
     pub(super) uv: [f32; 2],
+    pub(super) uv1: [f32; 2],
     pub(super) joints: [u16; 8],
     pub(super) weights: [f32; 8],
     pub(super) skin_influences: u8,
@@ -143,7 +162,29 @@ pub struct ScenePreparedModelGeometry {
 }
 
 pub fn prepare_model_geometry(model: &ModelResource) -> Result<ScenePreparedModelGeometry, String> {
+    let started = std::time::Instant::now();
     let (vertices, ranges) = expand_model_triangles(model)?;
+    // Count the triangle-corner expansion the legacy one-range-per-layer
+    // approach would have performed. Report savings from real imported data
+    // rather than estimating from the number of materials or masks.
+    let legacy_corners: usize = model.meshes.iter().flat_map(|mesh| {
+        mesh.primitives.iter().map(|primitive| primitive.index_count as usize)
+    }).fold(0usize, |sum, count| sum.saturating_add(count));
+    let reused_corners = legacy_corners.saturating_sub(vertices.len());
+    if reused_corners > 0 {
+        host_runtime::info(
+            "newviso.perf",
+            format!(
+                "material_layer_geometry_reuse model='{}' original_corners={} unique_vertices={} reused_corners={} saved_percent={:.1} elapsed_ms={:.2}",
+                model.name,
+                legacy_corners,
+                vertices.len(),
+                reused_corners,
+                reused_corners as f64 * 100.0 / legacy_corners.max(1) as f64,
+                started.elapsed().as_secs_f64() * 1000.0,
+            ),
+        );
+    }
     if vertices.is_empty() {
         return Err(format!(
             "model '{}' contains no renderable triangles",
@@ -182,9 +223,8 @@ pub(super) struct CpuAssetMesh {
     pub(super) main_view_only: bool,
     pub(super) last_fragment_poses: std::collections::BTreeMap<Vec<String>, SceneModelPartPose>,
     /// Invalidated before fragment vertex writes; replaced with the installed mesh.
-    pub(super) fragment_mesh_bounds: std::cell::RefCell<
-        BTreeMap<Vec<String>, Option<([f32; 3], [f32; 3])>>,
-    >,
+    pub(super) fragment_mesh_bounds:
+        std::cell::RefCell<BTreeMap<Vec<String>, Option<([f32; 3], [f32; 3])>>>,
 }
 
 impl Scene3dRuntime {
@@ -470,4 +510,3 @@ impl Scene3dRuntime {
         Ok(())
     }
 }
-

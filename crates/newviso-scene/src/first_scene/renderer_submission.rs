@@ -63,12 +63,150 @@ pub(super) struct DirectAssetDraw {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct AlphaAssetDraw {
     pub(super) distance_sq: f32,
+    pub(super) newviso_ml_layer: Option<u32>,
+    pub(super) source_surface_key: u64,
+    pub(super) source_entity: u64,
     pub(super) material_group: u32,
     pub(super) vertex_buffer: u32,
     pub(super) vertex_offset: i32,
     pub(super) first_index: u32,
     pub(super) index_count: u32,
     pub(super) instance_index: u32,
+}
+
+/// All passes sharing the same geometry must be ordered atomically.
+/// The former conditional layer/distance comparison was non-transitive.
+type AlphaSurfaceKey = (u64,u32,i32,u64);
+fn alpha_surface_key(d:&AlphaAssetDraw)->AlphaSurfaceKey {
+    (d.source_entity,d.vertex_buffer,d.vertex_offset,d.source_surface_key)
+}
+/// Source-derived multilayer draw ranges have distinct index offsets even
+/// when their triangles occupy the exact same physical surface. Key each
+/// layered surface by the canonical mesh name so draw order is independent
+/// of depth quantization, camera motion, and GPU buffer packing.
+pub(super) fn alpha_source_surface_key(mesh_name:&str,first_index:u32,layer:Option<u32>)->u64 {
+    if layer.is_none() { return u64::from(first_index)<<1; }
+    let source=mesh_name.split(".newviso_ml.").next().unwrap_or(mesh_name);
+    let mut hash=14695981039346656037u64;
+    for byte in source.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash=hash.wrapping_mul(1099511628211);
+    }
+    (hash & !1)|1
+}
+
+pub(super) fn sort_alpha_asset_draws(draws:&mut [AlphaAssetDraw]) {
+    let mut depth=BTreeMap::<AlphaSurfaceKey,f32>::new();
+    for d in draws.iter() {
+        depth.entry(alpha_surface_key(d))
+            .and_modify(|x| *x=x.max(d.distance_sq)).or_insert(d.distance_sq);
+    }
+    draws.sort_by(|a,b|{
+        let ka=alpha_surface_key(a);let kb=alpha_surface_key(b);
+        depth[&kb].total_cmp(&depth[&ka])
+            .then_with(||ka.cmp(&kb))
+            .then_with(||a.newviso_ml_layer.cmp(&b.newviso_ml_layer))
+            .then_with(||a.material_group.cmp(&b.material_group))
+            .then_with(||a.instance_index.cmp(&b.instance_index))
+    });
+}
+
+#[cfg(test)]
+mod multilayer_alpha_order_tests {
+    use super::*;
+
+    #[test]
+    fn same_source_surface_preserves_layer_order_instead_of_distance() {
+        let make = |layer, distance| AlphaAssetDraw {
+            distance_sq: distance,
+            newviso_ml_layer: Some(layer),
+            source_surface_key:200,source_entity: 88,
+            material_group: layer,
+            vertex_buffer: 2,
+            vertex_offset: 0,
+            first_index: 100,
+            index_count: 30,
+            instance_index: 0,
+        };
+        let mut draws = [make(7, 12.0002), make(1, 12.0001), make(3, 12.0003)];
+        sort_alpha_asset_draws(&mut draws);
+        assert_eq!(draws.map(|draw| draw.newviso_ml_layer), [Some(1), Some(3), Some(7)]);
+    }
+
+    #[test]
+    fn interleaved_glass_and_paint_sort_is_transitive() {
+        let make=|first,layer,depth|AlphaAssetDraw {
+            distance_sq:depth,newviso_ml_layer:Some(layer),source_surface_key:(u64::from(first)<<1),source_entity:88,
+            material_group:layer,vertex_buffer:2,vertex_offset:0,
+            first_index:first,index_count:30,instance_index:0
+        };
+        let a=make(100,1,12.0001);
+        let b=make(100,2,12.0003);
+        let c=make(900,0,12.0002);
+        for mut d in [[a,b,c],[a,c,b],[b,a,c],[b,c,a],[c,a,b],[c,b,a]] {
+            sort_alpha_asset_draws(&mut d);
+            assert_eq!(d.map(|v|(v.first_index,v.newviso_ml_layer)),
+                [(100,Some(1)),(100,Some(2)),(900,Some(0))]);
+        }
+    }
+
+    #[test]
+    fn multilayer_cloned_ranges_keep_order_despite_different_indices_and_depths() {
+        let original="pack:/bus.coach.high.0.0";
+        let layer1="pack:/bus.coach.high.0.0.newviso_ml.01";
+        let layer7="pack:/bus.coach.high.0.0.newviso_ml.07";
+        let key0=alpha_source_surface_key(original,100,Some(0));
+        assert_eq!(key0,alpha_source_surface_key(layer1,200,Some(1)));
+        assert_eq!(key0,alpha_source_surface_key(layer7,300,Some(7)));
+        let mut draws=[
+            AlphaAssetDraw {distance_sq:12.0003,newviso_ml_layer:Some(7),
+                source_surface_key:key0,source_entity:123,material_group:7,
+                vertex_buffer:2,vertex_offset:0,first_index:300,index_count:30,
+                instance_index:0},
+            AlphaAssetDraw {distance_sq:12.0001,newviso_ml_layer:Some(1),
+                source_surface_key:key0,source_entity:123,material_group:1,
+                vertex_buffer:2,vertex_offset:0,first_index:200,index_count:30,
+                instance_index:0},
+            AlphaAssetDraw {distance_sq:12.0002,newviso_ml_layer:Some(0),
+                source_surface_key:key0,source_entity:123,material_group:0,
+                vertex_buffer:2,vertex_offset:0,first_index:100,index_count:30,
+                instance_index:0}
+        ];
+        sort_alpha_asset_draws(&mut draws);
+        assert_eq!(draws.map(|draw|draw.newviso_ml_layer),
+                   [Some(0),Some(1),Some(7)]);
+        assert_ne!(key0,alpha_source_surface_key("pack:/bus.side.high",900,Some(1)));
+    }
+
+    #[test]
+    fn separate_surface_and_entity_respect_back_to_front_distance() {
+        let mut draws = vec![
+            AlphaAssetDraw {
+                distance_sq: 5.0,
+                newviso_ml_layer: Some(1),
+                source_surface_key:200,source_entity: 88,
+                material_group: 1,
+                vertex_buffer: 2,
+                vertex_offset: 0,
+                first_index: 100,
+                index_count: 30,
+                instance_index: 0,
+            },
+            AlphaAssetDraw {
+                distance_sq: 12.0,
+                newviso_ml_layer: Some(7),
+                source_surface_key:200,source_entity: 89,
+                material_group: 7,
+                vertex_buffer: 2,
+                vertex_offset: 0,
+                first_index: 100,
+                index_count: 30,
+                instance_index: 0,
+            },
+        ];
+        sort_alpha_asset_draws(&mut draws);
+        assert_eq!(draws[0].source_entity, 89);
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

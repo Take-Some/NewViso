@@ -308,6 +308,7 @@ impl EngineApplication {
                 "scene.entity.main_view_meshes.set"
                 | "scene.entity.joint_mesh.copy"
                 | "scene.entity.arm_ik.set"
+                | "scene.entity.skeleton.physical_pose.set"
                 | "scene.entity.animation.preload"
                 | "scene.entity.animation.play"
                 | "scene.entity.attach_to_joint"
@@ -327,7 +328,8 @@ impl EngineApplication {
                 | "scene.surface_mark.add"
                 | "scene.surface_marks.clear"
                 | "scene.transient_spheres.set"
-                | "scene.overlay_quads.set" => self.apply_effects_command(command, index, op)?,
+                | "scene.overlay_quads.set"
+                | "ui.hud.quads.set" => self.apply_effects_command(command, index, op)?,
                 _ => return Err(unsupported_command(op, index)),
             }
             if let Some(started) = started {

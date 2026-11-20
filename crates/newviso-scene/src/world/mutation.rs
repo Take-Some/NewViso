@@ -16,7 +16,7 @@ fn normalize_process_label(value: &str, field: &str) -> Result<String, String> {
 }
 
 impl SceneWorld {
-    fn refresh_process_membership(&mut self, id: SceneEntityId) {
+    pub(super) fn refresh_process_membership(&mut self, id: SceneEntityId) {
         let active = self.entity(id).is_some_and(|entity| {
             entity.lifecycle == SceneLifecycle::Active
                 && entity.residency == SceneResidency::Resident
@@ -33,26 +33,35 @@ impl SceneWorld {
         if self.by_id.contains_key(&entity.id) {
             return Err(format!("duplicate scene entity id {}", entity.id.0));
         }
+        let id = entity.id;
+        let parent_index = match entity.parent {
+            Some(parent_id) => {
+                let index = *self.by_id.get(&parent_id).ok_or_else(|| {
+                    format!("scene parent {} not found for {}", parent_id.0, id.0)
+                })?;
+                if matches!(
+                    self.entities[index].lifecycle,
+                    SceneLifecycle::PendingRemove | SceneLifecycle::Removed
+                ) {
+                    return Err(format!("scene parent {} is being removed", parent_id.0));
+                }
+                Some(index)
+            }
+            None => None,
+        };
         entity.lifecycle = SceneLifecycle::Added;
         let index = self.entities.len();
-        let parent = entity.parent;
-        let id = entity.id;
         let static_renderable = entity.mobility == SceneMobility::Static;
         self.entities.push(entity);
         self.by_id.insert(id, index);
         if static_renderable {
             self.static_render_epoch = self.static_render_epoch.wrapping_add(1);
         }
-        self.refresh_process_membership(id);
-        self.index_spatial_entity(id);
-
-        if let Some(parent_id) = parent {
-            let parent_index = *self
-                .by_id
-                .get(&parent_id)
-                .ok_or_else(|| format!("scene parent {} not found for {}", parent_id.0, id.0))?;
+        if let Some(parent_index) = parent_index {
             self.entities[parent_index].children.push(id);
         }
+        self.refresh_process_membership(id);
+        self.index_spatial_entity(id);
         Ok(())
     }
 
@@ -530,7 +539,10 @@ impl SceneWorld {
     pub(crate) fn entity_id_by_name(&self, name: &str) -> Option<SceneEntityId> {
         self.entities
             .iter()
-            .find(|entity| entity.lifecycle != SceneLifecycle::Removed && entity.name == name)
+            .find(|entity| !matches!(
+                entity.lifecycle,
+                SceneLifecycle::PendingRemove | SceneLifecycle::Removed
+            ) && entity.name == name)
             .map(|entity| entity.id)
     }
 

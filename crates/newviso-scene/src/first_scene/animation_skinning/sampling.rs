@@ -1,7 +1,11 @@
 //! Clip sampling, palette blending and CPU vertex skinning.
 use super::*;
 
-pub(super) fn advance_clip_time(clip: &ModelAnimationClip, time_seconds: f32, delta_seconds: f32) -> f32 {
+pub(super) fn advance_clip_time(
+    clip: &ModelAnimationClip,
+    time_seconds: f32,
+    delta_seconds: f32,
+) -> f32 {
     let duration = clip.duration_seconds.max(1.0e-6);
     let next = time_seconds + delta_seconds.max(0.0);
     if clip.looping {
@@ -269,6 +273,7 @@ pub(super) fn skin_vertices_to_packed(
             skinned.tangent,
             skinned.color,
             skinned.uv,
+            skinned.uv1,
         );
     }
     Ok(packed)
@@ -446,10 +451,15 @@ pub(super) fn slerp_quat(a: [f32; 4], mut b: [f32; 4], t: f32) -> [f32; 4] {
 
 // Linear palette interpolation preserves weighted positions (including an
 // interrupted blend) while normal/tangent normalization remains on the GPU.
-pub(super) fn interpolate_skin_palette(destination: &mut [[f32;16]], from: &[[f32;16]],
-    to: &[[f32;16]], alpha: f32)
-{
-    for (out,(a,b)) in destination.iter_mut().zip(from.iter().zip(to)) {
-        for i in 0..16 { out[i] = a[i] + (b[i]-a[i])*alpha; }
+pub(super) fn interpolate_skin_palette(
+    destination: &mut [[f32; 16]],
+    from: &[[f32; 16]],
+    to: &[[f32; 16]],
+    alpha: f32,
+) {
+    for (out, (a, b)) in destination.iter_mut().zip(from.iter().zip(to)) {
+        for i in 0..16 {
+            out[i] = a[i] + (b[i] - a[i]) * alpha;
+        }
     }
 }

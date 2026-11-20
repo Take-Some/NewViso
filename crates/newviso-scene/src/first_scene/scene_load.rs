@@ -84,7 +84,7 @@ impl Scene3dRuntime {
             .and_then(Value::as_array)
             .ok_or_else(|| format!("Flecs scene snapshot has no entities: {snapshot}"))?;
 
-        let mut character_bindings=BTreeMap::new();
+        let mut character_bindings = BTreeMap::new();
         let mut camera_record: Option<&Value> = None;
         let mut camera_entity_id: Option<u64> = None;
         let mut mesh_records: Vec<(u64, &Value)> = Vec::new();
@@ -104,8 +104,10 @@ impl Scene3dRuntime {
                 .and_then(Value::as_u64)
                 .unwrap_or((snapshot_index + 1) as u64);
 
-            if let Some(value)=record.get("character") {
-                if let Some(binding)=SceneCharacterBinding::parse(value)? {character_bindings.insert(stable_id,std::sync::Arc::new(binding));}
+            if let Some(value) = record.get("character") {
+                if let Some(binding) = SceneCharacterBinding::parse(value)? {
+                    character_bindings.insert(stable_id, std::sync::Arc::new(binding));
+                }
             }
             if authoring {
                 let index = record["newviso_editor_source_index"]

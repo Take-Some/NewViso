@@ -15,22 +15,32 @@ pub(super) fn matrix_scale(matrix: [f32; 16]) -> Result<[f32; 3], String> {
 }
 
 pub(super) fn joint_camera_animation_angles(
-    bind: [f32; 16], animated: [f32; 16],
-    bind_root: [f32; 16], animated_root: [f32; 16],
+    bind: [f32; 16],
+    animated: [f32; 16],
+    bind_root: [f32; 16],
+    animated_root: [f32; 16],
 ) -> Result<[f32; 3], String> {
     let inverse_bind = inverse_affine(bind)
         .ok_or_else(|| "camera anchor bind transform is singular".to_owned())?;
     let inverse_root = inverse_affine(animated_root)
         .ok_or_else(|| "camera anchor root transform is singular".to_owned())?;
-    let delta = mul_mat4(mul_mat4(animated, inverse_bind), mul_mat4(bind_root, inverse_root));
+    let delta = mul_mat4(
+        mul_mat4(animated, inverse_bind),
+        mul_mat4(bind_root, inverse_root),
+    );
     matrix_scale(delta)?;
     // Camera forward is -Z, up is +Y. Rz*Ry*Rx skeleton Euler angles have an
     // equivalent +/-180 degree pitch and roll around a half-turn heading.
     // Decompose the camera basis instead, keeping pitch in [-90, 90].
     let front = Vec3::new(-delta[8], -delta[9], -delta[10]).normalized();
     let up = Vec3::new(delta[4], delta[5], delta[6]).normalized();
-    if !front.x.is_finite() || !front.y.is_finite() || !front.z.is_finite()
-        || !up.x.is_finite() || !up.y.is_finite() || !up.z.is_finite() {
+    if !front.x.is_finite()
+        || !front.y.is_finite()
+        || !front.z.is_finite()
+        || !up.x.is_finite()
+        || !up.y.is_finite()
+        || !up.z.is_finite()
+    {
         return Err("camera anchor has a non-finite rotation basis".to_owned());
     }
     let pitch = front.y.clamp(-1.0, 1.0).asin();

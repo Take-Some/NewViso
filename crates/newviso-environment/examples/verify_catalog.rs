@@ -1,8 +1,8 @@
 //! Validate mounted climate data and evaluate every weather/region across midnight.
-use std::io::Write as _;
 use newviso_environment::*;
 use serde::Deserialize;
 use serde_json::Value;
+use std::io::Write as _;
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
 #[derive(Deserialize)]
@@ -126,7 +126,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         return Err("drying or height adjustment mismatch".into());
     }
-    let _ = writeln!(std::io::stdout().lock(),
+    let _ = writeln!(
+        std::io::stdout().lock(),
         "{}",
         serde_json::json!({"weather_types":rows.len(),"cycle_entries":machine.cycle.len(),"clock_samples":timecycles.samples.len(),"cloud_presets":cloud.presets.len(),"modifiers":modifiers.modifiers.len(),"channels":max_channels,"minute_region_evaluations":evaluations,"wetness_after_rain":wet,"wetness_after_drying":simulation.wetness,"high_altitude_wind":simulation.wind_speed,"high_altitude_temperature":simulation.temperature})
     );

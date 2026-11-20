@@ -1,7 +1,10 @@
 //! Triangle expansion, joint partitioning, tangents and packed output.
 use super::*;
 
-pub(in crate::first_scene) fn append_local_asset_vertices(out: &mut Vec<f32>, vertices: &[AssetTriangleVertex]) {
+pub(in crate::first_scene) fn append_local_asset_vertices(
+    out: &mut Vec<f32>,
+    vertices: &[AssetTriangleVertex],
+) {
     out.reserve(vertices.len().saturating_mul(FLOATS_PER_VERTEX));
     for vertex in vertices {
         geometry::append_local_asset_vertex(
@@ -11,6 +14,7 @@ pub(in crate::first_scene) fn append_local_asset_vertices(out: &mut Vec<f32>, ve
             vertex.tangent,
             vertex.color,
             vertex.uv,
+            vertex.uv1,
         );
     }
 }
@@ -20,8 +24,13 @@ pub(in crate::first_scene) fn expand_model_triangles(
 ) -> Result<(Vec<AssetTriangleVertex>, Vec<AssetDrawRange>), String> {
     let mut out = Vec::new();
     let mut draw_ranges = Vec::new();
+    let mut layer_geometry = geometry_reuse::LayerGeometryReuse::default();
 
-    for mesh in &model.meshes {
+    for (mesh_index, mesh) in model.meshes.iter().enumerate() {
+        if layer_geometry.try_reuse(model, mesh, &mut draw_ranges) {
+            continue;
+        }
+        let range_start = draw_ranges.len();
         let position = mesh
             .vertex_streams
             .iter()
@@ -50,6 +59,11 @@ pub(in crate::first_scene) fn expand_model_triangles(
             .vertex_streams
             .iter()
             .find(|stream| stream.semantic == VertexSemantic::TexCoord(0));
+        // Original REDengine MLMask uses UV0; the material detail and
+        // microblend source textures use TEXCOORD_1. Generic meshes
+        // keep UV0 when the second channel is absent.
+        let texcoord1 = mesh.vertex_streams.iter()
+            .find(|stream| stream.semantic == VertexSemantic::TexCoord(1));
         let joint_indices = mesh
             .vertex_streams
             .iter()
@@ -93,6 +107,10 @@ pub(in crate::first_scene) fn expand_model_triangles(
         };
 
         for (first, count, base_vertex, material_slot) in primitives {
+            // Generated tangents must follow the UV channel sampled by the
+            // normal map. ML materials can use UV1 for normal details while
+            // keeping the mask in UV0; authored tangents remain untouched.
+            let tangent_from_uv1 = uses_uv1_for_generated_tangents(model, material_slot);
             let range_first_vertex = u32::try_from(out.len())
                 .map_err(|_| "expanded model vertex offset exceeds u32".to_owned())?;
             let end = first
@@ -116,6 +134,7 @@ pub(in crate::first_scene) fn expand_model_triangles(
                     tangent: [1.0, 0.0, 0.0, 1.0],
                     color: [1.0, 1.0, 1.0, 1.0],
                     uv: [0.0, 0.0],
+                    uv1: [0.0, 0.0],
                     joints: [0; 8],
                     weights: [0.0; 8],
                     skin_influences: 0,
@@ -143,6 +162,11 @@ pub(in crate::first_scene) fn expand_model_triangles(
                     if let Some(stream) = texcoord {
                         triangle[corner].uv = read_vec2(stream, vertex_index)?;
                     }
+                    triangle[corner].uv1 = if let Some(stream) = texcoord1 {
+                        read_vec2(stream, vertex_index)?
+                    } else {
+                        triangle[corner].uv
+                    };
                     if let (Some(indices_stream), Some(weights_stream)) =
                         (joint_indices, joint_weights)
                     {
@@ -166,7 +190,7 @@ pub(in crate::first_scene) fn expand_model_triangles(
                     }
                 }
                 if tangent.is_none() {
-                    generate_triangle_tangent(&mut triangle);
+                    generate_triangle_tangent(&mut triangle, tangent_from_uv1);
                 }
                 let joint = dominant_triangle_joint(&triangle, model.skeleton.as_ref());
                 partitions
@@ -197,6 +221,7 @@ pub(in crate::first_scene) fn expand_model_triangles(
                 }
             }
         }
+        layer_geometry.record(mesh_index, mesh, range_start, draw_ranges.len());
     }
     Ok((out, draw_ranges))
 }
@@ -245,17 +270,38 @@ pub(in crate::first_scene) fn joint_lineage(
     names
 }
 
-pub(in crate::first_scene) fn generate_triangle_tangent(triangle: &mut [AssetTriangleVertex; 3]) {
+fn uses_uv1_for_generated_tangents(model: &ModelResource, material_slot: Option<u32>) -> bool {
+    let Some(material) = material_slot
+        .and_then(|index| model.material_slots.get(index as usize))
+        .and_then(|slot| slot.material.built_in())
+    else {
+        return false;
+    };
+    if !material.shader.eq_ignore_ascii_case("newviso.multilayer") {
+        return false;
+    }
+    material.params.iter().find_map(|parameter| {
+        if !parameter.name.eq_ignore_ascii_case("newviso_ml_normal_uv") {
+            return None;
+        }
+        match parameter.value {
+            MaterialParamValue::Int(channel) if channel == 0 || channel == 1 => {
+                Some(channel == 1)
+            }
+            _ => None,
+        }
+    }).unwrap_or(true)
+}
+
+pub(in crate::first_scene) fn generate_triangle_tangent(
+    triangle: &mut [AssetTriangleVertex; 3],
+    use_uv1: bool,
+) {
     let edge1 = triangle[1].position.sub(triangle[0].position);
     let edge2 = triangle[2].position.sub(triangle[0].position);
-    let duv1 = [
-        triangle[1].uv[0] - triangle[0].uv[0],
-        triangle[1].uv[1] - triangle[0].uv[1],
-    ];
-    let duv2 = [
-        triangle[2].uv[0] - triangle[0].uv[0],
-        triangle[2].uv[1] - triangle[0].uv[1],
-    ];
+    let uv = triangle.map(|vertex| if use_uv1 { vertex.uv1 } else { vertex.uv });
+    let duv1 = [uv[1][0] - uv[0][0], uv[1][1] - uv[0][1]];
+    let duv2 = [uv[2][0] - uv[0][0], uv[2][1] - uv[0][1]];
     let det = duv1[0] * duv2[1] - duv1[1] * duv2[0];
 
     let normal = triangle[0].normal.normalized();
@@ -290,5 +336,40 @@ pub(in crate::first_scene) fn generate_triangle_tangent(triangle: &mut [AssetTri
     };
     for vertex in triangle {
         vertex.tangent = [tangent.x, tangent.y, tangent.z, handedness];
+    }
+}
+
+
+#[cfg(test)]
+mod generated_normal_tangent_uv_tests {
+    use super::*;
+
+    #[test]
+    fn fallback_tangent_basis_uses_selected_normal_map_uv() {
+        let make_vertex = |position: Vec3, uv: [f32; 2], uv1: [f32; 2]| {
+            AssetTriangleVertex {
+                position,
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                tangent: [1.0, 0.0, 0.0, 1.0],
+                color: [1.0; 4],
+                uv, uv1,
+                joints: [0; 8],
+                weights: [0.0; 8],
+                skin_influences: 0,
+            }
+        };
+        let original = [
+            make_vertex(Vec3::ZERO, [0.0,0.0], [0.0,0.0]),
+            make_vertex(Vec3::new(1.0,0.0,0.0), [1.0,0.0], [0.0,1.0]),
+            make_vertex(Vec3::new(0.0,1.0,0.0), [0.0,1.0], [1.0,0.0]),
+        ];
+        let mut uv0 = original;
+        let mut uv1 = original;
+        generate_triangle_tangent(&mut uv0, false);
+        generate_triangle_tangent(&mut uv1, true);
+        assert!(uv0[0].tangent[0] > 0.99);
+        assert!(uv0[0].tangent[1].abs() < 0.01);
+        assert!(uv1[0].tangent[1] > 0.99);
+        assert!(uv1[0].tangent[0].abs() < 0.01);
     }
 }

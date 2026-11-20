@@ -25,6 +25,22 @@ fn quaternion_to_euler_degrees(rotation: [f32; 4]) -> Result<Vec3, String> {
 }
 
 impl Scene3dRuntime {
+    /// Runtime names are reusable after removal, but stable Scene IDs are not.
+    /// Both an in-flight PendingRemove and a flushed Removed entity are dead.
+    pub(super) fn live_runtime_entity_id(&self, key: &str) -> Option<SceneEntityId> {
+        self.runtime_entity_ids
+            .get(key)
+            .copied()
+            .map(SceneEntityId)
+            .filter(|id| {
+                self.world.entity(*id).is_some_and(|entity| !matches!(
+                    entity.lifecycle,
+                    SceneLifecycle::PendingRemove | SceneLifecycle::Removed
+                ))
+            })
+            .or_else(|| self.world.entity_id_by_name(key))
+    }
+
     pub fn upsert_runtime_dynamic_entity(
         &mut self,
         key: &str,
@@ -79,12 +95,7 @@ impl Scene3dRuntime {
             );
         }
 
-        let existing = self
-            .runtime_entity_ids
-            .get(key)
-            .copied()
-            .map(SceneEntityId)
-            .or_else(|| self.world.entity_id_by_name(key));
+        let existing = self.live_runtime_entity_id(key);
 
         let position = Vec3::new(desc.position[0], desc.position[1], desc.position[2]);
         let rotation_degrees = Vec3::new(
@@ -313,18 +324,66 @@ impl Scene3dRuntime {
         Ok(id.0)
     }
 
+    /// Stream a static mesh without making every road/building a dynamic actor.
+    /// Retain exact authored collision bounds for large world sectors.
+    /// Precise world-space collider bounds for local sector safety checks.
+    pub fn streamed_entity_bounds_xz(&self, stable_id: u64) -> Option<[f32; 4]> {
+        let entity = self.world.entity(SceneEntityId(stable_id))?;
+        Some([entity.bounds.min.x, entity.bounds.min.z,
+              entity.bounds.max.x, entity.bounds.max.z])
+    }
+
+    pub fn upsert_streamed_static_mesh(
+        &mut self,
+        key: &str,
+        desc: SceneRuntimeEntityDesc,
+        collider_local_bounds: Option<([f32; 3], [f32; 3])>,
+    ) -> Result<u64, String> {
+        let id = self.upsert_runtime_dynamic_entity(key, desc.clone())?;
+        let entity_id = SceneEntityId(id);
+        let transform = SceneTransform {
+            position: Vec3::new(desc.position[0], desc.position[1], desc.position[2]),
+            rotation_degrees: Vec3::new(
+                desc.rotation_degrees[0], desc.rotation_degrees[1], desc.rotation_degrees[2]
+            ),
+            scale: Vec3::new(desc.scale[0], desc.scale[1], desc.scale[2]),
+        };
+        let collision_bounds = collider_local_bounds.map(|(min, max)| SceneBounds {
+            min: Vec3::new(min[0], min[1], min[2]),
+            max: Vec3::new(max[0], max[1], max[2]),
+        });
+        let bounds = if let Some(bounds) = collision_bounds {
+            asset_models::transformed_local_bounds(bounds, transform)?
+        } else {
+            SceneBounds::from_center_half_extent(
+                transform.position,
+                Vec3::new(
+                    desc.bounds_half_extent[0],
+                    desc.bounds_half_extent[1],
+                    desc.bounds_half_extent[2],
+                ),
+            )
+        };
+        {
+            let entity = self.world.entity_mut(entity_id)
+                .ok_or_else(|| format!("streamed mesh '{}' disappeared", key))?;
+            entity.kind = SceneEntityKind::StaticMesh;
+            entity.mobility = SceneMobility::Static;
+            entity.collision_local_bounds = collision_bounds;
+        }
+        self.world.update_spatial_from(
+            entity_id, transform, bounds, SceneMutationSource::Engine
+        )?;
+        Ok(id)
+    }
+
     pub fn set_runtime_entity_materialized(
         &mut self,
         key: &str,
         materialized: bool,
     ) -> Result<bool, String> {
         let key = key.trim();
-        let Some(id) = self
-            .runtime_entity_ids
-            .get(key)
-            .copied()
-            .map(SceneEntityId)
-            .or_else(|| self.world.entity_id_by_name(key))
+        let Some(id) = self.live_runtime_entity_id(key)
         else {
             return Ok(false);
         };
@@ -340,12 +399,7 @@ impl Scene3dRuntime {
         scale: Option<[f32; 3]>,
     ) -> Result<(), String> {
         let key = key.trim();
-        let id = self
-            .runtime_entity_ids
-            .get(key)
-            .copied()
-            .map(SceneEntityId)
-            .or_else(|| self.world.entity_id_by_name(key))
+        let id = self.live_runtime_entity_id(key)
             .ok_or_else(|| format!("runtime entity '{}' does not exist", key))?;
         let current = self
             .world
@@ -367,21 +421,12 @@ impl Scene3dRuntime {
     }
 
     pub fn runtime_entity_stable_id(&self, key: &str) -> Option<u64> {
-        let key = key.trim();
-        self.runtime_entity_ids
-            .get(key)
-            .copied()
-            .or_else(|| self.world.entity_id_by_name(key).map(|id| id.0))
+        self.live_runtime_entity_id(key.trim()).map(|id| id.0)
     }
 
     pub fn remove_runtime_entity(&mut self, key: &str) -> Result<(), String> {
         let key = key.trim();
-        let id = self
-            .runtime_entity_ids
-            .get(key)
-            .copied()
-            .map(SceneEntityId)
-            .or_else(|| self.world.entity_id_by_name(key))
+        let id = self.live_runtime_entity_id(key)
             .ok_or_else(|| format!("runtime entity '{}' does not exist", key))?;
         self.world.request_remove(id)?;
         self.clear_surface_marks_for_entity(id.0);
@@ -437,6 +482,10 @@ impl Scene3dRuntime {
         self.joint_attachments
             .retain(|_, attachment| attachment.parent_stable_id != stable_id);
         self.world.request_remove(SceneEntityId(stable_id))?;
+        // A stable-id removal must invalidate any runtime-key mapping as well.
+        // Otherwise later upserts may point back at a tombstoned entity.
+        self.runtime_entity_ids.retain(|_, id| *id != stable_id);
+        self.asset_binding_contexts.remove(&stable_id);
         self.clear_surface_marks_for_entity(stable_id);
         self.main_view_mesh_visibility.remove(stable_id);
         Ok(())
@@ -595,6 +644,34 @@ impl Scene3dRuntime {
             })
             .collect()
     }
+    /// Startup-only interest window: select resident assets intersecting the
+    /// nearby safety envelope, while leaving the complete authored scene and
+    /// its ordinary runtime streaming distances unchanged.
+    ///
+    /// The nearest point on an AABB (not the entity's origin) is important for
+    /// large terrain and collision sectors that overlap the spawn location.
+    pub fn streaming_interests_near_focus(&self, radius_m: f32) -> Vec<SceneStreamRequest> {
+        if !radius_m.is_finite() || radius_m <= 0.0 {
+            return self.streaming_interests();
+        }
+        let focus = self.world.focus().position;
+        self.frame_plan
+            .streaming_entities
+            .iter()
+            .filter_map(|id| {
+                let entity = self.world.entity(*id)?;
+                if !bounds_intersects_stream_radius(entity.bounds, focus, radius_m) {
+                    return None;
+                }
+                Some(SceneStreamRequest {
+                    stable_id: id.0,
+                    asset_ref: entity.asset_ref.clone()?,
+                    priority: entity.priority_score,
+                })
+            })
+            .collect()
+    }
+
     pub fn mark_entity_resident(&mut self, stable_id: u64) -> Result<(), String> {
         self.world
             .set_residency(SceneEntityId(stable_id), SceneResidency::Resident)
@@ -977,5 +1054,55 @@ impl Scene3dRuntime {
                 ]
             }
         }))
+    }
+}
+
+/// Nearest-point-to-AABB test; unlike transform-based tests, this preserves
+/// collision tiles whose origins are distant but geometry overlaps the player.
+fn bounds_intersects_stream_radius(bounds: SceneBounds, focus: Vec3, radius_m: f32) -> bool {
+    let dx = (bounds.min.x - focus.x).max(focus.x - bounds.max.x).max(0.0);
+    let dy = (bounds.min.y - focus.y).max(focus.y - bounds.max.y).max(0.0);
+    let dz = (bounds.min.z - focus.z).max(focus.z - bounds.max.z).max(0.0);
+    dx * dx + dy * dy + dz * dz <= radius_m * radius_m
+}
+
+#[cfg(test)]
+mod startup_stream_radius_tests {
+    use super::*;
+
+    #[test]
+    fn remote_origin_of_large_collision_tile_does_not_hide_nearby_floor() {
+        let focus = Vec3::new(0.0, 1.0, 0.0);
+        let long_tile = SceneBounds::from_center_half_extent(
+            Vec3::new(750.0, 0.0, 0.0),
+            Vec3::new(750.0, 2.0, 6.0),
+        );
+        assert!(bounds_intersects_stream_radius(long_tile, focus, 64.0));
+    }
+
+    #[test]
+    fn distant_tile_and_highly_elevated_tile_are_not_early_loaded() {
+        let focus = Vec3::new(0.0, 0.0, 0.0);
+        let distant = SceneBounds::from_center_half_extent(
+            Vec3::new(1000.0, 0.0, 0.0),
+            Vec3::new(20.0, 10.0, 20.0),
+        );
+        let high = SceneBounds::from_center_half_extent(
+            Vec3::new(0.0, 550.0, 0.0),
+            Vec3::new(10.0, 10.0, 10.0),
+        );
+        assert!(!bounds_intersects_stream_radius(distant, focus, 360.0));
+        assert!(!bounds_intersects_stream_radius(high, focus, 360.0));
+    }
+
+    #[test]
+    fn edge_of_stream_radius_is_inclusive_and_does_not_preload_outside() {
+        let focus = Vec3::ZERO;
+        let touching = SceneBounds::from_center_half_extent(
+            Vec3::new(390.0, 0.0, 0.0),
+            Vec3::new(30.0, 1.0, 1.0),
+        );
+        assert!(bounds_intersects_stream_radius(touching, focus, 360.0));
+        assert!(!bounds_intersects_stream_radius(touching, focus, 359.0));
     }
 }

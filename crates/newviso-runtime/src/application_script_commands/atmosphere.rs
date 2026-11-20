@@ -79,8 +79,12 @@ impl EngineApplication {
                 self.scene.upsert_runtime_light(id, desc)?;
             }
             "scene.weather.lens.set" => {
-                let enabled = command.get("enabled").and_then(Value::as_bool)
-                    .ok_or_else(|| format!("script command[{index}] weather lens requires boolean 'enabled'"))?;
+                let enabled = command
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| {
+                        format!("script command[{index}] weather lens requires boolean 'enabled'")
+                    })?;
                 self.scene.set_weather_lens_enabled(enabled);
             }
             "scene.cloudhat.keyframe.set" => {

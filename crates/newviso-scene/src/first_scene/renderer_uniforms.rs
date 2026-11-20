@@ -301,18 +301,33 @@ impl Scene3dRuntime {
         }
         let water_base = clear_color_base + 4 + 64 * 4 + 8 * 4;
         let tuning = self.water_simulation.tuning;
-        out[water_base..water_base+4].copy_from_slice(&[
-            self.water_simulation.surface.level, tuning.ripple_scale,
-            tuning.ripple_bumpiness, tuning.ocean_bumpiness,
+        out[water_base..water_base + 4].copy_from_slice(&[
+            self.water_simulation.surface.level,
+            tuning.ripple_scale,
+            tuning.ripple_bumpiness,
+            tuning.ocean_bumpiness,
         ]);
-        out[water_base+4..water_base+8].copy_from_slice(&[
-            tuning.foam_intensity, tuning.foam_scale,
-            if self.water_simulation.enabled {1.0} else {0.0},
-            if self.water_render_slots.iter().any(|slot|self.terrain_meshes.contains_key(slot)) {1.0} else {0.0},
+        out[water_base + 4..water_base + 8].copy_from_slice(&[
+            tuning.foam_intensity,
+            tuning.foam_scale,
+            if self.water_simulation.enabled {
+                1.0
+            } else {
+                0.0
+            },
+            if self
+                .water_render_slots
+                .iter()
+                .any(|slot| self.terrain_meshes.contains_key(slot))
+            {
+                1.0
+            } else {
+                0.0
+            },
         ]);
         // water_pass: x = reflection clip enable, y = authored plane height.
-        out[water_base+9] = self.water_simulation.surface.level;
-        out[water_base+10..water_base+12].copy_from_slice(&self.water_simulation.origin());
+        out[water_base + 9] = self.water_simulation.surface.level;
+        out[water_base + 10..water_base + 12].copy_from_slice(&self.water_simulation.origin());
         (out, shadow_light_index.is_some())
     }
     pub(super) fn sky_frame_uniform(&self, aspect: f32) -> [f32; SKY_UNIFORM_FLOATS] {
@@ -517,9 +532,16 @@ impl Scene3dRuntime {
                 out[187] = 1.0;
                 let base = 228 + 64 * 4;
                 for (index, value) in [
-                    clouds.generation, clouds.density, clouds.lighting,
-                    clouds.detail, clouds.small, clouds.small_color,
-                ].iter().enumerate() {
+                    clouds.generation,
+                    clouds.density,
+                    clouds.lighting,
+                    clouds.detail,
+                    clouds.small,
+                    clouds.small_color,
+                ]
+                .iter()
+                .enumerate()
+                {
                     out[base + index * 4..base + index * 4 + 4].copy_from_slice(value);
                 }
                 write_sky_vec4(&mut out, base + 24, clouds.base_color, 0.0);

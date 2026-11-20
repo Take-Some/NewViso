@@ -1,30 +1,38 @@
 //! Engine snow/thermal services. No project names, illness rules or Frostpunk tuning.
 use super::*;
-mod weather;
 mod expansion;
-use weather::SnowMassBalanceReport;
+mod weather;
 use newviso_environment::{
-    snow::{SnowField, SnowFieldSpec, SnowPolicy, SnowHeatPolicy, SnowMicroprint,
-        SnowDriftPolicy, SnowWindObstacle, SnowDynamicsPolicy, SnowDynamicsReport, SnowLayerPolicy, SnowPrecipitationPlan},
+    snow::{
+        SnowDriftPolicy, SnowDynamicsPolicy, SnowDynamicsReport, SnowField, SnowFieldSpec,
+        SnowHeatPolicy, SnowLayerPolicy, SnowMicroprint, SnowPolicy, SnowPrecipitationPlan,
+        SnowWindObstacle,
+    },
+    surface_snow::{SnowSurfacePatch, SnowSurfacePolicy, SnowSurfaceSystem},
     thermal::{HeatSource, ThermalBody, ThermalEnvironment},
-    surface_snow::{SnowSurfaceSystem,SnowSurfacePatch,SnowSurfacePolicy},
 };
+use newviso_scene::{SceneParticleBlend, SceneParticleSpawnDesc, SceneSnowCap};
 use serde::{Deserialize, Serialize};
-use newviso_scene::{SceneSnowCap,SceneParticleSpawnDesc,SceneParticleBlend};
+use weather::SnowMassBalanceReport;
 
-fn cover_descriptors(surface:&SnowSurfaceSystem)->Vec<SceneSnowCap>{
-    surface.entries.iter().map(|entry|SceneSnowCap{
-        id:entry.patch.id.clone(),
-        kind:match entry.patch.kind{
-            newviso_environment::surface_snow::SnowSurfaceKind::Roof=>"roof",
-            newviso_environment::surface_snow::SnowSurfaceKind::Branch=>"branch",
-            newviso_environment::surface_snow::SnowSurfaceKind::Rock=>"rock",
-        }.into(),
-        position:entry.patch.position,
-        area:entry.patch.area,
-        slope_degrees:entry.patch.slope_degrees,
-        snow_depth:entry.state.snow,
-    }).collect()
+fn cover_descriptors(surface: &SnowSurfaceSystem) -> Vec<SceneSnowCap> {
+    surface
+        .entries
+        .iter()
+        .map(|entry| SceneSnowCap {
+            id: entry.patch.id.clone(),
+            kind: match entry.patch.kind {
+                newviso_environment::surface_snow::SnowSurfaceKind::Roof => "roof",
+                newviso_environment::surface_snow::SnowSurfaceKind::Branch => "branch",
+                newviso_environment::surface_snow::SnowSurfaceKind::Rock => "rock",
+            }
+            .into(),
+            position: entry.patch.position,
+            area: entry.patch.area,
+            slope_degrees: entry.patch.slope_degrees,
+            snow_depth: entry.state.snow,
+        })
+        .collect()
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -144,7 +152,7 @@ impl ColdRuntime {
         if let Some(f) = &result.field {
             f.validate()?;
             result.pending = f.all_render_vertices();
-            result.pending_liquid=f.all_liquid_vertices();
+            result.pending_liquid = f.all_liquid_vertices();
         }
         for (key, a) in &result.actors {
             a.validate()?;
@@ -172,24 +180,32 @@ impl ColdRuntime {
         {
             return Err("invalid cold sync interval".into());
         }
-        if let Some(surfaces)=&result.snow_surfaces{surfaces.validate()?;}
-        if let Some(policy)=result.heat_policy {policy.validate()?;}
-        if let Some(policy)=result.drift_policy {policy.validate()?;}
+        if let Some(surfaces) = &result.snow_surfaces {
+            surfaces.validate()?;
+        }
+        if let Some(policy) = result.heat_policy {
+            policy.validate()?;
+        }
+        if let Some(policy) = result.drift_policy {
+            policy.validate()?;
+        }
         // The project reconfigures source obstruction after startup. A saved
         // cache is deliberately not trusted across maps or geometry versions.
-        if let Some(policy)=result.dynamics_policy {policy.validate()?;}
-        result.dynamics_policy=None;
-        result.drift_policy=None;
+        if let Some(policy) = result.dynamics_policy {
+            policy.validate()?;
+        }
+        result.dynamics_policy = None;
+        result.drift_policy = None;
         result.wind_shelter.clear();
         result.heat_elapsed = 0.0;
         result.strata_elapsed = 0.0;
         result.sync_elapsed = result.sync_interval;
         result.samples.clear();
-        result.micro_dirty=true; // replay persisted footprints on reload
+        result.micro_dirty = true; // replay persisted footprints on reload
         Ok(result)
     }
     fn cold_wind_direction(&self) -> Option<[f32; 2]> {
-        self.drift_policy.map(|p|p.wind_direction)
+        self.drift_policy.map(|p| p.wind_direction)
     }
     pub(super) fn checkpoint(&self) -> Value {
         json!({"schema":"newviso.cold.save.v1","state":self})
@@ -232,9 +248,14 @@ fn decode<T: serde::de::DeserializeOwned>(c: &Value, key: &str) -> Result<T, Str
 // Walking uphill must remain a snow contact; jumping away from it must not.
 // Contact spacing decides when a foot lands. Per-frame displacement is used
 // only to obtain its direction, never as a frame-rate-dependent step threshold.
-fn snow_step_direction(previous:[f32;3],current:[f32;3],travel:f32)->Option<[f32;2]>{
-    if !travel.is_finite()||travel<=f32::EPSILON{return None;}
-    Some([(current[0]-previous[0])/travel,(current[2]-previous[2])/travel])
+fn snow_step_direction(previous: [f32; 3], current: [f32; 3], travel: f32) -> Option<[f32; 2]> {
+    if !travel.is_finite() || travel <= f32::EPSILON {
+        return None;
+    }
+    Some([
+        (current[0] - previous[0]) / travel,
+        (current[2] - previous[2]) / travel,
+    ])
 }
 
 fn follows_snow_surface(
@@ -288,13 +309,13 @@ impl EngineApplication {
                 if let Some(f) = &mut self.cold.field {
                     f.policy = policy;
                     self.cold.pending = f.all_render_vertices();
-                    self.cold.pending_liquid=f.all_liquid_vertices();
+                    self.cold.pending_liquid = f.all_liquid_vertices();
                     self.cold.micro_dirty = true;
                 }
                 self.cold.field_asset = Some(asset.into());
                 self.cold.field_digest = Some(digest);
                 self.cold.sync_interval = interval;
-                self.cold.precipitation_plan=None;
+                self.cold.precipitation_plan = None;
             }
             "snow.actor.bind" => {
                 let a: SnowActor = decode(c, "actor")?;
@@ -328,36 +349,40 @@ impl EngineApplication {
                     .contact(p[0], p[2], radius, strength)?;
             }
             "snow.layers.configure" => {
-                let policy:SnowLayerPolicy=decode(c,"policy")?;
-                self.cold.field.as_mut().ok_or("snow field not loaded")?.configure_layers(policy)?;
+                let policy: SnowLayerPolicy = decode(c, "policy")?;
+                self.cold
+                    .field
+                    .as_mut()
+                    .ok_or("snow field not loaded")?
+                    .configure_layers(policy)?;
             }
             "snow.heat.configure" => {
                 let policy: SnowHeatPolicy = decode(c, "policy")?;
                 policy.validate()?;
-                self.cold.heat_policy=Some(policy);
-                self.cold.heat_elapsed=0.0;
+                self.cold.heat_policy = Some(policy);
+                self.cold.heat_elapsed = 0.0;
             }
             "snow.drift.configure" => {
-                let policy: SnowDriftPolicy=decode(c,"policy")?;
-                let obstacles:Vec<SnowWindObstacle>=decode(c,"obstacles")?;
-                let field=self.cold.field.as_ref().ok_or("snow field not loaded")?;
-                let shelter=field.wind_shelter_map(policy,&obstacles)?;
-                self.cold.wind_shelter=shelter;
-                self.cold.wind_obstacles=obstacles;
-                self.cold.shelter_direction=Some(policy.wind_direction);
-                self.cold.drift_policy=Some(policy);
+                let policy: SnowDriftPolicy = decode(c, "policy")?;
+                let obstacles: Vec<SnowWindObstacle> = decode(c, "obstacles")?;
+                let field = self.cold.field.as_ref().ok_or("snow field not loaded")?;
+                let shelter = field.wind_shelter_map(policy, &obstacles)?;
+                self.cold.wind_shelter = shelter;
+                self.cold.wind_obstacles = obstacles;
+                self.cold.shelter_direction = Some(policy.wind_direction);
+                self.cold.drift_policy = Some(policy);
             }
             "snow.dynamics.configure" => {
-                let policy:SnowDynamicsPolicy=decode(c,"policy")?;
+                let policy: SnowDynamicsPolicy = decode(c, "policy")?;
                 policy.validate()?;
-                self.cold.dynamics_policy=Some(policy);
+                self.cold.dynamics_policy = Some(policy);
             }
             "snow.surfaces.configure" => {
-                let policy:SnowSurfacePolicy=decode(c,"policy")?;
-                let patches:Vec<SnowSurfacePatch>=decode(c,"patches")?;
-                self.configure_surface_snow(policy,patches)?;
+                let policy: SnowSurfacePolicy = decode(c, "policy")?;
+                let patches: Vec<SnowSurfacePatch> = decode(c, "patches")?;
+                self.configure_surface_snow(policy, patches)?;
             }
-            "snow.weather.advance" => self.apply_snow_weather_command(c,index)?,
+            "snow.weather.advance" => self.apply_snow_weather_command(c, index)?,
             "thermal.environment.set" => {
                 let e: ThermalEnvironment = decode(c, "environment")?;
                 e.validate()?;
@@ -383,11 +408,17 @@ impl EngineApplication {
                 if c.get("preserve_temperature").and_then(Value::as_bool) == Some(true) {
                     if let Some(old) = self.cold.bodies.get(&b.id) {
                         b.temperature = old.temperature;
-                        if b.entity != 0 && b.entity == old.entity { b.position = old.position; }
+                        if b.entity != 0 && b.entity == old.entity {
+                            b.position = old.position;
+                        }
                     }
                 }
                 if b.entity != 0 {
-                    if let Some(pose) = self.physics.as_ref().and_then(|physics| physics.pickup_body_pose(b.entity)) {
+                    if let Some(pose) = self
+                        .physics
+                        .as_ref()
+                        .and_then(|physics| physics.pickup_body_pose(b.entity))
+                    {
                         b.position = pose.position;
                     }
                 }
@@ -421,16 +452,21 @@ impl EngineApplication {
             })
             .unwrap_or_default();
         // Heat-based thaw is evaluated at project-authored cadence, not 120Hz.
-        if let (Some(policy),Some(env),Some(field)) =
-            (self.cold.heat_policy,self.cold.environment.as_ref(),self.cold.field.as_mut()){
-            self.cold.heat_elapsed+=dt;
-            if self.cold.heat_elapsed>=policy.active_interval {
-                let elapsed=self.cold.heat_elapsed.min(5.0);
-                self.cold.heat_elapsed=0.0;
-                let sources=self.cold.sources.values().cloned().collect::<Vec<_>>();
-                let before=field.microprints().len();
-                field.advance_heat(elapsed as f64,env,&sources,policy)?;
-                if field.microprints().len()!=before {self.cold.micro_dirty=true;}
+        if let (Some(policy), Some(env), Some(field)) = (
+            self.cold.heat_policy,
+            self.cold.environment.as_ref(),
+            self.cold.field.as_mut(),
+        ) {
+            self.cold.heat_elapsed += dt;
+            if self.cold.heat_elapsed >= policy.active_interval {
+                let elapsed = self.cold.heat_elapsed.min(5.0);
+                self.cold.heat_elapsed = 0.0;
+                let sources = self.cold.sources.values().cloned().collect::<Vec<_>>();
+                let before = field.microprints().len();
+                field.advance_heat(elapsed as f64, env, &sources, policy)?;
+                if field.microprints().len() != before {
+                    self.cold.micro_dirty = true;
+                }
             }
         }
         // Run strata aging well below frame rate. Only cells whose material
@@ -439,13 +475,14 @@ impl EngineApplication {
         if self.cold.strata_elapsed >= 5.0 {
             let elapsed = self.cold.strata_elapsed.min(30.0);
             self.cold.strata_elapsed = 0.0;
-            if let (Some(field),Some(env)) =
-                (self.cold.field.as_mut(),self.cold.environment.as_ref()){
-                if let Some(heat)=self.cold.heat_policy {
-                    let sources=self.cold.sources.values().cloned().collect::<Vec<_>>();
-                    field.weather_strata_with_heat(elapsed as f64,env,&sources,heat)?;
-                }else{
-                    field.weather_strata(elapsed as f64,env.temperature)?;
+            if let (Some(field), Some(env)) =
+                (self.cold.field.as_mut(), self.cold.environment.as_ref())
+            {
+                if let Some(heat) = self.cold.heat_policy {
+                    let sources = self.cold.sources.values().cloned().collect::<Vec<_>>();
+                    field.weather_strata_with_heat(elapsed as f64, env, &sources, heat)?;
+                } else {
+                    field.weather_strata(elapsed as f64, env.temperature)?;
                 }
             }
         }
@@ -485,23 +522,29 @@ impl EngineApplication {
                                 let count = (travel / a.contact_spacing).ceil().max(1.0) as usize;
                                 for step in 1..=count {
                                     let t = step as f32 / count as f32;
-                                    let x=old[0]+(p[0]-old[0])*t;
-                                    let z=old[2]+(p[2]-old[2])*t;
-                                    field.contact(x,z,a.contact_radius,a.contact_strength)?;
-                                    if let Some(forward)=a.microprint_enabled
-                                        .then(||snow_step_direction(old,p,travel)).flatten() {
-                                        let side=if a.step_index%2==0{1.0}else{-1.0};
-                                        let print=SnowMicroprint{
-                                            position:[x-forward[1]*side*0.145,z+forward[0]*side*0.145],
+                                    let x = old[0] + (p[0] - old[0]) * t;
+                                    let z = old[2] + (p[2] - old[2]) * t;
+                                    field.contact(x, z, a.contact_radius, a.contact_strength)?;
+                                    if let Some(forward) = a
+                                        .microprint_enabled
+                                        .then(|| snow_step_direction(old, p, travel))
+                                        .flatten()
+                                    {
+                                        let side = if a.step_index % 2 == 0 { 1.0 } else { -1.0 };
+                                        let print = SnowMicroprint {
+                                            position: [
+                                                x - forward[1] * side * 0.145,
+                                                z + forward[0] * side * 0.145,
+                                            ],
                                             forward,
-                                            half_width:0.112,
-                                            half_length:0.18,
-                                            depression:0.075*a.contact_strength,
+                                            half_width: 0.112,
+                                            half_length: 0.18,
+                                            depression: 0.075 * a.contact_strength,
                                         };
                                         if field.stamp_microprint(print)? {
-                                            self.cold.micro_dirty=true;
+                                            self.cold.micro_dirty = true;
                                         }
-                                        a.step_index=a.step_index.wrapping_add(1);
+                                        a.step_index = a.step_index.wrapping_add(1);
                                     }
                                 }
                                 a.distance = 0.0;
@@ -546,47 +589,72 @@ impl EngineApplication {
         }
         self.cold.sync_elapsed += dt;
         if self.cold.sync_elapsed >= self.cold.sync_interval
-            && (!self.cold.pending.is_empty()||
-                !self.cold.pending_liquid.is_empty()||self.cold.micro_dirty||
-                self.cold.field.as_ref().is_some_and(|f|f.has_visual_changes())) {
-            let sync_start=std::time::Instant::now();
+            && (!self.cold.pending.is_empty()
+                || !self.cold.pending_liquid.is_empty()
+                || self.cold.micro_dirty
+                || self
+                    .cold
+                    .field
+                    .as_ref()
+                    .is_some_and(|f| f.has_visual_changes()))
+        {
+            let sync_start = std::time::Instant::now();
             self.cold.sync_elapsed = 0.0;
-            if let Some(field)=self.cold.field.as_mut() {
-                let (snow,liquid)=field.take_visual_changes();
+            if let Some(field) = self.cold.field.as_mut() {
+                let (snow, liquid) = field.take_visual_changes();
                 self.cold.pending.extend(snow);
                 self.cold.pending_liquid.extend(liquid);
             }
-            let geometry_start=std::time::Instant::now();
+            let geometry_start = std::time::Instant::now();
             let pending = std::mem::take(&mut self.cold.pending);
-            self.cold.performance.last_snow_vertices=pending.len();
+            self.cold.performance.last_snow_vertices = pending.len();
             let collisions = self.scene.deform_heightfields(&pending)?;
-            self.cold.performance.last_collision_patches=collisions.len();
-            let liquid=std::mem::take(&mut self.cold.pending_liquid);
-            self.cold.performance.last_liquid_vertices=liquid.len();
-            if !liquid.is_empty(){
+            self.cold.performance.last_collision_patches = collisions.len();
+            let liquid = std::mem::take(&mut self.cold.pending_liquid);
+            self.cold.performance.last_liquid_vertices = liquid.len();
+            if !liquid.is_empty() {
                 self.scene.update_ground_liquids(&liquid)?;
             }
             if self.cold.micro_dirty {
-                let prints=self.cold.field.as_ref().map(|field|{
-                    field.microprints().iter().map(|p|[
-                        p.position[0],p.position[1],p.forward[0],p.forward[1],
-                        p.half_width,p.half_length,p.depression
-                    ]).collect::<Vec<_>>()
-                }).unwrap_or_default();
+                let prints = self
+                    .cold
+                    .field
+                    .as_ref()
+                    .map(|field| {
+                        field
+                            .microprints()
+                            .iter()
+                            .map(|p| {
+                                [
+                                    p.position[0],
+                                    p.position[1],
+                                    p.forward[0],
+                                    p.forward[1],
+                                    p.half_width,
+                                    p.half_length,
+                                    p.depression,
+                                ]
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
                 self.scene.update_snow_microprints(&prints)?;
-                self.cold.micro_dirty=false;
+                self.cold.micro_dirty = false;
             }
-            self.cold.performance.last_geometry_ms=geometry_start.elapsed().as_secs_f64()*1000.0;
-            let collision_start=std::time::Instant::now();
+            self.cold.performance.last_geometry_ms =
+                geometry_start.elapsed().as_secs_f64() * 1000.0;
+            let collision_start = std::time::Instant::now();
             if let Some(physics) = &mut self.physics {
                 for (entity, vertices, triangles) in collisions {
-                    let surface=self.scene.heightfield_surface_id(entity).unwrap_or(0);
-                    physics.update_streamed_heightfield(entity,vertices,triangles,surface)?;
+                    let surface = self.scene.heightfield_surface_id(entity).unwrap_or(0);
+                    physics.update_streamed_heightfield(entity, vertices, triangles, surface)?;
                 }
             }
-            self.cold.performance.last_collision_sync_ms=collision_start.elapsed().as_secs_f64()*1000.0;
-            self.cold.performance.last_surface_sync_ms=sync_start.elapsed().as_secs_f64()*1000.0;
-            self.cold.performance.sync_count+=1;
+            self.cold.performance.last_collision_sync_ms =
+                collision_start.elapsed().as_secs_f64() * 1000.0;
+            self.cold.performance.last_surface_sync_ms =
+                sync_start.elapsed().as_secs_f64() * 1000.0;
+            self.cold.performance.sync_count += 1;
         }
         Ok(())
     }
@@ -618,11 +686,14 @@ mod contact_tests {
     }
 
     #[test]
-    fn walking_step_direction_survives_high_frame_rates(){
-        for fps in [24.0,60.0,120.0,240.0]{
-            let distance=1.8/fps;
-            assert_eq!(snow_step_direction([0.0;3],[distance,0.0,0.0],distance),Some([1.0,0.0]));
+    fn walking_step_direction_survives_high_frame_rates() {
+        for fps in [24.0, 60.0, 120.0, 240.0] {
+            let distance = 1.8 / fps;
+            assert_eq!(
+                snow_step_direction([0.0; 3], [distance, 0.0, 0.0], distance),
+                Some([1.0, 0.0])
+            );
         }
-        assert_eq!(snow_step_direction([0.0;3],[0.0;3],0.0),None);
+        assert_eq!(snow_step_direction([0.0; 3], [0.0; 3], 0.0), None);
     }
 }

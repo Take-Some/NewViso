@@ -1,0 +1,9 @@
+[package]
+name = "newviso-authored-xml"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Strict, source-owned authored XML parsing for NewViso assets"
+
+[dependencies]
+roxmltree = "0.21.1"

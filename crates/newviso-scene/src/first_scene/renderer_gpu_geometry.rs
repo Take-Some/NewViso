@@ -169,12 +169,12 @@ impl Scene3dRuntime {
         &mut self,
         render: &RenderClient,
     ) -> Result<(), String> {
-        let required_vertices = u32::try_from(
-            self.skinned_vertex_data.len() / FLOATS_PER_VERTEX
-        ).map_err(|_| "compact skinned vertex count exceeds u32".to_owned())?;
-        let mut gpu = self.gpu.ok_or_else(|| {
-            "3D scene GPU resources are not initialized".to_owned()
-        })?;
+        let required_vertices =
+            u32::try_from(self.skinned_vertex_data.len() / FLOATS_PER_VERTEX)
+                .map_err(|_| "compact skinned vertex count exceeds u32".to_owned())?;
+        let mut gpu = self
+            .gpu
+            .ok_or_else(|| "3D scene GPU resources are not initialized".to_owned())?;
         if required_vertices <= gpu.skinned_vertex_capacity {
             return Ok(());
         }
@@ -235,9 +235,9 @@ impl Scene3dRuntime {
         }
 
         self.warmup_skinned_output_capacity(render)?;
-        let gpu = self.gpu.ok_or_else(|| {
-            "3D scene GPU resources are not initialized".to_owned()
-        })?;
+        let gpu = self
+            .gpu
+            .ok_or_else(|| "3D scene GPU resources are not initialized".to_owned())?;
 
         if renderer_skinning::gpu_skinning_enabled() {
             self.dispatch_gpu_skinning(render, frame_slot)?;

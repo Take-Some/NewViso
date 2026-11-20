@@ -123,6 +123,18 @@ impl<S: AssetSource> AssetStreamer<S> {
             error: entry.error.clone(),
         })
     }
+    /// Bounded opt-in diagnostics: identify source/decode jobs occupying all
+    /// worker slots without scanning or logging the entire asset catalog.
+    pub fn diagnostic_in_flight(&self, limit: usize) -> Vec<StreamingAssetSnapshot> {
+        let mut pending = self.in_flight.iter()
+            .filter_map(|address| self.snapshot(address))
+            .collect::<Vec<_>>();
+        pending.sort_by(|a, b| b.effective_priority.total_cmp(&a.effective_priority)
+            .then_with(|| a.address.canonical().cmp(&b.address.canonical())));
+        pending.truncate(limit.min(32));
+        pending
+    }
+
     pub fn stats(&self) -> StreamingStats {
         let mut stats = StreamingStats {
             frame: self.frame,

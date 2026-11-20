@@ -22,6 +22,10 @@ impl Scene3dRuntime {
         Ok(())
     }
 
+    pub fn set_orbit_zoom_enabled(&mut self, enabled: bool) {
+        self.orbit.zoom_enabled = enabled;
+    }
+
     pub fn configure_orbit(
         &mut self,
         rotate_sensitivity: f32,
@@ -59,7 +63,11 @@ impl Scene3dRuntime {
     pub fn camera_pose_values(&self) -> ([f32; 3], [f32; 3], [f32; 3]) {
         let forward = self.camera.target.sub(self.camera.position).normalized();
         (
-            [self.camera.position.x, self.camera.position.y, self.camera.position.z],
+            [
+                self.camera.position.x,
+                self.camera.position.y,
+                self.camera.position.z,
+            ],
             [forward.x, forward.y, forward.z],
             [self.camera.up.x, self.camera.up.y, self.camera.up.z],
         )

@@ -536,8 +536,12 @@ impl Scene3dRuntime {
         let view_proj = camera_view_projection(&self.camera, aspect);
         let (sun_direction, sun_intensity) = if self.cloudhat_keyframe.enabled {
             // CloudHat light is a TC radiance, not the emissive sun-disc intensity.
-            (self.cloudhat_keyframe.light_direction
-                .unwrap_or_else(|| self.atmospheric_sun().0), 1.0)
+            (
+                self.cloudhat_keyframe
+                    .light_direction
+                    .unwrap_or_else(|| self.atmospheric_sun().0),
+                1.0,
+            )
         } else {
             self.atmospheric_sun()
         };
@@ -1174,12 +1178,16 @@ mod tests {
     }
 }
 
-
 // CloudHatSettings + CloudHat::SetShaderVariables artist-to-render conversion.
 fn cloud_keyframe_scatter(density_shift_scale_g_scale: [f32; 4]) -> [f32; 4] {
     let g = density_shift_scale_g_scale[2].clamp(-0.999999, 0.999999);
     let g2 = g * g;
-    [g, g2, 1.5 * (1.0 - g2) / (2.0 + g2), density_shift_scale_g_scale[3] * 0.2]
+    [
+        g,
+        g2,
+        1.5 * (1.0 - g2) / (2.0 + g2),
+        density_shift_scale_g_scale[3] * 0.2,
+    ]
 }
 
 #[cfg(test)]
@@ -1194,8 +1202,7 @@ mod cloud_scattering_reference_tests {
         assert!((c[2] - 0.30722892).abs() < 1e-6);
         assert!((c[3] - 0.1).abs() < 1e-6);
         // The sign belongs to the keyframe, not the mesh's -0.75 material default.
-        let phase = |cos: f32| c[2] * (1.0 + cos * cos)
-            / (1.0 + c[1] - 2.0 * c[0] * cos).powf(1.5);
+        let phase = |cos: f32| c[2] * (1.0 + cos * cos) / (1.0 + c[1] - 2.0 * c[0] * cos).powf(1.5);
         assert!(phase(1.0) > phase(-1.0) * 100.0);
         for g in [-1.0, 1.0] {
             let c = cloud_keyframe_scatter([0.0, 1.0, g, 1.0]);

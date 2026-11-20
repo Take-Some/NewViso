@@ -81,7 +81,11 @@ impl UnderwaterGpu {
         let fragment_shader = render.create_shader_spirv(
             "newviso.water.underwater.fragment",
             ShaderStage::Fragment,
-            include_bytes!("../assets/water_underwater.frag.spv"),
+            if experimental_reverse_z_enabled() {
+                include_bytes!("../assets/water_underwater.reverse_z.frag.spv")
+            } else {
+                include_bytes!("../assets/water_underwater.frag.spv")
+            },
         )?;
         let attrs = [VertexAttribute {
             location: 0,
@@ -319,25 +323,39 @@ mod tests {
 
     #[test]
     fn underwater_graph_uses_hdr_extent_and_original_geometry_depth() {
-        let mut graph = main_deferred_hdr_render_graph(
-            1, 1440, 900, FrameCameraContext::default(),
-        );
+        let mut graph = main_deferred_hdr_render_graph(1, 1440, 900, FrameCameraContext::default());
         // A shadow target can precede the viewport resources.
-        graph.resources.insert(0, RenderGraphResourceDesc::transient_texture(
-            RenderGraphResourceId(99), "shadow",
-            RenderGraphResourceUsage::DepthAttachment,
-            Extent2D::new(2048, 2048), RenderTextureFormat::Depth32Float,
-        ));
+        graph.resources.insert(
+            0,
+            RenderGraphResourceDesc::transient_texture(
+                RenderGraphResourceId(99),
+                "shadow",
+                RenderGraphResourceUsage::DepthAttachment,
+                Extent2D::new(2048, 2048),
+                RenderTextureFormat::Depth32Float,
+            ),
+        );
         UnderwaterGpu::attach(&mut graph);
-        let hdr = graph.resources.iter()
-            .find(|r| r.id == RenderGraphResourceId(24)).unwrap();
+        let hdr = graph
+            .resources
+            .iter()
+            .find(|r| r.id == RenderGraphResourceId(24))
+            .unwrap();
         assert_eq!(hdr.extent, Some(Extent2D::new(1440, 900)));
-        let underwater = graph.passes.iter()
-            .position(|p| p.id == RenderGraphPassId(24)).unwrap();
-        assert!(graph.passes[underwater].reads.iter()
+        let underwater = graph
+            .passes
+            .iter()
+            .position(|p| p.id == RenderGraphPassId(24))
+            .unwrap();
+        assert!(graph.passes[underwater]
+            .reads
+            .iter()
             .any(|r| r.resource == RenderGraphResourceId(22)));
         for pass in &graph.passes[underwater + 1..] {
-            assert!(!pass.reads.iter().any(|r| r.resource == RenderGraphResourceId(6)));
+            assert!(!pass
+                .reads
+                .iter()
+                .any(|r| r.resource == RenderGraphResourceId(6)));
         }
     }
 }

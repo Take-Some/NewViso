@@ -1,8 +1,12 @@
 //! Visible instance runs and dynamic instance uploads.
 use super::*;
 impl Scene3dRuntime {
-    pub(super) fn build_frame_asset_instances(&self,render:&RenderClient,gpu:GpuScene,
-        frame_slot:usize)->Result<(Vec<GpuResidentInstanceBatch>,BTreeMap<u64,u32>),String>{
+    pub(super) fn build_frame_asset_instances(
+        &self,
+        render: &RenderClient,
+        gpu: GpuScene,
+        frame_slot: usize,
+    ) -> Result<(Vec<GpuResidentInstanceBatch>, BTreeMap<u64, u32>), String> {
         let mut instance_batches = Vec::<GpuResidentInstanceBatch>::new();
         let mut selected_static_batches = BTreeSet::<GpuInstanceBatchKey>::new();
         let mut dynamic_groups = BTreeMap::<GpuInstanceBatchKey, Vec<u64>>::new();
@@ -113,6 +117,6 @@ impl Scene3dRuntime {
             )?;
         }
 
-        Ok((instance_batches,visible_instance_slots))
+        Ok((instance_batches, visible_instance_slots))
     }
 }

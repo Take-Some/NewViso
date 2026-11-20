@@ -298,6 +298,23 @@ pub(super) fn mount_project_files(
 
     Ok(())
 }
+// Semantic UI surfaces are VFS JSON, not a binary asset codec.
+fn validate_project_ui_surface(surface: Value) -> Result<Value, String> {
+    let Some(object) = surface.as_object() else {
+        return Err("project UI surface must be a JSON object".to_owned());
+    };
+    if object.get("version").and_then(Value::as_u64).unwrap_or(1) != 1 {
+        return Err("project UI surface version must be 1".to_owned());
+    }
+    if object.get("surface_id").and_then(Value::as_str).map_or(true, |id| id.trim().is_empty()) {
+        return Err("project UI surface must have a non-empty surface_id".to_owned());
+    }
+    if object.get("components").and_then(Value::as_array).is_none() {
+        return Err("project UI surface must define an array of components".to_owned());
+    }
+    Ok(surface)
+}
+
 pub(super) fn load_project_files(
     project: &ResolvedProject,
     shared_assets_dir: &Path,
@@ -363,8 +380,9 @@ pub(super) fn load_project_files(
         .as_deref()
         .map(|logical_path| {
             assets
-                .decode_json(logical_path, "ui.surface.v1", Value::Null)
+                .json(logical_path)
                 .map_err(|error| format!("UI semantic asset load failed: {error}"))
+                .and_then(validate_project_ui_surface)
         })
         .transpose()?;
 

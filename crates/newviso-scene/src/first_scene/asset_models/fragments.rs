@@ -35,7 +35,9 @@ impl Scene3dRuntime {
             }
         }
         let bounds = found.then_some((min, max));
-        mesh.fragment_mesh_bounds.borrow_mut().insert(names.to_vec(), bounds);
+        mesh.fragment_mesh_bounds
+            .borrow_mut()
+            .insert(names.to_vec(), bounds);
         bounds
     }
 
@@ -409,8 +411,12 @@ impl Scene3dRuntime {
                     }
                     if first_modified_float.is_none() {
                         // Clear before the first write, including partial/error paths.
-                        self.asset_meshes.get(&stable_id).unwrap()
-                            .fragment_mesh_bounds.borrow_mut().clear();
+                        self.asset_meshes
+                            .get(&stable_id)
+                            .unwrap()
+                            .fragment_mesh_bounds
+                            .borrow_mut()
+                            .clear();
                     }
                     let dst = &mut self.asset_vertex_data[base..end];
                     dst[0] = position.x;

@@ -44,17 +44,7 @@ impl Scene3dRuntime {
                 continue;
             };
             for material in mesh.materials.iter() {
-                for texture in [
-                    material.textures.base_color.as_ref(),
-                    material.textures.normal.as_ref(),
-                    material.textures.specular.as_ref(),
-                    material.textures.emissive.as_ref(),
-                    material.textures.environment.as_ref(),
-                ]
-                .into_iter()
-                .flatten()
-                .chain(material.textures.auxiliary_textures.values())
-                {
+                for texture in material.sampled_textures() {
                     if !self.asset_gpu_textures.contains_key(&texture.id.0) {
                         pending_textures
                             .entry(texture.id.0)
@@ -170,7 +160,9 @@ impl Scene3dRuntime {
             );
         }
 
-        let mut pending_materials = BTreeMap::<(u64, u32), CpuAssetMaterial>::new();
+        // Borrow immutable material records; cloning every unresolved slot
+        // allocates its name, shader and auxiliary map on repeated frames.
+        let mut pending_materials = BTreeMap::<(u64, u32), &CpuAssetMaterial>::new();
         for stable_id in &working_model_representatives {
             let Some(mesh) = self.asset_meshes.get(stable_id) else {
                 continue;
@@ -182,7 +174,7 @@ impl Scene3dRuntime {
                 if !self.asset_gpu_materials.contains_key(&key) {
                     pending_materials
                         .entry(key)
-                        .or_insert_with(|| material.clone());
+                        .or_insert(material);
                 }
             }
         }
@@ -200,17 +192,9 @@ impl Scene3dRuntime {
 
             // Never permanently bind a fallback for a texture that is known to
             // exist but merely has not crossed the GPU upload budget yet.
-            let required_textures_ready = [
-                material.textures.base_color.as_ref(),
-                material.textures.normal.as_ref(),
-                material.textures.specular.as_ref(),
-                material.textures.emissive.as_ref(),
-                material.textures.environment.as_ref(),
-            ]
-            .into_iter()
-            .flatten()
-            .chain(material.textures.auxiliary_textures.values())
-            .all(|texture| self.asset_gpu_textures.contains_key(&texture.id.0));
+            let required_textures_ready = material
+                .sampled_textures()
+                .all(|texture| self.asset_gpu_textures.contains_key(&texture.id.0));
             if !required_textures_ready {
                 continue;
             }
@@ -243,7 +227,7 @@ impl Scene3dRuntime {
 
             let uniform_buffer = render.create_buffer(
                 &format!("newviso.scene.material.params.{}.{}", key.0, key.1),
-                (12 * std::mem::size_of::<f32>()) as u64,
+                (20 * std::mem::size_of::<f32>()) as u64,
                 "Uniform",
                 "CpuToGpu",
             )?;
@@ -262,7 +246,7 @@ impl Scene3dRuntime {
                     None,
                 ],
                 Some(gpu.material_sampler),
-                Some((uniform_buffer, 0, (12 * std::mem::size_of::<f32>()) as u64)),
+                Some((uniform_buffer, 0, (20 * std::mem::size_of::<f32>()) as u64)),
             ) {
                 Ok(group) => group,
                 Err(error) => {

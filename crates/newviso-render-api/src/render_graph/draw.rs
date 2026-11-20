@@ -68,7 +68,10 @@ impl RenderDrawListKind {
                 Self::OpaqueForward,
                 RenderGraphPassKind::ForwardOpaque | RenderGraphPassKind::GBuffer,
             ) | (Self::ParticleGBuffer, RenderGraphPassKind::ParticleGBuffer)
-                | (Self::Transparent, RenderGraphPassKind::Transparent | RenderGraphPassKind::Water)
+                | (
+                    Self::Transparent,
+                    RenderGraphPassKind::Transparent | RenderGraphPassKind::Water
+                )
                 | (Self::Scene2D, RenderGraphPassKind::Scene2D)
                 | (Self::Debug, RenderGraphPassKind::DebugOverlay)
         )

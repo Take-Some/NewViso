@@ -191,14 +191,16 @@ impl Scene3dRuntime {
         )?;
         let default_material_uniform = render.create_buffer(
             "newviso.scene.material.default_params",
-            (12 * std::mem::size_of::<f32>()) as u64,
+            (20 * std::mem::size_of::<f32>()) as u64,
             "Uniform",
             "CpuToGpu",
         )?;
         render.write_buffer_f32(
             default_material_uniform,
             0,
-            &[1.0, 0.0, 32.0, 0.0, 0.0, 0.5, 64.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+            &[1.0, 0.0, 32.0, 0.0, 0.0, 0.5, 64.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+              1.0, 0.0, 1.0, 0.0,
+              0.0, 0.0, 0.0, 0.0],
         )?;
         let material_sampler =
             render.create_sampler_repeat_linear("newviso.scene.material_sampler")?;
@@ -217,7 +219,7 @@ impl Scene3dRuntime {
             Some((
                 default_material_uniform,
                 0,
-                (12 * std::mem::size_of::<f32>()) as u64,
+                (20 * std::mem::size_of::<f32>()) as u64,
             )),
         )?;
 

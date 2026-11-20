@@ -5,6 +5,24 @@ mod physics;
 use super::*;
 use physics::parse_physics_audio_material;
 
+/// Audio provider supports first-class XVAG and decoded WAV clips. The
+/// normalized path must remain within the VFS and not contain selectors.
+fn normalize_loopable_audio_clip(uri: &str) -> Result<String, String> {
+    if uri.trim().starts_with('/') || uri.trim().starts_with('\\') {
+        return Err("native audio clip paths must be relative".to_owned());
+    }
+    let normalized = newviso_audio_client::normalize_audio_uri(uri)?;
+    let lower = normalized.to_ascii_lowercase();
+    if !(lower.ends_with(".xvag") || lower.ends_with(".wav"))
+        || lower.contains('@') || lower.contains(':')
+        || lower.contains('?') || lower.contains('#')
+        || lower.starts_with("//")
+    {
+        return Err(format!("expected plain .xvag or .wav clip reference, got '{normalized}'"));
+    }
+    Ok(normalized)
+}
+
 impl EngineApplication {
     pub(super) fn apply_audio_command(
         &mut self,
@@ -84,7 +102,7 @@ impl EngineApplication {
                 let clip = command.get("clip").and_then(Value::as_str).ok_or_else(|| {
                     format!("script command[{index}] audio.clip.preload requires clip")
                 })?;
-                let clip = newviso_audio_client::normalize_xvag_uri(clip)?;
+                let clip = normalize_loopable_audio_clip(clip)?;
                 invoke_audio_service(
                     index,
                     newviso_audio_client::AUDIO_METHOD_PRELOAD_CLIP_JSON_V1,
@@ -95,7 +113,7 @@ impl EngineApplication {
                 let clip = command.get("clip").and_then(Value::as_str).ok_or_else(|| {
                     format!("script command[{index}] audio.clip.play requires clip")
                 })?;
-                let clip = newviso_audio_client::normalize_xvag_uri(clip)?;
+                let clip = normalize_loopable_audio_clip(clip)?;
                 let mut request = newviso_audio_client::AudioPlayRequest::new(clip);
                 request.gain = command
                     .get("gain")
@@ -126,7 +144,7 @@ impl EngineApplication {
                 request.scope_id = command.get("scope_id").and_then(Value::as_u64);
                 request.seed = command.get("seed").and_then(Value::as_u64);
                 let mut request = request.sanitized()?;
-                request.clip.uri = newviso_audio_client::normalize_xvag_uri(&request.clip.uri)?;
+                request.clip.uri = normalize_loopable_audio_clip(&request.clip.uri)?;
                 let encoded = serde_json::to_value(&request).map_err(|e| e.to_string())?;
                 invoke_audio_service(
                     index,

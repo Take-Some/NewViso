@@ -9,7 +9,11 @@ impl EngineApplication {
     ) -> Result<(), String> {
         match op {
             "scene.particle_effect.preload" => {
-                application_particle_effects::preload_particle_effect_resources(&mut self.scene, command, index)?;
+                application_particle_effects::preload_particle_effect_resources(
+                    &mut self.scene,
+                    command,
+                    index,
+                )?;
             }
             "scene.particle_effect.spawn_at_joint" => {
                 let stable_id = self.resolve_script_scene_entity(
@@ -91,13 +95,14 @@ impl EngineApplication {
                 }
             }
             "scene.water.impact" => {
-                let position=command_vec3(command,"position",index)?;
-                let strength=command_number(command,"intensity",index)?;
-                self.scene.add_water_impact(position,strength)?;
+                let position = command_vec3(command, "position", index)?;
+                let strength = command_number(command, "intensity", index)?;
+                self.scene.add_water_impact(position, strength)?;
                 if std::env::var_os("NEWVISO_WATER_IMPACT_DIAG").is_some() {
-                    host::info("newviso.water.impact",format!(
-                        "surface event position={position:?} intensity={strength:.2}"
-                    ));
+                    host::info(
+                        "newviso.water.impact",
+                        format!("surface event position={position:?} intensity={strength:.2}"),
+                    );
                 }
             }
             "scene.particles.spawn" => {
@@ -220,20 +225,35 @@ impl EngineApplication {
                     .map(|_| command_vec4(command, "color", index))
                     .transpose()?
                     .unwrap_or([0.025, 0.022, 0.018, 1.0]);
-                let mark = SceneSurfaceMark { owner: None, position, normal, radius, color };
+                let mark = SceneSurfaceMark {
+                    owner: None,
+                    position,
+                    normal,
+                    radius,
+                    color,
+                };
                 let owner = if let Some(key) = command.get("entity_key").and_then(Value::as_str) {
-                    Some(key.parse::<u64>().map_err(|_| format!("script command[{index}] surface mark has invalid entity_key"))?)
+                    Some(key.parse::<u64>().map_err(|_| {
+                        format!("script command[{index}] surface mark has invalid entity_key")
+                    })?)
                 } else if command.get("entity").is_some() || command.get("id").is_some() {
                     Some(self.resolve_script_scene_entity(command, index, op)?)
-                } else { None };
-                if let Some(owner) = owner { self.scene.add_attached_surface_mark(owner, mark)?; }
-                else { self.scene.add_surface_mark(mark)?; }
+                } else {
+                    None
+                };
+                if let Some(owner) = owner {
+                    self.scene.add_attached_surface_mark(owner, mark)?;
+                } else {
+                    self.scene.add_surface_mark(mark)?;
+                }
             }
             "scene.surface_marks.clear" => {
                 if command.get("entity").is_some() || command.get("id").is_some() {
                     let owner = self.resolve_script_scene_entity(command, index, op)?;
                     self.scene.clear_surface_marks_for_entity(owner);
-                } else { self.scene.clear_surface_marks(); }
+                } else {
+                    self.scene.clear_surface_marks();
+                }
             }
             "scene.transient_spheres.set" => {
                 let items = command
@@ -272,6 +292,16 @@ impl EngineApplication {
                     });
                 }
                 self.scene.set_transient_spheres(spheres)?;
+            }
+            "ui.hud.quads.set" => {
+                let items = command
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| format!(
+                        "script command[{index}] ui.hud.quads.set requires array 'items'"
+                    ))?;
+                self.set_hud_quads(items)?;
+                self.hud_overlay_cache = None;
             }
             "scene.overlay_quads.set" => {
                 let items = command

@@ -32,7 +32,6 @@ impl WeatherGpuFxSystemType {
             Self::Other => 3.0,
         }
     }
-
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -148,15 +147,17 @@ impl Scene3dRuntime {
             return;
         }
         self.weather_fx_time_seconds = (self.weather_fx_time_seconds + dt).rem_euclid(86_400.0);
-        self.weather_collision.track_camera(self.camera.position, dt);
+        self.weather_collision
+            .track_camera(self.camera.position, dt);
 
         // Refine the broad bounds against the local terrain surface. The
         // island's maximum hill height must not shelter every lower street.
-        self.weather_outdoor_exposure = if self.weather_physical_shelter || self.weather_sky_is_occluded() {
-            0.0
-        } else {
-            1.0
-        };
+        self.weather_outdoor_exposure =
+            if self.weather_physical_shelter || self.weather_sky_is_occluded() {
+                0.0
+            } else {
+                1.0
+            };
 
         if !self.weather_wetness_external {
             let rain = self.weather_effects.rain.clamp(0.0, 1.0);
@@ -219,11 +220,17 @@ impl Scene3dRuntime {
         let origin = self.camera.position;
         let min_distance = self.camera.near.max(0.02);
         self.world.solid_entities().any(|entity| {
-            let bounds = self.world.collision_bounds(entity.id).unwrap_or(entity.bounds);
+            let bounds = self
+                .world
+                .collision_bounds(entity.id)
+                .unwrap_or(entity.bounds);
             if !ray_hits_aabb(origin, Vec3::Y, bounds, min_distance) {
                 return false;
             }
-            if let Some(terrain) = entity.render_slot.and_then(|slot| self.terrain_meshes.get(&slot)) {
+            if let Some(terrain) = entity
+                .render_slot
+                .and_then(|slot| self.terrain_meshes.get(&slot))
+            {
                 return terrain.upward_ray_hits(origin, min_distance);
             }
             true
@@ -237,9 +244,13 @@ impl Scene3dRuntime {
 
     fn weather_lens_intensity(&self) -> f32 {
         let forward = self.camera.target.sub(self.camera.position).normalized();
-        weather_lens_exposure(self.weather_lens_enabled, self.weather_effects.rain,
-            self.weather_outdoor_exposure, forward.y,
-            self.water_simulation.immersion.blend > 0.001)
+        weather_lens_exposure(
+            self.weather_lens_enabled,
+            self.weather_effects.rain,
+            self.weather_outdoor_exposure,
+            forward.y,
+            self.water_simulation.immersion.blend > 0.001,
+        )
     }
 
     pub(super) fn weather_lens_uniform(&self) -> [f32; WEATHER_LENS_UNIFORM_FLOATS] {
@@ -324,8 +335,10 @@ impl Scene3dRuntime {
             self.weather_effects.rain
         } else if drive.contains("SNOW_MIST") {
             self.weather_effects.snow_mist
-        } else if drive.contains("SNOW") &&
-            (layer.system_type==WeatherGpuFxSystemType::Mist || layer.system_type==WeatherGpuFxSystemType::Ground) {
+        } else if drive.contains("SNOW")
+            && (layer.system_type == WeatherGpuFxSystemType::Mist
+                || layer.system_type == WeatherGpuFxSystemType::Ground)
+        {
             self.weather_effects.snow_mist
         } else if drive.contains("SNOW") {
             self.weather_effects.snow
@@ -426,9 +439,9 @@ impl Scene3dRuntime {
             forward.z,
             self.weather_outdoor_exposure,
         ]);
-        let (centre,size)=emitter_world_box(self.camera.position,&layer.emitter);
-        out[32..36].copy_from_slice(&[centre[0],centre[1],centre[2],layer.system_type.code()]);
-        out[36..40].copy_from_slice(&[size[0],size[1],size[2],intensity.clamp(0.0,1.0)]);
+        let (centre, size) = emitter_world_box(self.camera.position, &layer.emitter);
+        out[32..36].copy_from_slice(&[centre[0], centre[1], centre[2], layer.system_type.code()]);
+        out[36..40].copy_from_slice(&[size[0], size[1], size[2], intensity.clamp(0.0, 1.0)]);
         out[40..44].copy_from_slice(&[
             layer.emitter.life_min_max[0],
             layer.emitter.life_min_max[1],
@@ -439,7 +452,11 @@ impl Scene3dRuntime {
             layer.emitter.velocity_min[0],
             layer.emitter.velocity_min[1],
             layer.emitter.velocity_min[2],
-            if layer.drive_type.to_ascii_uppercase().contains("SNOW") {1.0} else {0.0},
+            if layer.drive_type.to_ascii_uppercase().contains("SNOW") {
+                1.0
+            } else {
+                0.0
+            },
         ]);
         out[48..52].copy_from_slice(&[
             layer.emitter.velocity_max[0],
@@ -467,24 +484,44 @@ impl Scene3dRuntime {
             layer.render.directional_z_offset_min_max[0],
             layer.render.directional_z_offset_min_max[1],
             layer.render.directional_z_offset_min_max[2],
-            if layer.emitter.clamp_to_ground { 1.0 } else { 0.0 },
+            if layer.emitter.clamp_to_ground {
+                1.0
+            } else {
+                0.0
+            },
         ]);
         let v = self.weather_collision.camera_velocity;
         let speed = v.length();
         let [minimum, maximum, multiplier] = layer.render.camera_speed_add;
-        let addition = (speed - minimum).max(0.0)
+        let addition = (speed - minimum)
+            .max(0.0)
             .min((maximum - minimum).max(0.0) * multiplier.max(0.0));
-        let motion = if speed > 0.001 { v.mul(-addition / speed) } else { Vec3::ZERO };
+        let motion = if speed > 0.001 {
+            v.mul(-addition / speed)
+        } else {
+            Vec3::ZERO
+        };
         out[80..84].copy_from_slice(&[motion.x, motion.y, motion.z, 0.0]);
         out[84..88].copy_from_slice(&[
-            layer.render.rot_speed_min_max[0], layer.render.rot_speed_min_max[1],
+            layer.render.rot_speed_min_max[0],
+            layer.render.rot_speed_min_max[1],
             layer.emitter.box_centre_offset[1], // stable world seed phase Z
-            if layer.drive_type.contains("RAIN") { 1.0 } else { 0.0 },
+            if layer.drive_type.contains("RAIN") {
+                1.0
+            } else {
+                0.0
+            },
         ]);
         out[88..92].copy_from_slice(&layer.render.fade_ground_offset);
         out[92..96].copy_from_slice(&[
-            self.weather_collision.origin[0], self.weather_collision.origin[1],
-            self.weather_collision.spacing, if self.weather_collision.ready { 1.0 } else { 0.0 },
+            self.weather_collision.origin[0],
+            self.weather_collision.origin[1],
+            self.weather_collision.spacing,
+            if self.weather_collision.ready {
+                1.0
+            } else {
+                0.0
+            },
         ]);
         out[96..].copy_from_slice(&self.weather_collision.heights);
         out
@@ -638,7 +675,7 @@ impl Scene3dRuntime {
                 depth_format: Some("Depth32Float"),
                 depth_test: true,
                 depth_write: false,
-                depth_compare: "LessOrEqual",
+                depth_compare: if experimental_reverse_z_enabled() {"GreaterOrEqual"} else {"LessOrEqual"},
                 cull_mode: "None",
                 blend_mode: "Alpha",
                 cache_key: "newviso.weather.world.gta_gpu_fx.v2",
@@ -880,13 +917,17 @@ impl Scene3dRuntime {
             let Some(gpu_layer) = gpu.world_layers.get(&name) else {
                 continue;
             };
-            let count = ((layer.particle_count as f32)
-                * intensity.clamp(0.0, 1.0))
-            .ceil()
-            .max(1.0) as u32;
+            let count = ((layer.particle_count as f32) * intensity.clamp(0.0, 1.0))
+                .ceil()
+                .max(1.0) as u32;
             render.set_bind_group(0, gpu_layer.bind_groups[frame_slot])?;
             let vertices = if layer.system_type == WeatherGpuFxSystemType::Ground
-                && layer.drive_type.contains("RAIN") { 12 } else { 6 };
+                && layer.drive_type.contains("RAIN")
+            {
+                12
+            } else {
+                6
+            };
             render.draw(count.saturating_mul(vertices))?;
         }
         Ok(())
@@ -915,14 +956,23 @@ impl Scene3dRuntime {
 
     /// Bounds are the same world-space values submitted to the GPU, allowing
     /// scripts/debug probes to inspect them without copying shader buffers.
-    pub(super) fn weather_world_layer_state(&self)->Value{
-        json!(self.active_weather_world_layers().into_iter().map(|(name,weight)|{
-            let volume=self.weather_gpu_fx.as_ref().and_then(|r|r.layers.get(&name)).map(|layer|{
-                let (centre,size)=emitter_world_box(self.camera.position,&layer.emitter);
-                json!({"centre":centre,"size":size,"coordinate_space":"world_y_up"})
-            });
-            json!({"name":name,"weight":weight,"emitter_volume":volume})
-        }).collect::<Vec<_>>())
+    pub(super) fn weather_world_layer_state(&self) -> Value {
+        json!(self
+            .active_weather_world_layers()
+            .into_iter()
+            .map(|(name, weight)| {
+                let volume = self
+                    .weather_gpu_fx
+                    .as_ref()
+                    .and_then(|r| r.layers.get(&name))
+                    .map(|layer| {
+                        let (centre, size) =
+                            emitter_world_box(self.camera.position, &layer.emitter);
+                        json!({"centre":centre,"size":size,"coordinate_space":"world_y_up"})
+                    });
+                json!({"name":name,"weight":weight,"emitter_volume":volume})
+            })
+            .collect::<Vec<_>>())
     }
     pub(super) fn weather_runtime_state(&self) -> Value {
         json!({
@@ -993,7 +1043,9 @@ impl Scene3dRuntime {
 fn validate_weather_resources(resources: &WeatherGpuFxResources) -> Result<(), String> {
     if !resources.collision_cell_metres.is_finite()
         || !(0.5..=8.0).contains(&resources.collision_cell_metres)
-        || !(1..=WEATHER_HEIGHT_SIDE * WEATHER_HEIGHT_SIDE).contains(&resources.collision_probes_per_frame) {
+        || !(1..=WEATHER_HEIGHT_SIDE * WEATHER_HEIGHT_SIDE)
+            .contains(&resources.collision_probes_per_frame)
+    {
         return Err("invalid weather collision map tuning".to_owned());
     }
     if resources.puddle_normal_textures.is_empty() {
@@ -1092,11 +1144,17 @@ mod tests {
     }
 }
 
-
 // VfxLens::IsValidCamera + VfxWeather::UpdateCameraLensFx, converted to Y-up.
-fn weather_lens_exposure(enabled: bool, rain: f32, outdoor: f32, forward_y: f32,
-    underwater: bool) -> f32 {
-    if !enabled || underwater { return 0.0; }
+fn weather_lens_exposure(
+    enabled: bool,
+    rain: f32,
+    outdoor: f32,
+    forward_y: f32,
+    underwater: bool,
+) -> f32 {
+    if !enabled || underwater {
+        return 0.0;
+    }
     rain.clamp(0.0, 1.0) * outdoor.clamp(0.0, 1.0) * forward_y.clamp(0.0, 1.0)
 }
 

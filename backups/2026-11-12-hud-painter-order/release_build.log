@@ -1,0 +1,27 @@
+warning: function `reverse_z_view_depth` is never used
+   --> crates\newviso-scene\src\first_scene\render_math.rs:194:15
+    |
+194 | pub(super) fn reverse_z_view_depth(depth:f32,near:f32,far:f32)->f32 {
+    |               ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `newviso-scene` (lib) generated 1 warning
+   Compiling newviso-runtime v0.1.0 (C:\Users\Kayla\Documents\NorthStar\NewViso\crates\newviso-runtime)
+warning: methods `restart_required` and `zoom_multiplier` are never used
+   --> crates\newviso-runtime\src\application_main_menu_settings.rs:154:19
+    |
+ 38 | impl MenuPreferences {
+    | -------------------- methods in this implementation
+...
+154 |     pub(super) fn restart_required(&self, key: &str) -> bool {
+    |                   ^^^^^^^^^^^^^^^^
+...
+184 |     pub(super) fn zoom_multiplier(&self) -> f32 {
+    |                   ^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `newviso-runtime` (lib) generated 1 warning
+   Compiling newviso v0.1.0 (C:\Users\Kayla\Documents\NorthStar\NewViso\apps\newviso)
+    Finished `release` profile [optimized] target(s) in 2m 57s

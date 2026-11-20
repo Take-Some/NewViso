@@ -44,9 +44,32 @@ impl Default for RasterCullMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PipelineDepthCompare {
     Always,
+    /// Strict opaque depth test: tied depth values do not overwrite existing pixels.
+    Less,
     LessOrEqual,
+    /// Depth values increase toward the near plane (reversed-Z).
+    Greater,
+    GreaterOrEqual,
 }
 
+#[cfg(test)]
+mod depth_compare_wire_tests {
+    use super::*;
+    #[test]
+    fn opaque_less_is_serialized_and_legacy_mode_remains_compatible() {
+        let encoded=serde_json::to_string(&PipelineDepthCompare::Less).unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&encoded).unwrap(),serde_json::Value::String("Less".into()));
+        let decoded:PipelineDepthCompare=serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded,PipelineDepthCompare::Less);
+        for reversed in [PipelineDepthCompare::Greater,PipelineDepthCompare::GreaterOrEqual] {
+            let wire=serde_json::to_string(&reversed).unwrap();
+            assert_eq!(serde_json::from_str::<PipelineDepthCompare>(&wire).unwrap(),reversed);
+        }
+        let legacy:PipelineDepthCompare=serde_json::from_value(serde_json::Value::String("LessOrEqual".into())).unwrap();
+        assert_eq!(legacy,PipelineDepthCompare::LessOrEqual);
+        assert_eq!(PipelineDepthMode::default().compare,PipelineDepthCompare::LessOrEqual);
+    }
+}
 impl Default for PipelineDepthCompare {
     #[inline]
     fn default() -> Self {

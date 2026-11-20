@@ -10,6 +10,15 @@ members = [
     "crates/newviso-visibility-api",
     "crates/newviso-loading-api",
     "crates/newviso-task-api",
+    "crates/newviso-authored-xml",
+    "crates/newviso-texture-container",
+    "crates/newviso-binary-asset-bodies",
+    "crates/newviso-asset-interfaces",
+    "crates/newviso-maps-runtime",
+    "crates/newviso-model-domain",
+    "crates/newviso-plugin-abi",
+    "crates/newviso-plugin-kit",
+    "crates/newviso-derived-cache",
     "crates/newviso-steering",
     "crates/newviso-character",
     "crates/newviso-navigation",
@@ -71,6 +80,15 @@ newviso-render-api = { path = "crates/newviso-render-api" }
 newviso-visibility-api = { path = "crates/newviso-visibility-api" }
 newviso-loading-api = { path = "crates/newviso-loading-api" }
 newviso-task-api = { path = "crates/newviso-task-api" }
+newviso-authored-xml = { path = "crates/newviso-authored-xml" }
+newviso-texture-container = { path = "crates/newviso-texture-container" }
+newviso-binary-asset-bodies = { path = "crates/newviso-binary-asset-bodies" }
+newviso-asset-interfaces = { path = "crates/newviso-asset-interfaces" }
+newviso-maps-runtime = { path = "crates/newviso-maps-runtime" }
+newviso-model-domain = { path = "crates/newviso-model-domain" }
+newviso-plugin-abi = { path = "crates/newviso-plugin-abi" }
+newviso-plugin-kit = { path = "crates/newviso-plugin-kit" }
+newviso-derived-cache = { path = "crates/newviso-derived-cache" }
 newviso-steering = { path = "crates/newviso-steering" }
 newviso-character = { path = "crates/newviso-character" }
 newviso-navigation = { path = "crates/newviso-navigation" }

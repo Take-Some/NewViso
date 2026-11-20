@@ -2,14 +2,10 @@ use newviso_host as host;
 use serde_json::{json, Value};
 use std::path::Path;
 
-const ASSET_SERVICE: &str = "engine.assets";
-const ASSET_TYPES_SERVICE: &str = "engine.assets.types";
-const ASSET_TYPES_RESOLVE_METHOD: &str = "asset.types.resolve_json_v1";
-const MOUNT_METHOD: &str = "asset.mount_source_json_v1";
-const TEXT_METHOD: &str = "asset.text_v1";
-const RAW_BYTES_METHOD: &str = "asset.raw_bytes_v1";
-const VFS_LIST_METHOD: &str = "asset.vfs_list_json_v1";
-const DECODE_METHOD: &str = "asset.decode_v1";
+use newviso_service_api::{
+    method as asset_method, validate_asset_gateway_description, AssetGatewayContract,
+    ASSET_GATEWAY_ID, ASSET_TYPES_GATEWAY_ID,
+};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AssetClient;
@@ -19,10 +15,20 @@ impl AssetClient {
         Self
     }
 
+    /// Verify the selected provider implements NewViso's canonical gateway
+    /// before mounting a project or requesting large resource dictionaries.
+    /// This checks the advertised contract, not the provider DLL filename.
+    pub fn verify_provider_contract(&self) -> Result<AssetGatewayContract, String> {
+        let description = host::service_description(ASSET_GATEWAY_ID)?;
+        let contract: Value = serde_json::from_str(&description)
+            .map_err(|error| format!("asset provider description is invalid JSON: {error}"))?;
+        validate_asset_gateway_description(&contract)
+    }
+
     pub fn mount_filesystem(&self, root: &Path, mount: &str, priority: i32) -> Result<(), String> {
         let response = host::call_json(
-            ASSET_SERVICE,
-            MOUNT_METHOD,
+            ASSET_GATEWAY_ID,
+            asset_method::MOUNT_SOURCE_JSON_V1,
             &json!({
                 "kind": "filesystem",
                 "priority": priority,
@@ -48,7 +54,11 @@ impl AssetClient {
 
     pub fn vfs_list(&self, logical_dir: &str) -> Result<Value, String> {
         let path = normalize_logical_dir(logical_dir)?;
-        let bytes = host::call_service(ASSET_SERVICE, VFS_LIST_METHOD, path.as_bytes())?;
+        let bytes = host::call_service(
+            ASSET_GATEWAY_ID,
+            asset_method::VFS_LIST_JSON_V1,
+            path.as_bytes(),
+        )?;
         let value: Value = serde_json::from_slice(&bytes)
             .map_err(|error| format!("asset VFS list returned invalid JSON: {error}"))?;
 
@@ -61,7 +71,7 @@ impl AssetClient {
 
     pub fn text(&self, logical_path: &str) -> Result<String, String> {
         let path = normalize_logical_path(logical_path)?;
-        let bytes = host::call_service(ASSET_SERVICE, TEXT_METHOD, path.as_bytes())?;
+        let bytes = host::call_service(ASSET_GATEWAY_ID, asset_method::TEXT_V1, path.as_bytes())?;
         String::from_utf8(bytes)
             .map_err(|error| format!("asset '{}' is not valid UTF-8: {error}", path))
     }
@@ -86,7 +96,7 @@ impl AssetClient {
         });
         let payload = serde_json::to_vec(&request)
             .map_err(|error| format!("asset decode request encode failed: {error}"))?;
-        host::call_service(ASSET_SERVICE, DECODE_METHOD, &payload).map_err(|error| {
+        host::call_service(ASSET_GATEWAY_ID, asset_method::DECODE_V1, &payload).map_err(|error| {
             format!(
                 "asset decode failed path='{}' output='{}': {error}",
                 logical_path, output_kind
@@ -112,8 +122,8 @@ impl AssetClient {
     pub fn resolve_type(&self, logical_path: &str) -> Result<Value, String> {
         let path = normalize_logical_path(logical_path)?;
         host::call_json(
-            ASSET_TYPES_SERVICE,
-            ASSET_TYPES_RESOLVE_METHOD,
+            ASSET_TYPES_GATEWAY_ID,
+            asset_method::TYPES_RESOLVE_JSON_V1,
             &json!({"logical_path": path}),
         )
         .map_err(|error| format!("asset type resolve failed path='{}': {error}", logical_path))
@@ -121,8 +131,12 @@ impl AssetClient {
 
     pub fn raw_bytes(&self, logical_path: &str) -> Result<Vec<u8>, String> {
         let path = normalize_logical_path(logical_path)?;
-        host::call_service(ASSET_SERVICE, RAW_BYTES_METHOD, path.as_bytes())
-            .map_err(|error| format!("failed to read asset '{}': {error}", path))
+        host::call_service(
+            ASSET_GATEWAY_ID,
+            asset_method::RAW_BYTES_V1,
+            path.as_bytes(),
+        )
+        .map_err(|error| format!("failed to read asset '{}': {error}", path))
     }
 }
 

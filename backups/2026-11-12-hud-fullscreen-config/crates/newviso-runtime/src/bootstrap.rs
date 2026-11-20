@@ -1,0 +1,624 @@
+use super::bootstrap_configuration::load_effective_runtime_settings;
+use super::bootstrap_support::*;
+use super::*;
+
+pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> {
+    bugtrap::set_phase("runtime.bootstrap");
+    host::reset();
+    host::ensure_asset_types_registry()?;
+    host::ensure_threading_service()?;
+
+    let mut state = EngineState::default();
+    let mut bootstrap_providers = Vec::<RunningProvider>::new();
+    let mut application_libraries = Vec::<newviso_provider_runtime::ProviderLibraryGuard>::new();
+
+    let result = (|| -> Result<RuntimeReport, String> {
+        log_bootstrap(&bootstrap);
+
+        let project = bootstrap
+            .project_path
+            .as_ref()
+            .map(ResolvedProject::load)
+            .transpose()
+            .map_err(|error| format!("project load failed: {error}"))?;
+
+        let effective_cache_dir = project
+            .as_ref()
+            .map(|project| project.cache_dir.clone())
+            .unwrap_or_else(|| bootstrap.cache_dir.clone());
+
+        fs::create_dir_all(&effective_cache_dir).map_err(|error| {
+            format!(
+                "failed to create effective cache '{}': {error}",
+                effective_cache_dir.display()
+            )
+        })?;
+
+        env::set_var("NEWENGINE_CACHE_FILES", &effective_cache_dir);
+        env::set_var("CACHE_FILES", &effective_cache_dir);
+        env::set_var("NEWVISO_CACHE_DIR", &effective_cache_dir);
+
+        if let Some(project) = &project {
+            host::info(
+                "newviso.project",
+                format!(
+                    "loaded project '{}' id={} version={} root={} manifest={}",
+                    project.manifest.project.name,
+                    project.manifest.project.id,
+                    project.manifest.project.version,
+                    project.root.display(),
+                    project.manifest_path.display()
+                ),
+            );
+        }
+
+        host::info(
+            "newviso.runtime",
+            format!("effective cache root={}", effective_cache_dir.display()),
+        );
+
+        let roles = ProviderRoles::resolve(&bootstrap, project.as_ref());
+
+        if !bootstrap.base_dir.is_dir() {
+            return Err(format!(
+                "bootstrap base directory does not exist: {}",
+                bootstrap.base_dir.display()
+            ));
+        }
+
+        env::set_current_dir(&bootstrap.base_dir).map_err(|error| {
+            format!(
+                "failed to switch process base directory to '{}': {error}",
+                bootstrap.base_dir.display()
+            )
+        })?;
+
+        state.set_phase(RuntimePhase::Boot);
+        bugtrap::set_phase("providers.discovery");
+
+        let providers = probe_directory(&bootstrap.provider_dir)
+            .map_err(|error| format!("provider discovery failed: {error}"))?;
+        log_provider_inventory(&providers);
+        // Native gamepad drivers may leave process-lived worker threads behind
+        // even after input provider shutdown. Retain code before lifecycle probes
+        // too, so those workers never resume into an unloaded DLL.
+        let input_provider = require_provider(&providers, &roles.input)?;
+        newviso_provider_runtime::ProviderLibraryGuard::load(&input_provider.path)?
+            .retain_for_process_lifetime();
+        // Renderer and platform modules are owned by the application/platform
+        // loop and can be dropped before the bootstrap registry is released.
+        // Keep their DLL code resident until the last host ABI object is gone.
+        for provider in providers
+            .iter()
+            .filter(|provider| provider.id == roles.renderer || provider.id == roles.platform)
+        {
+            application_libraries.push(newviso_provider_runtime::ProviderLibraryGuard::load(
+                &provider.path,
+            )?);
+        }
+        bugtrap::set_context("safe_mode", bootstrap.safe_mode.to_string());
+        bugtrap::set_context(
+            "provider_inventory",
+            providers
+                .iter()
+                .map(|provider| format!("{}@{}", provider.id, provider.version))
+                .collect::<Vec<_>>()
+                .join(";"),
+        );
+        if let Some(renderer) = providers
+            .iter()
+            .find(|provider| provider.id == roles.renderer)
+        {
+            bugtrap::set_context("renderer_provider_id", renderer.id.clone());
+            bugtrap::set_context("renderer_provider_version", renderer.version.to_string());
+            bugtrap::set_context(
+                "renderer_provider_path",
+                renderer.path.display().to_string(),
+            );
+        }
+
+        host::debug("newviso.runtime", "probing provider lifecycle ABI");
+        for provider in &providers {
+            bugtrap::set_context("provider_probe", provider.path.display().to_string());
+            bugtrap::checkpoint("providers.probe");
+            if provider.root_symbol == RootSymbol::Legacy {
+                host::warn(
+                    "newviso.providers",
+                    format!(
+                        "legacy provider '{}' version={} root={} deferred to legacy adapter",
+                        provider.id,
+                        provider.version,
+                        provider.root_symbol.label()
+                    ),
+                );
+                continue;
+            }
+
+            let report = probe_lifecycle(&provider.path).map_err(|error| {
+                format!("provider ABI probe failed for {}: {error}", provider.id)
+            })?;
+
+            host::debug(
+                "newviso.providers",
+                format!(
+                    "ABI probe passed provider='{}' version={} capabilities={} defaults={} bytes={} format={}",
+                    report.descriptor_id,
+                    report.descriptor_version,
+                    report.capability_count,
+                    report.default_content_type,
+                    report.default_bytes,
+                    report.default_format_version
+                ),
+            );
+        }
+
+        state.set_phase(RuntimePhase::Engine);
+
+        for id in [
+            roles.logging.as_str(),
+            roles.input.as_str(),
+            roles.assets.as_str(),
+            roles.ecs.as_str(),
+        ] {
+            let info = require_provider(&providers, id)?;
+            bugtrap::set_context("provider_load", info.path.display().to_string());
+            bugtrap::checkpoint("providers.bootstrap_load");
+            let mut running = RunningProvider::load_current(&info.path)?;
+            running.initialize()?;
+
+            host::info(
+                "newviso.providers",
+                format!(
+                    "started provider '{}' from {}",
+                    running.id(),
+                    running.path().display()
+                ),
+            );
+
+            bootstrap_providers.push(running);
+        }
+
+        // The engine owns the current asset gateway contract. A backend is
+        // selected by provider metadata and must prove the required methods
+        // before VFS mounts or startup scene loading begins.
+        let asset_contract = AssetClient::new().verify_provider_contract()?;
+        host::info(
+            "newviso.assets",
+            format!(
+                "asset gateway validated service='{}' contract='{}' methods={}",
+                asset_contract.provider_service_id,
+                asset_contract.protocol,
+                asset_contract.method_count
+            ),
+        );
+
+        host::debug(
+            "newviso.host",
+            format!(
+                "registry ready services={:?} event_sinks={}",
+                host::registered_service_ids(),
+                host::event_sink_count()
+            ),
+        );
+
+        let mut effective_configuration = if let Some(project) = &project {
+            mount_project_files(project, &bootstrap.assets_dir)?;
+            Some(load_effective_runtime_settings(project, &bootstrap)?)
+        } else {
+            None
+        };
+        let resolved_capabilities = if let Some(project) = &project {
+            let effective_runtime = &effective_configuration
+                .as_ref()
+                .expect("project configuration")
+                .settings;
+            let resolved = resolve_project_capabilities(
+                project,
+                &providers,
+                bootstrap.safe_mode,
+                bootstrap.editor_mode,
+                &effective_runtime,
+            )?;
+            activate_project_capabilities(&resolved, &mut bootstrap_providers)?;
+            resolved
+        } else {
+            Vec::new()
+        };
+
+        let loaded_project = if let Some(project) = &project {
+            Some(load_project_files(
+                project,
+                &bootstrap.assets_dir,
+                effective_configuration
+                    .take()
+                    .expect("project configuration"),
+            )?)
+        } else {
+            None
+        };
+
+        let ui_template = if bootstrap.safe_mode || bootstrap.editor_mode {
+            None
+        } else {
+            loaded_project
+                .as_ref()
+                .and_then(|files| files.ui_surface.clone())
+        };
+
+        let ui_backend_active = resolved_capabilities.iter().any(|item| {
+            item.candidate
+                .as_ref()
+                .and_then(|candidate| candidate.engine_gateway.as_deref())
+                == Some("engine.ui")
+        });
+        let physics_backend_active = resolved_capabilities.iter().any(|item| {
+            item.candidate
+                .as_ref()
+                .and_then(|candidate| candidate.engine_gateway.as_deref())
+                == Some("engine.physics")
+        });
+        let physics_runtime = physics_backend_active
+            .then(PhysicsRuntime::connect)
+            .transpose()?;
+
+        // Authoring chrome is editor-only; a game UI backend must not open
+        // content browser panels over a project's main menu or HUD.
+        let content_manager = if ui_backend_active && bootstrap.editor_mode {
+            project
+                .as_ref()
+                .map(|project| {
+                    let mut manager = ContentManager::open(&project.root)?;
+                    manager.set_project_workspace(newviso_content_manager::ProjectWorkspaceView {
+                        id: project.manifest.project.id.clone(),
+                        name: project.manifest.project.name.clone(),
+                        version: project.manifest.project.version.clone(),
+                        manifest: "project.json".into(),
+                        runtime: project.manifest.files.runtime.clone(),
+                        environment: project.manifest.files.environment.clone(),
+                        scene: project.manifest.files.scene.clone(),
+                        scripts: project
+                            .manifest
+                            .scripts
+                            .as_ref()
+                            .map(|s| s.entrypoint.clone())
+                            .or_else(|| project.manifest.files.scripts.clone()),
+                        ui: project.manifest.files.ui.clone(),
+                        capabilities: resolved_capabilities
+                            .iter()
+                            .map(|item| newviso_content_manager::ProjectCapabilityView {
+                                id: item.need.id.clone(),
+                                min_version: item.need.min_version,
+                                required: item.need.required,
+                                requested_provider: item.need.provider.clone(),
+                                resolved_provider: item
+                                    .candidate
+                                    .as_ref()
+                                    .map(|c| c.provider_id.clone()),
+                                gateway: item
+                                    .candidate
+                                    .as_ref()
+                                    .and_then(|c| c.engine_gateway.clone()),
+                                available: item.candidate.is_some(),
+                            })
+                            .collect(),
+                    });
+                    let (settings_document, settings_path) =
+                        super::bootstrap_configuration::load_settings_authoring(
+                            project, &bootstrap,
+                        )?;
+                    manager.set_runtime_settings(settings_document, settings_path)?;
+                    Ok::<_, String>(manager)
+                })
+                .transpose()?
+        } else {
+            None
+        };
+
+        if content_manager.is_some() {
+            host::info("newviso.content", "project content manager activated");
+        }
+
+        if let Some(project) = &project {
+            if let Some(ui_path) = project.manifest.files.ui.as_deref() {
+                host::info(
+                    "newviso.ui",
+                    format!("loaded project UI template asset='{ui_path}'"),
+                );
+            }
+        }
+
+        log_resolved_capabilities(&resolved_capabilities);
+
+        let mut scripts = if bootstrap.safe_mode || bootstrap.editor_mode {
+            host::warn(
+                "newviso.scripting",
+                "project scripting suppressed by authoring/safe mode",
+            );
+            None
+        } else if let Some(files) = &loaded_project {
+            start_project_scripting(
+                files.scripts.as_ref(),
+                &providers,
+                &mut bootstrap_providers,
+                files.runtime.scripting.event_queue_capacity,
+            )?
+        } else {
+            None
+        };
+
+        let loaded_files = loaded_project.as_ref().ok_or_else(|| {
+            "NewViso runtime is project-driven; launch with --project <project-root>".to_owned()
+        })?;
+        let mut runtime_settings = loaded_files.runtime.clone();
+        // Player-specific video and orbit camera preferences are only valid for
+        // the Night City project. Other games retain their project defaults.
+        if project
+            .as_ref()
+            .is_some_and(|p| p.manifest.project.id == "kayla-night-city")
+        {
+            let prefs = application_main_menu_settings::MenuPreferences::load();
+            if let Some((width, height)) = prefs.window_size() {
+                runtime_settings.window.width = width;
+                runtime_settings.window.height = height;
+            }
+            runtime_settings.camera.rotate_sensitivity *= prefs.camera_multiplier();
+            runtime_settings.camera.zoom_sensitivity *= prefs.zoom_sensitivity;
+        }
+        if bootstrap.safe_mode || bootstrap.editor_mode {
+            runtime_settings.startup_commands.clear();
+            runtime_settings.scheduling.native_navigation_enabled = true;
+            runtime_settings.world_persistence.load_on_start = false;
+            runtime_settings.world_persistence.save_on_shutdown = false;
+            runtime_settings.world_persistence.autosave_interval_seconds = 0.0;
+        }
+        let environment = loaded_files.environment.clone();
+
+        let project_ref = project.as_ref().ok_or_else(|| {
+            "NewViso runtime is project-driven; launch with --project <project-root>".to_owned()
+        })?;
+        let (mut scene, scene_report) = (if bootstrap.editor_mode {
+            Scene3dRuntime::load_for_authoring_from_asset(&project_ref.manifest.files.scene)
+        } else {
+            Scene3dRuntime::load_from_asset(&project_ref.manifest.files.scene)
+        })
+        .map_err(|error| format!("startup scene load failed: {error}"))?;
+
+        if let Some(files) = loaded_project.as_ref() {
+            scene
+                .configure_render_policy(&files.render_defaults)
+                .map_err(|error| format!("Shared Assets render defaults rejected: {error}"))?;
+        }
+
+        // Renderer allocations are immutable once initialized. Apply only
+        // explicit, validated per-user shadow overrides at project startup.
+        if project_ref.manifest.project.id == "kayla-night-city" {
+            let patch =
+                application_main_menu_settings::MenuPreferences::load().renderer_policy_patch();
+            if patch.as_object().is_some_and(|fields| !fields.is_empty()) {
+                scene
+                    .configure_render_policy(&patch)
+                    .map_err(|error| format!("Night City graphics settings: {error}"))?;
+            }
+        }
+        scene.set_clear_color(environment.clear_color);
+        // A REDengine-only project must never silently mount the legacy GTA V
+        // weather textures supplied by Shared/Content. Keep source ownership
+        // as a project contract, not a launch-script environment setting.
+        let source_policy_path = project_ref.root.join("config/asset_sources.json");
+        let gta_weather_allowed = if source_policy_path.is_file() {
+            let bytes = std::fs::read(&source_policy_path)
+                .map_err(|error| format!("read asset policy '{}': {error}", source_policy_path.display()))?;
+            let policy: serde_json::Value = serde_json::from_slice(&bytes)
+                .map_err(|error| format!("parse asset policy '{}': {error}", source_policy_path.display()))?;
+            if policy["schema"] != "newviso.assets.source_policy.v1" {
+                return Err(format!("unsupported asset source policy '{}'", source_policy_path.display()));
+            }
+            policy.pointer("/allow/gta5").and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        } else {
+            true
+        };
+        if gta_weather_allowed {
+            if let Some(weather) = application_weather::load_shared_weather_gpu_fx()? {
+                scene.set_weather_gpu_fx_resources(weather)?;
+            }
+        } else {
+            host::info("newviso.assets", "GTA V Shared weather GPU resources disabled by project source policy");
+        }
+
+        // Weather is part of the default world contract. The backend state is
+        // always generic; a mounted shared catalog may enrich it with authored
+        // physical/effect channels. Projects remain free to replace the ids,
+        // blend them, or disable profile activation entirely.
+        if environment.weather.enabled {
+            let current = environment.weather.current.trim();
+            let next = environment.weather.next.trim();
+            let blend = environment.weather.blend;
+            let previous = scene.weather_effects().clone();
+            let resolved_effects = application_weather::resolve_shared_weather_effects(
+                current, next, blend, &previous,
+            )?;
+            scene.set_weather_backend(current, next, blend)?;
+            if let Some(effects) = resolved_effects {
+                scene.set_weather_effects(effects)?;
+            }
+            host::info(
+                "newviso.weather",
+                format!(
+                    "default world weather active current='{}' next='{}' blend={:.3}",
+                    current, next, blend
+                ),
+            );
+        }
+
+        // Sky GPU resources are immutable after Scene3dRuntime::initialize_renderer.
+        // Install the merged Shared/project environment sky for *every* mode,
+        // before handing the scene to the platform/renderer. The project main
+        // menu intentionally defers script on_start until map streaming finishes,
+        // so any sky allocation in a script would be too late and cause a crash.
+        // Scripts remain responsible only for mutable atmosphere/weather/time.
+        if let Some(sky_config) = environment.sky.as_ref() {
+            scene.set_sky_dome(load_environment_sky(sky_config)?)?;
+        }
+        if !environment.atmospheric_clouds.layers.is_empty() {
+            scene.set_atmospheric_clouds(load_environment_atmospheric_clouds(
+                &environment.atmospheric_clouds,
+            )?)?;
+        }
+        scene.configure_orbit_controls(
+            runtime_settings.camera.rotate_button,
+            runtime_settings.camera.min_pitch_degrees,
+            runtime_settings.camera.max_pitch_degrees,
+        )?;
+        scene.configure_orbit(
+            runtime_settings.camera.rotate_sensitivity,
+            runtime_settings.camera.zoom_sensitivity,
+            runtime_settings.camera.min_distance,
+            runtime_settings.camera.max_distance,
+        )?;
+        if project_ref.manifest.project.id == "kayla-night-city" {
+            scene.set_orbit_zoom_enabled(
+                application_main_menu_settings::MenuPreferences::load().mouse_zoom_enabled,
+            );
+        }
+
+        host::info(
+            "newviso.scene",
+            format!(
+                "loaded scene '{}' entities={} camera='{}' mesh='{}'",
+                scene_report.title,
+                scene_report.entity_count,
+                scene_report.camera_name,
+                scene_report.mesh_name
+            ),
+        );
+
+        let project_context = loaded_project
+            .as_ref()
+            .map(|files| files.context.clone())
+            .unwrap_or_else(|| json!({"project": null}));
+
+        let platform_report = if bootstrap.skip_platform {
+            host::info(
+                "newviso.runtime",
+                "platform runtime skipped by configuration",
+            );
+            None
+        } else {
+            let platform = require_provider(&providers, &roles.platform)?;
+            let renderer = require_provider(&providers, &roles.renderer)?;
+
+            state.set_phase(RuntimePhase::Platform);
+            let app = Box::new(EngineApplication::new(
+                renderer.path.clone(),
+                scene,
+                physics_runtime,
+                scripts.take(),
+                project_context,
+                ui_template,
+                content_manager,
+                runtime_settings.clone(),
+                bootstrap.editor_mode,
+                WorldStartup::open(
+                    &project_ref.root,
+                    &project_ref.manifest.project.id,
+                    &runtime_settings.world_persistence,
+                )?,
+                project_ref.root.clone(),
+            )?);
+            state.set_phase(RuntimePhase::Running);
+
+            bugtrap::set_context("platform_provider", platform.path.display().to_string());
+            bugtrap::checkpoint("platform.run");
+            let report = run_platform(
+                &platform.path,
+                PlatformRunConfig {
+                    title: runtime_settings
+                        .window
+                        .title
+                        .clone()
+                        .or_else(|| {
+                            project
+                                .as_ref()
+                                .map(|project| project.manifest.project.name.clone())
+                        })
+                        .unwrap_or_else(|| "NewViso".to_owned()),
+                    width: runtime_settings.window.width,
+                    height: runtime_settings.window.height,
+                    frame_limit: bootstrap.max_frames,
+                },
+                app,
+            )?;
+
+            if !report.window_ready {
+                return Err("platform runtime exited before window_ready".to_owned());
+            }
+            if let Some(error) = &report.app_error {
+                return Err(format!("runtime application failed: {error}"));
+            }
+
+            host::info(
+                "newviso.runtime",
+                format!(
+                    "platform stopped frames={} events={} backend={:?} surface={}x{}",
+                    report.frames,
+                    report.emitted_events,
+                    report.backend,
+                    report.width,
+                    report.height
+                ),
+            );
+
+            Some(report)
+        };
+
+        Ok(RuntimeReport {
+            provider_count: providers.len(),
+            scene: scene_report,
+            platform: platform_report,
+        })
+    })();
+
+    if let Err(error) = &result {
+        host::error("newviso.runtime", error.clone());
+        bugtrap::set_phase("runtime.error");
+        bugtrap::breadcrumb("runtime.error", error.clone());
+    }
+
+    state.set_phase(RuntimePhase::Shutdown);
+    host::info("newviso.runtime", "shutdown");
+
+    // Every provider shutdown runs while all provider DLLs are still resident.
+    for provider in bootstrap_providers.iter_mut().rev() {
+        let provider_id = provider.id().to_owned();
+        let provider_path = provider.path().display().to_string();
+        host::info(
+            "newviso.providers",
+            format!("shutdown begin provider='{provider_id}' path={provider_path}"),
+        );
+        bugtrap::set_context("provider_shutdown", provider_path);
+        bugtrap::checkpoint("provider.shutdown");
+        provider.shutdown();
+        host::info(
+            "newviso.providers",
+            format!("shutdown complete provider='{provider_id}'"),
+        );
+    }
+
+    // Host ABI objects (services/event sinks) may contain vtables implemented
+    // inside provider DLLs. Destroy those objects before unloading any library.
+    bugtrap::checkpoint("host.registry.release");
+    host::reset();
+
+    // Release provider objects in reverse activation order. Their destructors
+    // may still refer to dependencies loaded earlier (such as logging).
+    bugtrap::checkpoint("providers.unload");
+    while let Some(provider) = bootstrap_providers.pop() {
+        drop(provider);
+    }
+    while let Some(library) = application_libraries.pop() {
+        drop(library);
+    }
+
+    result
+}

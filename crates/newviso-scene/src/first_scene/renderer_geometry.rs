@@ -189,25 +189,54 @@ impl Scene3dRuntime {
     }
 
     pub(super) fn vertex_capacity(&self) -> u32 {
-        (self.cubes.len().saturating_sub(self.water_render_slots.len()).saturating_sub(self.terrain_meshes.len()) + self.render_policy.runtime_cube_capacity) as u32 * CUBE_VERTEX_COUNT
+        (self
+            .cubes
+            .len()
+            .saturating_sub(self.water_render_slots.len())
+            .saturating_sub(self.terrain_meshes.len())
+            + self.render_policy.runtime_cube_capacity) as u32
+            * CUBE_VERTEX_COUNT
             + self.render_policy.transient_sphere_capacity as u32 * geometry::SPHERE_VERTEX_COUNT
             + self.render_policy.overlay_quad_capacity as u32
                 * (6 + geometry::SURFACE_MARK_VERTEX_COUNT)
     }
     pub(super) fn shadow_vertex_capacity(&self) -> u32 {
-        (self.cubes.len().saturating_sub(self.water_render_slots.len()).saturating_sub(self.terrain_meshes.len()) + self.render_policy.runtime_cube_capacity) as u32 * CUBE_VERTEX_COUNT
+        (self
+            .cubes
+            .len()
+            .saturating_sub(self.water_render_slots.len())
+            .saturating_sub(self.terrain_meshes.len())
+            + self.render_policy.runtime_cube_capacity) as u32
+            * CUBE_VERTEX_COUNT
             + self.render_policy.transient_sphere_capacity as u32 * geometry::SPHERE_VERTEX_COUNT
     }
     pub(super) fn vertex_count(&self) -> u32 {
-        self.frame_plan.visible_render_slots.iter().filter(|slot|!self.water_render_slots.contains(slot)&&!self.terrain_meshes.contains_key(slot)).map(|_|CUBE_VERTEX_COUNT).sum::<u32>()
+        self.frame_plan
+            .visible_render_slots
+            .iter()
+            .filter(|slot| {
+                !self.water_render_slots.contains(slot) && !self.terrain_meshes.contains_key(slot)
+            })
+            .map(|_| CUBE_VERTEX_COUNT)
+            .sum::<u32>()
             + self.transient_spheres.len() as u32 * geometry::SPHERE_VERTEX_COUNT
-            + self.surface_marks.iter().filter(|mark| self.surface_mark_world(**mark).is_some()).count() as u32 * geometry::SURFACE_MARK_VERTEX_COUNT
+            + self
+                .surface_marks
+                .iter()
+                .filter(|mark| self.surface_mark_world(**mark).is_some())
+                .count() as u32
+                * geometry::SURFACE_MARK_VERTEX_COUNT
             + self.overlay_quads.len() as u32 * 6
     }
     pub(super) fn shadow_vertex_count(&self) -> u32 {
-        self.world.active_render_slots().into_iter()
-            .filter(|slot| !self.water_render_slots.contains(slot)&&!self.terrain_meshes.contains_key(slot))
-            .map(|_|CUBE_VERTEX_COUNT).sum::<u32>()
+        self.world
+            .active_render_slots()
+            .into_iter()
+            .filter(|slot| {
+                !self.water_render_slots.contains(slot) && !self.terrain_meshes.contains_key(slot)
+            })
+            .map(|_| CUBE_VERTEX_COUNT)
+            .sum::<u32>()
             + self.transient_spheres.len() as u32 * geometry::SPHERE_VERTEX_COUNT
     }
     #[allow(dead_code)]
@@ -218,17 +247,25 @@ impl Scene3dRuntime {
         self.build_shadow_vertices_inner(false)
     }
     fn build_shadow_vertices_inner(&self, include_terrain: bool) -> Vec<f32> {
-        let terrain_count=self.primitive_shadow_render_slots().into_iter()
+        let terrain_count = self
+            .primitive_shadow_render_slots()
+            .into_iter()
             .filter_map(|slot| self.terrain_meshes.get(&slot))
-            .map(|mesh| mesh.vertices.len()/FLOATS_PER_VERTEX).sum::<usize>();
-        let count=self.shadow_vertex_count() as usize + if include_terrain {terrain_count} else {0};
+            .map(|mesh| mesh.vertices.len() / FLOATS_PER_VERTEX)
+            .sum::<usize>();
+        let count =
+            self.shadow_vertex_count() as usize + if include_terrain { terrain_count } else { 0 };
         let mut out = Vec::with_capacity(count * FLOATS_PER_VERTEX);
         for slot in self.primitive_shadow_render_slots() {
             // The transparent/fluid interface is never a solid shadow caster.
-            if self.water_render_slots.contains(&slot) {continue;}
+            if self.water_render_slots.contains(&slot) {
+                continue;
+            }
             if let Some(cube) = self.cubes.get(slot) {
                 if let Some(mesh) = self.terrain_meshes.get(&slot) {
-                    if include_terrain { out.extend_from_slice(&mesh.vertices); }
+                    if include_terrain {
+                        out.extend_from_slice(&mesh.vertices);
+                    }
                 } else {
                     cube.append_vertices(&mut out);
                 }
@@ -269,16 +306,23 @@ impl Scene3dRuntime {
         self.build_cube_vertices_inner(false)
     }
     fn build_cube_vertices_inner(&self, include_terrain: bool) -> Vec<f32> {
-        let terrain_count=self.primitive_main_render_slots().into_iter()
+        let terrain_count = self
+            .primitive_main_render_slots()
+            .into_iter()
             .filter_map(|slot| self.terrain_meshes.get(&slot))
-            .map(|mesh| mesh.vertices.len()/FLOATS_PER_VERTEX).sum::<usize>();
-        let count=self.vertex_count() as usize + if include_terrain {terrain_count} else {0};
+            .map(|mesh| mesh.vertices.len() / FLOATS_PER_VERTEX)
+            .sum::<usize>();
+        let count = self.vertex_count() as usize + if include_terrain { terrain_count } else { 0 };
         let mut out = Vec::with_capacity(count * FLOATS_PER_VERTEX);
         for slot in &self.primitive_main_render_slots() {
-            if self.water_render_slots.contains(slot) {continue;}
+            if self.water_render_slots.contains(slot) {
+                continue;
+            }
             if let Some(cube) = self.cubes.get(*slot) {
                 if let Some(mesh) = self.terrain_meshes.get(slot) {
-                    if include_terrain { out.extend_from_slice(&mesh.vertices); }
+                    if include_terrain {
+                        out.extend_from_slice(&mesh.vertices);
+                    }
                 } else {
                     cube.append_vertices(&mut out);
                 }
@@ -307,7 +351,9 @@ impl Scene3dRuntime {
         }
 
         for mark in &self.surface_marks {
-            let Some(mark) = self.surface_mark_world(*mark) else { continue; };
+            let Some(mark) = self.surface_mark_world(*mark) else {
+                continue;
+            };
             geometry::append_surface_mark_vertices(
                 Vec3::new(mark.position[0], mark.position[1], mark.position[2]),
                 Vec3::new(mark.normal[0], mark.normal[1], mark.normal[2]),

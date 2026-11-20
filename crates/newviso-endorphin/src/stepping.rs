@@ -1,6 +1,6 @@
 //! Contact-aware stepping and support-consistent two-link leg targets.
 //! This module only produces goals. Native physics owns every position and velocity.
-use crate::{BalanceState, BodyPose, RigState, SupportContact, math};
+use crate::{math, BalanceState, BodyPose, RigState, SupportContact};
 use serde::Serialize;
 use std::collections::BTreeMap;
 mod model;

@@ -1,5 +1,56 @@
 use super::*;
 
+/// Builds the structured asset telemetry consumed by the winit native loader.
+/// A zero total is deliberately indeterminate: no arbitrary percentages.
+fn startup_asset_progress_view_json(bars: &[(&str, &str, usize, usize)]) -> String {
+    let items = bars
+        .iter()
+        .map(|(id, label, completed, total)| {
+            json!({
+                "id": id,
+                "label": label,
+                "completed": completed.min(total),
+                "total": total,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({"asset_progress_bars": items}).to_string()
+}
+
+#[cfg(test)]
+mod asset_progress_tests {
+    use super::*;
+
+    #[test]
+    fn startup_progress_exposes_real_counts_for_distinct_asset_groups() {
+        let payload = startup_asset_progress_view_json(&[
+            ("models", "SCENE MODELS", 12, 40),
+            ("gpu-textures", "GPU TEXTURES", 8, 10),
+        ]);
+        let result: Value = serde_json::from_str(&payload).expect("valid telemetry");
+        let entries = result["asset_progress_bars"]
+            .as_array()
+            .expect("asset bars");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["id"], "models");
+        assert_eq!(entries[0]["completed"], 12);
+        assert_eq!(entries[0]["total"], 40);
+        assert_eq!(entries[1]["completed"], 8);
+        assert_eq!(entries[1]["total"], 10);
+    }
+
+    #[test]
+    fn startup_progress_preserves_indeterminate_totals_and_clamps_overrun() {
+        let payload = startup_asset_progress_view_json(&[
+            ("source", "SOURCE DEPENDENCIES", 0, 0),
+            ("materials", "GPU MATERIALS", 22, 20),
+        ]);
+        let parsed: Value = serde_json::from_str(&payload).expect("valid telemetry");
+        assert_eq!(parsed["asset_progress_bars"][0]["total"], 0);
+        assert_eq!(parsed["asset_progress_bars"][1]["completed"], 20);
+    }
+}
+
 impl EngineApplication {
     pub(super) fn pump_startup_map_loading(
         &mut self,
@@ -21,7 +72,10 @@ impl EngineApplication {
         // frame would use, without acquiring or presenting a renderer frame.
         self.scene
             .refresh_streaming_plan(surface.width.max(1), surface.height.max(1));
-        let interests = self.scene.streaming_interests();
+        // Do not hold the loading compositor hostage for distant sectors.
+        // Nearby geometry, including collision volumes intersecting the
+        // spawn radius, is the startup barrier. Outer areas stream after play.
+        let interests = self.startup_scene_interests();
         let interest_count = interests.len();
         self.startup_map_interest_peak = self.startup_map_interest_peak.max(interest_count);
 
@@ -115,6 +169,30 @@ impl EngineApplication {
         let material_gpu_ratio = ratio(gpu_warmup.ready_materials, gpu_warmup.required_materials);
         let gpu_ratio = texture_gpu_ratio * 0.72 + material_gpu_ratio * 0.28;
 
+        // Forward actual asset residency counters to the platform loading compositor.
+        // Keep the overall engine progress independent from these per-category bars.
+        self.startup_map_asset_progress_json = startup_asset_progress_view_json(&[
+            ("models", "SCENE MODELS", materialized_count, interest_count),
+            (
+                "dependencies",
+                "SOURCE DEPENDENCIES",
+                dependency_resident,
+                dependency_total,
+            ),
+            (
+                "gpu-textures",
+                "GPU TEXTURES",
+                gpu_warmup.ready_textures,
+                gpu_warmup.required_textures,
+            ),
+            (
+                "gpu-materials",
+                "GPU MATERIALS",
+                gpu_warmup.ready_materials,
+                gpu_warmup.required_materials,
+            ),
+        ]);
+
         let measured_progress = 0.06
             + claimed_ratio * 0.14
             + resident_ratio * 0.20
@@ -137,8 +215,11 @@ impl EngineApplication {
         let no_failures = streaming_failed == 0 && uploads.failed_jobs == 0;
         let gpu_idle = uploads.remaining_jobs == 0;
         let gpu_assets_ready = gpu_warmup.fully_ready();
-        let animation_preloads_ready = interests.iter().all(|request|
-            !self.scene_animation_preloads.contains_key(&request.stable_id));
+        let animation_preloads_ready = interests.iter().all(|request| {
+            !self
+                .scene_animation_preloads
+                .contains_key(&request.stable_id)
+        });
         let ready_candidate = all_claimed
             && all_resident
             && all_materialized
@@ -153,6 +234,41 @@ impl EngineApplication {
         } else {
             0
         };
+
+        // Opt-in startup diagnostics. Unlike raw global queue counters, these
+        // show which actual spawn-neighborhood gates prevent gameplay.
+        if std::env::var("NEWVISO_PERF_TRACE").as_deref() == Ok("1")
+            && self.startup_map_spinner_phase % 120 == 0
+        {
+            host::info("newviso.perf.startup", format!(
+                "progress={:.4} interests={} claimed={} resident={} materialized={} deps_ready={} deps_total={} queued={} loading={} waiting_deps={} failed={} prepare_queue={} prepare_pending={} model_prepare={} collision_prepare={} gpu_textures={}/{} gpu_materials={}/{} gpu_pending={} gpu_missing={} gpu_jobs={} gpu_failed={} all_claimed={} all_resident={} all_materialized={} cpu_idle={} gpu_idle={} gpu_ready={} anim_ready={} ready_streak={}",
+                self.startup_map_progress,
+                interest_count, claimed_count, resident_count, materialized_count,
+                dependency_resident, dependency_total,
+                streaming_queued, streaming_loading, streaming_waiting_dependencies,
+                streaming_failed, materialization_queue, materialization_pending,
+                model_prepare_in_flight, collision_prepare_in_flight,
+                gpu_warmup.ready_textures, gpu_warmup.required_textures,
+                gpu_warmup.ready_materials, gpu_warmup.required_materials,
+                gpu_warmup.pending_textures, gpu_warmup.missing_textures,
+                uploads.remaining_jobs, uploads.failed_jobs,
+                all_claimed, all_resident, all_materialized,
+                cpu_idle, gpu_idle, gpu_assets_ready, animation_preloads_ready,
+                self.startup_map_ready_streak
+            ));
+            let pending = self.asset_streamer.diagnostic_in_flight(12)
+                .into_iter()
+                .map(|item| json!({
+                    "asset": item.address.canonical(),
+                    "state": format!("{:?}", item.state),
+                    "priority": item.effective_priority,
+                    "source_bytes": item.source_size_bytes,
+                    "error": item.error
+                }))
+                .collect::<Vec<_>>();
+            host::info("newviso.perf.startup.inflight",
+                json!({"frame":self.startup_map_spinner_phase,"assets":pending}).to_string());
+        }
 
         if self.startup_map_ready_streak >= READY_STREAK_REQUIRED {
             self.startup_map_ready = true;
@@ -242,7 +358,7 @@ impl EngineApplication {
             title: "NORTH STAR ENGINE".into(),
             status: self.startup_map_status.clone().into(),
             detail: self.startup_map_detail.clone().into(),
-            view_json: String::new().into(),
+            view_json: self.startup_map_asset_progress_json.clone().into(),
         }
     }
 }

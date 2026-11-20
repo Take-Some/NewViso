@@ -2,7 +2,7 @@ use abi_stable::std_types::{RResult, RString};
 use libloading::{Library, Symbol};
 use newviso_compat_abi::{
     platform::{
-        NativeWindowBackendV1, PlatformAppConfigV1, PlatformCursorGrabModeV1, PlatformCursorPollV1,
+        NativeWindowBackendV1, PlatformAppConfigV1, PlatformWindowModeV1, PlatformCursorGrabModeV1, PlatformCursorPollV1,
         PlatformCursorStateV1, PlatformHostApiV1, PlatformHostJobCallbackV1,
         PlatformHostTaskRequestV1, PlatformHostTaskTicketV1, PlatformLoadingOverlayV1,
         PlatformStepResultV1, PlatformSurfaceMetricsV1, PlatformWindowReadyV1,
@@ -65,6 +65,16 @@ pub struct PlatformRunConfig {
     pub width: u32,
     pub height: u32,
     pub frame_limit: Option<u64>,
+    pub window_mode: PlatformWindowModeV1,
+}
+
+pub fn parse_window_mode(value: Option<&str>) -> Result<PlatformWindowModeV1,String> {
+    match value.unwrap_or("windowed").trim().to_ascii_lowercase().as_str() {
+        "windowed" | "window" => Ok(PlatformWindowModeV1::Windowed),
+        "borderless" | "borderless_fullscreen" => Ok(PlatformWindowModeV1::Borderless),
+        "exclusive" | "exclusive_fullscreen" => Ok(PlatformWindowModeV1::ExclusiveFullscreen),
+        other => Err(format!("unknown window mode '{other}'")),
+    }
 }
 
 impl Default for PlatformRunConfig {
@@ -74,6 +84,7 @@ impl Default for PlatformRunConfig {
             width: 1280,
             height: 720,
             frame_limit: None,
+            window_mode: PlatformWindowModeV1::Windowed,
         }
     }
 }
@@ -163,8 +174,9 @@ pub fn run_platform(
     };
 
     let plugin_host = host::host_api();
-    let app_config = PlatformAppConfigV1::new(config.title, config.width, config.height);
-
+    let mut app_config = PlatformAppConfigV1::new(config.title, config.width, config.height);
+    app_config.display.window_mode = config.window_mode;
+    host::info("newviso.platform", format!("requested window mode={:?}",config.window_mode));
     let result = unsafe { run(plugin_host, api, app_config) };
     state.shutdown_app();
     host::clear_platform_snapshot();
@@ -216,6 +228,20 @@ extern "C" fn on_window_resized(
 
 extern "C" fn on_window_focused(user_data: usize, focused: bool) -> RResult<(), RString> {
     let state = unsafe { &mut *(user_data as *mut PlatformState) };
+    // The platform callback and host.events transport are separate interfaces.
+    // Mirror real focus changes into the canonical input event stream so
+    // Compass can release held controls, ignore stale events, and restore input.
+    let bytes = if focused {
+        b"{\"focused\":true}".to_vec()
+    } else {
+        b"{\"focused\":false}".to_vec()
+    };
+    let host_api = host::host_api();
+    if let RResult::RErr(error) =
+        (host_api.emit_event_v1)(RString::from("winit.focused"), bytes.into())
+    {
+        state.fail(format!("focus event delivery failed: {error}"));
+    }
     if let Err(error) = state.app.on_window_focused(focused) {
         state.fail(error);
     }
@@ -239,7 +265,9 @@ extern "C" fn step(user_data: usize, dt: f32) -> RResult<PlatformStepResultV1, R
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| step_inner(user_data, dt))) {
         Ok(result) => result,
         Err(payload) => {
-            let cause = payload.downcast_ref::<String>().map(String::as_str)
+            let cause = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
                 .or_else(|| payload.downcast_ref::<&str>().copied())
                 .unwrap_or("unknown panic payload");
             let message = format!("platform step caught Rust panic: {cause}");
@@ -302,5 +330,18 @@ extern "C" fn submit_job(
         job_id: request.task_id,
         status: RString::from("not-submitted"),
         detail: RString::from("NewViso platform layer does not own the job scheduler"),
+    }
+}
+
+
+#[cfg(test)]
+mod presentation_mode_tests {
+    use super::*;
+    #[test]
+    fn window_mode_parses_supported_runtime_strings() {
+        assert_eq!(parse_window_mode(None).unwrap(),PlatformWindowModeV1::Windowed);
+        assert_eq!(parse_window_mode(Some("borderless")).unwrap(),PlatformWindowModeV1::Borderless);
+        assert_eq!(parse_window_mode(Some("exclusive_fullscreen")).unwrap(),PlatformWindowModeV1::ExclusiveFullscreen);
+        assert!(parse_window_mode(Some("unsupported")).is_err());
     }
 }

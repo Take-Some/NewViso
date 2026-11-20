@@ -48,14 +48,27 @@ impl Scene3dRuntime {
             render.set_render_phase(None)?;
         }
 
-        self.record_shadow_pass(render,gpu,frame_slot,shadow_enabled,&instance_batches)?;
+        self.record_shadow_pass(render, gpu, frame_slot, shadow_enabled, &instance_batches)?;
 
-        let volumetric_composite=self.record_cloud_prepasses(render,gpu,width,height,
-            frame_index,frame_slot,&hiz_draws,&direct_opaque_fallback)?;
+        let volumetric_composite = self.record_cloud_prepasses(
+            render,
+            gpu,
+            width,
+            height,
+            frame_index,
+            frame_slot,
+            &hiz_draws,
+            &direct_opaque_fallback,
+        )?;
 
         let water_weather = self.weather_material_bind_group(frame_slot)?;
         self.prepare_water_optics(
-            render, gpu, frame_slot, &instance_batches, particle_batches, water_weather,
+            render,
+            gpu,
+            frame_slot,
+            &instance_batches,
+            particle_batches,
+            water_weather,
         )?;
 
         // From this point onward, swapchain work is recorded into the backend
@@ -82,7 +95,7 @@ impl Scene3dRuntime {
         render.set_draw_list_kind(Some(RenderDrawListKind::OpaqueForward))?;
 
         let weather_material_group = self.weather_material_bind_group(frame_slot)?;
-        self.record_primitive_gbuffer(render,gpu,frame_slot,weather_material_group)?;
+        self.record_primitive_gbuffer(render, gpu, frame_slot, weather_material_group)?;
 
         let (mass_draws, mass_instance_count) = self.draw_mass_instances(
             render,
@@ -126,11 +139,15 @@ impl Scene3dRuntime {
                 &hiz_draws,
             )?;
             // The helper left the last material bound.
-            draw_direct_draws(render,&direct_opaque_fallback,
-                hiz_draws.last().map(|draw|draw.0),Some(gpu.asset_vertex_buffer))?;
+            draw_direct_draws(
+                render,
+                &direct_opaque_fallback,
+                hiz_draws.last().map(|draw| draw.0),
+                Some(gpu.asset_vertex_buffer),
+            )?;
         }
 
-        self.draw_water_surface(render,gpu,frame_slot,weather_material_group)?;
+        self.draw_water_surface(render, gpu, frame_slot, weather_material_group)?;
         render.set_render_phase(Some("Transparent"))?;
         render.set_draw_list_kind(Some(RenderDrawListKind::Transparent))?;
 
@@ -176,11 +193,7 @@ impl Scene3dRuntime {
         self.draw_weather_world_fx(render, frame_slot)?;
 
         if !alpha_draws.is_empty() {
-            alpha_draws.sort_by(|a, b| {
-                b.distance_sq
-                    .partial_cmp(&a.distance_sq)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
+            sort_alpha_asset_draws(&mut alpha_draws);
             render.set_pipeline(gpu.asset_alpha_pipeline)?;
             render.set_bind_group(0, gpu.bind_groups[frame_slot])?;
             render.set_bind_group(2, weather_material_group)?;

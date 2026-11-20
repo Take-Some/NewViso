@@ -41,6 +41,8 @@ layout(set = 1, binding = 6, std140) uniform MaterialParams {
     vec4 shading0; // x bumpiness, y spec intensity, z spec falloff, w spec fresnel
     vec4 shading1; // x emissive multiplier, y alpha cutoff, z flags, w opacity
     vec4 shading2; // x environment reflection strength
+    vec4 shading3; // multilayer rough levels in white/black and out white/black
+    vec4 shading4; // x multilayer signed microblend normal strength
 } material;
 
 layout(set = 2, binding = 0) uniform texture2D t_weather_puddle_layout;
@@ -58,6 +60,7 @@ layout(location = 3) in vec4 v_shadow_coord;
 layout(location = 4) flat in float v_overlay;
 layout(location = 5) in vec2 v_uv;
 layout(location = 6) in vec4 v_tangent;
+layout(location = 7) in vec2 v_uv1;
 layout(location = 0) out vec4 out_color;
 
 const int MATERIAL_HAS_NORMAL = 1;
@@ -68,6 +71,10 @@ const int MATERIAL_ALPHA_BLEND = 16;
 const int MATERIAL_ENVIRONMENT_REFLECTION = 32;
 const int MATERIAL_USE_VERTEX_COLOR = 64;
 const int MATERIAL_HAS_ENVIRONMENT_TEXTURE = 128;
+const int MATERIAL_NEWVISO_MULTILAYER = 32768;
+#include "material_uv.glsl"
+#include "material_levels.glsl"
+#include "material_micro_normal.glsl"
 
 vec2 dash_rotate(vec2 p, float a) {
     return mat2(cos(a),sin(a),-sin(a),cos(a))*p;
@@ -225,7 +232,10 @@ vec3 rsc7_surface_normal(int flags) {
     tangent = normalize(tangent);
     vec3 bitangent = normalize(cross(n, tangent)) * (v_tangent.w < 0.0 ? -1.0 : 1.0);
 
-    vec3 encoded = texture(sampler2D(t_normal, s_material), v_uv).rgb;
+    vec2 normal_uv = (flags & MATERIAL_NEWVISO_MULTILAYER) != 0
+        ? nv_material_uv(flags, NV_UV_NORMAL1, v_uv, v_uv1)
+            * material.shading2.x + material.shading0.zw : v_uv;
+    vec3 encoded = texture(sampler2D(t_normal, s_material), normal_uv).rgb;
     vec3 tangent_normal;
     if (encoded.b < 0.01) {
         vec2 xy = encoded.rg * 2.0 - 1.0;
@@ -236,7 +246,7 @@ vec3 rsc7_surface_normal(int flags) {
     tangent_normal.xy *= max(material.shading0.x, 0.0);
     tangent_normal = normalize(tangent_normal);
 
-    return normalize(mat3(tangent, bitangent, n) * tangent_normal);
+    return nv_ml_microblend_normal(normalize(mat3(tangent, bitangent, n) * tangent_normal), flags);
 }
 
 void main() {
@@ -258,16 +268,33 @@ void main() {
         if(out_color.a<=.002) discard;
         return;
     }
-    vec4 base_texel = texture(sampler2D(t_base_color, s_material), v_uv);
+    bool newviso_multilayer = (flags & MATERIAL_NEWVISO_MULTILAYER) != 0;
+    vec2 layer_uv = newviso_multilayer ? nv_material_uv(flags, NV_UV_COLOR1, v_uv, v_uv1)
+        * material.shading2.x + material.shading0.zw : v_uv;
+    vec4 base_texel = texture(sampler2D(t_base_color, s_material), layer_uv);
     // COLOR0 is not implicitly an albedo tint. Imported RSC7 shaders often
     // use vertex-colour channels as masks/AO/auxiliary data; direct colour
     // modulation is therefore an explicit material capability.
     vec4 base_color = base_texel;
+    if (newviso_multilayer) base_color.a = 1.0; // MLMask owns source layer opacity
     bool damaged_glass = v_color.a < -0.5;
     if ((flags & MATERIAL_USE_VERTEX_COLOR) != 0 && !damaged_glass && !snow_material && !wet_ground) {
         base_color *= v_color;
     }
     base_color.a *= clamp(material.shading1.w, 0.0, 1.0);
+    if (newviso_multilayer && (flags & MATERIAL_ALPHA_BLEND) != 0) {
+        // Source MLMask is already exported as a per-layer texture. It uses
+        // source mesh UVs, not world-space handcrafted line coordinates.
+        float coverage = texture(sampler2D(t_emissive, s_material),
+            nv_material_uv(flags, NV_UV_MASK1, v_uv, v_uv1)).r;
+        if (material.shading2.z > 0.0) {
+            float micro = texture(sampler2D(t_environment, s_material),
+                                  (nv_material_uv(flags, NV_UV_MICROBLEND1, v_uv, v_uv1)
+                                       * material.shading2.y + material.shading1.xy)).a;
+            coverage *= mix(1.0, micro, clamp(material.shading2.z, 0.0, 1.0));
+        }
+        base_color.a *= coverage * material.shading2.w;
+    }
     if (snow_material || wet_ground) base_color.a = 1.0;
 
     if ((flags & 16384) != 0) {
@@ -366,7 +393,11 @@ void main() {
     vec3 specular_lighting = vec3(0.0);
 
     vec3 specular_map = (flags & MATERIAL_HAS_SPECULAR) != 0
-        ? texture(sampler2D(t_specular, s_material), v_uv).rgb
+        ? texture(sampler2D(t_specular, s_material),
+            newviso_multilayer
+                ? nv_material_uv(flags, NV_UV_ROUGHNESS1, v_uv, v_uv1)
+                    * material.shading2.x + material.shading0.zw
+                : layer_uv).rgb
         : vec3(1.0);
     float specular_intensity = max(material.shading0.y, 0.0)
         + wet_surface * (0.9 + rain_amount * 1.4);
@@ -377,6 +408,19 @@ void main() {
     );
     float roughness=clamp(sqrt(2.0/(specular_falloff+2.0)),0.035,1.0);
     // glTF channel contract: G roughness, B metallic; both are linear data.
+    if (newviso_multilayer) {
+        // REDengine source R-map carries linear roughness; no artificial
+        // repurposing of a color channel as metallic.
+        roughness = nv_remap_roughness(specular_map.r, material.shading3);
+        roughness = mix(roughness, 0.055, wet_surface);
+        specular_falloff = clamp(2.0 / (roughness * roughness) - 2.0, 1.0, 512.0);
+        float metal_src = material.shading0.y;
+        float metallic = metal_src < 0.0 ? clamp(specular_map.r, 0.0, 1.0)
+                                         : clamp(metal_src, 0.0, 1.0);
+        specular_map = mix(vec3(0.04), base_color.rgb, metallic);
+        specular_intensity = 1.0 + wet_surface;
+        base_color.rgb *= 1.0 - metallic;
+    }
     if ((flags & 256) != 0) {
         float metallic = clamp(specular_map.b * material.shading2.y, 0.0, 1.0);
         roughness = mix(clamp(specular_map.g * material.shading2.z, 0.035, 1.0), 0.055, wet_surface);
@@ -405,7 +449,7 @@ void main() {
         specular_falloff=clamp(2.0/(roughness*roughness)-2.0,1.0,512.0);
         if(environment_enabled())diffuse_lighting=environment_ambient(n,1.0,0.0,1.0);
     }
-    float authored_fresnel = clamp(material.shading0.w, 0.0, 1.0);
+    float authored_fresnel = newviso_multilayer ? 0.06 : clamp(material.shading0.w, 0.0, 1.0);
     float view_fresnel = pow(1.0 - max(dot(n, v), 0.0), 5.0);
     float fresnel_gain = mix(1.0, 0.25 + 0.75 * view_fresnel, authored_fresnel);
 

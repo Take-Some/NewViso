@@ -178,6 +178,20 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
             bootstrap_providers.push(running);
         }
 
+        // The engine owns the current asset gateway contract. A backend is
+        // selected by provider metadata and must prove the required methods
+        // before VFS mounts or startup scene loading begins.
+        let asset_contract = AssetClient::new().verify_provider_contract()?;
+        host::info(
+            "newviso.assets",
+            format!(
+                "asset gateway validated service='{}' contract='{}' methods={}",
+                asset_contract.provider_service_id,
+                asset_contract.protocol,
+                asset_contract.method_count
+            ),
+        );
+
         host::debug(
             "newviso.host",
             format!(
@@ -247,9 +261,9 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
             .then(PhysicsRuntime::connect)
             .transpose()?;
 
-        let content_manager = if ui_backend_active
-            && (!bootstrap.safe_mode || bootstrap.editor_mode)
-        {
+        // Authoring chrome is editor-only; a game UI backend must not open
+        // content browser panels over a project's main menu or HUD.
+        let content_manager = if ui_backend_active && bootstrap.editor_mode {
             project
                 .as_ref()
                 .map(|project| {
@@ -336,6 +350,20 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
             "NewViso runtime is project-driven; launch with --project <project-root>".to_owned()
         })?;
         let mut runtime_settings = loaded_files.runtime.clone();
+        // Player-specific video and orbit camera preferences are only valid for
+        // the Night City project. Other games retain their project defaults.
+        if project
+            .as_ref()
+            .is_some_and(|p| p.manifest.project.id == "kayla-night-city")
+        {
+            let prefs = application_main_menu_settings::MenuPreferences::load();
+            if let Some((width, height)) = prefs.window_size() {
+                runtime_settings.window.width = width;
+                runtime_settings.window.height = height;
+            }
+            runtime_settings.camera.rotate_sensitivity *= prefs.camera_multiplier();
+            runtime_settings.camera.zoom_sensitivity *= prefs.zoom_sensitivity;
+        }
         if bootstrap.safe_mode || bootstrap.editor_mode {
             runtime_settings.startup_commands.clear();
             runtime_settings.scheduling.native_navigation_enabled = true;
@@ -361,9 +389,41 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
                 .map_err(|error| format!("Shared Assets render defaults rejected: {error}"))?;
         }
 
+        // Renderer allocations are immutable once initialized. Apply only
+        // explicit, validated per-user shadow overrides at project startup.
+        if project_ref.manifest.project.id == "kayla-night-city" {
+            let patch =
+                application_main_menu_settings::MenuPreferences::load().renderer_policy_patch();
+            if patch.as_object().is_some_and(|fields| !fields.is_empty()) {
+                scene
+                    .configure_render_policy(&patch)
+                    .map_err(|error| format!("Night City graphics settings: {error}"))?;
+            }
+        }
         scene.set_clear_color(environment.clear_color);
-        if let Some(weather) = application_weather::load_shared_weather_gpu_fx()? {
-            scene.set_weather_gpu_fx_resources(weather)?;
+        // A REDengine-only project must never silently mount the legacy GTA V
+        // weather textures supplied by Shared/Content. Keep source ownership
+        // as a project contract, not a launch-script environment setting.
+        let source_policy_path = project_ref.root.join("config/asset_sources.json");
+        let gta_weather_allowed = if source_policy_path.is_file() {
+            let bytes = std::fs::read(&source_policy_path)
+                .map_err(|error| format!("read asset policy '{}': {error}", source_policy_path.display()))?;
+            let policy: serde_json::Value = serde_json::from_slice(&bytes)
+                .map_err(|error| format!("parse asset policy '{}': {error}", source_policy_path.display()))?;
+            if policy["schema"] != "newviso.assets.source_policy.v1" {
+                return Err(format!("unsupported asset source policy '{}'", source_policy_path.display()));
+            }
+            policy.pointer("/allow/gta5").and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        } else {
+            true
+        };
+        if gta_weather_allowed {
+            if let Some(weather) = application_weather::load_shared_weather_gpu_fx()? {
+                scene.set_weather_gpu_fx_resources(weather)?;
+            }
+        } else {
+            host::info("newviso.assets", "GTA V Shared weather GPU resources disabled by project source policy");
         }
 
         // Weather is part of the default world contract. The backend state is
@@ -391,12 +451,14 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
             );
         }
 
-        // Normal worlds install their sky through the mandatory Shared lifecycle.
-        // Safe mode intentionally suppresses scripts, so it retains a native fallback.
-        if bootstrap.safe_mode {
-            if let Some(sky_config) = environment.sky.as_ref() {
-                scene.set_sky_dome(load_environment_sky(sky_config)?)?;
-            }
+        // Sky GPU resources are immutable after Scene3dRuntime::initialize_renderer.
+        // Install the merged Shared/project environment sky for *every* mode,
+        // before handing the scene to the platform/renderer. The project main
+        // menu intentionally defers script on_start until map streaming finishes,
+        // so any sky allocation in a script would be too late and cause a crash.
+        // Scripts remain responsible only for mutable atmosphere/weather/time.
+        if let Some(sky_config) = environment.sky.as_ref() {
+            scene.set_sky_dome(load_environment_sky(sky_config)?)?;
         }
         if !environment.atmospheric_clouds.layers.is_empty() {
             scene.set_atmospheric_clouds(load_environment_atmospheric_clouds(
@@ -414,6 +476,11 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
             runtime_settings.camera.min_distance,
             runtime_settings.camera.max_distance,
         )?;
+        if project_ref.manifest.project.id == "kayla-night-city" {
+            scene.set_orbit_zoom_enabled(
+                application_main_menu_settings::MenuPreferences::load().mouse_zoom_enabled,
+            );
+        }
 
         host::info(
             "newviso.scene",
@@ -457,6 +524,7 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
                     &project_ref.manifest.project.id,
                     &runtime_settings.world_persistence,
                 )?,
+                project_ref.root.clone(),
             )?);
             state.set_phase(RuntimePhase::Running);
 
@@ -478,6 +546,11 @@ pub fn run(bootstrap: ResolvedBootstrapConfig) -> Result<RuntimeReport, String> 
                     width: runtime_settings.window.width,
                     height: runtime_settings.window.height,
                     frame_limit: bootstrap.max_frames,
+                    window_mode: newviso_platform::parse_window_mode(
+                        runtime_settings.variables.get("platform_display")
+                            .and_then(|display|display.get("window_mode"))
+                            .and_then(serde_json::Value::as_str),
+                    )?,
                 },
                 app,
             )?;

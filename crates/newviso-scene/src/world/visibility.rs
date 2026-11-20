@@ -18,6 +18,7 @@ impl SceneWorld {
         }
         self.spatial_oversized.remove(&id);
         self.spatial_always_stream.remove(&id);
+        self.spatial_long_stream.remove(&id);
     }
 
     pub(crate) fn index_spatial_entity(&mut self, id: SceneEntityId) {
@@ -30,31 +31,48 @@ impl SceneWorld {
         let has_asset = entity.asset_ref.is_some();
         let stream_distance = entity.lod.stream_distance;
 
-        self.remove_spatial_entity(id);
         if matches!(
             lifecycle,
             SceneLifecycle::PendingRemove | SceneLifecycle::Removed
         ) {
+            self.remove_spatial_entity(id);
             return;
         }
 
-        match spatial_cells_for_bounds(bounds) {
-            Some(cells) => {
-                for cell in &cells {
-                    self.spatial_cells.entry(*cell).or_default().insert(id);
+        let next_cells = spatial_cells_for_bounds(bounds);
+        let membership_unchanged = match &next_cells {
+            Some(cells) => self.spatial_entity_cells.get(&id) == Some(cells),
+            None => self.spatial_oversized.contains(&id),
+        };
+        // Moving actors frequently stay within their current grid cells.
+        if !membership_unchanged {
+            self.remove_spatial_entity(id);
+            match next_cells {
+                Some(cells) => {
+                    for cell in &cells {
+                        self.spatial_cells.entry(*cell).or_default().insert(id);
+                    }
+                    self.spatial_entity_cells.insert(id, cells);
                 }
-                self.spatial_entity_cells.insert(id, cells);
-            }
-            None => {
-                self.spatial_oversized.insert(id);
+                None => {
+                    self.spatial_oversized.insert(id);
+                }
             }
         }
 
+        // Long-range landmark/road meshes are a small explicit candidate set.
+        // An exceptional 4900-m stream radius must not force a quadratic
+        // full-world spatial-cell query for every ordinary 100-m prop.
+        self.spatial_always_stream.remove(&id);
+        self.spatial_long_stream.remove(&id);
         if has_asset {
             if stream_distance.is_finite() {
+                if stream_distance > SPATIAL_LONG_STREAM_THRESHOLD {
+                    self.spatial_long_stream.insert(id);
+                }
                 self.spatial_max_stream_distance = self
                     .spatial_max_stream_distance
-                    .max(stream_distance.max(0.0));
+                    .max(stream_distance.max(0.0).min(SPATIAL_LONG_STREAM_THRESHOLD));
             } else {
                 self.spatial_always_stream.insert(id);
             }
@@ -97,6 +115,7 @@ impl SceneWorld {
     pub(crate) fn visibility_candidates(&self, view: SceneView) -> BTreeSet<SceneEntityId> {
         let mut candidates = self.spatial_oversized.clone();
         candidates.extend(self.spatial_always_stream.iter().copied());
+        candidates.extend(self.spatial_long_stream.iter().copied());
         self.append_spatial_range(view.position, view.far.max(0.0), &mut candidates);
         self.append_spatial_range(
             self.focus.position,
@@ -125,6 +144,9 @@ impl SceneWorld {
         view: SceneView,
         candidate_ids: BTreeSet<SceneEntityId>,
     ) -> SceneFramePlan {
+        let focus_matches_view = self.focus.position.x == view.position.x
+            && self.focus.position.y == view.position.y
+            && self.focus.position.z == view.position.z;
         let forward = view.forward.normalized();
         let right = forward.cross(view.up).normalized();
         let up = right.cross(forward).normalized();
@@ -173,7 +195,11 @@ impl SceneWorld {
             let radius = entity.bounds.radius();
             let to_center = center.sub(view.position);
             let distance = to_center.length();
-            let focus_distance = center.sub(self.focus.position).length();
+            let focus_distance = if focus_matches_view {
+                distance
+            } else {
+                center.sub(self.focus.position).length()
+            };
 
             // Stream against distance to the entity's authored bounds surface,
             // not merely its transform/origin. Large collision sectors can extend
@@ -197,17 +223,18 @@ impl SceneWorld {
             }
 
             let max_visible = entity.lod.visible_distance.min(view.far);
-            if distance - radius > max_visible {
+            let visible_surface_distance=(distance-radius).max(0.0);
+            if visible_surface_distance > max_visible {
                 entity.lod_alpha = 0.0;
                 plan.culled_count += 1;
                 continue;
             }
             entity.lod_alpha = if entity.lod.fade_range > 0.0 && max_visible.is_finite() {
                 let fade_start = (max_visible - entity.lod.fade_range).max(0.0);
-                if distance <= fade_start {
+                if visible_surface_distance <= fade_start {
                     1.0
                 } else {
-                    ((max_visible - distance) / entity.lod.fade_range).clamp(0.0, 1.0)
+                    ((max_visible - visible_surface_distance) / entity.lod.fade_range).clamp(0.0, 1.0)
                 }
             } else {
                 1.0

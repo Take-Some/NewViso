@@ -627,6 +627,96 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_entry_loads_leave_slots_for_independent_sources() {
+        let assets = HashMap::from([
+            (
+                "textures/dictionary.ytd".to_owned(),
+                (vec![7; 512], Vec::new()),
+            ),
+            ("collisions/road.ybn".to_owned(), (vec![8; 128], Vec::new())),
+            ("models/bridge.ydd".to_owned(), (vec![9; 128], Vec::new())),
+        ]);
+        let mut policy = StreamingPolicy::default();
+        policy.parallel_loads = 8;
+        policy.max_loads_per_tick = 8;
+        policy.max_resident_bytes = 0;
+        let mut streaming = streamer(assets, policy);
+        let owner = StreamingOwnerId::new(99);
+        for i in 0..12 {
+            streaming
+                .request(
+                    owner,
+                    AssetAddress::parse(&format!("textures/dictionary.ytd@texture_{i}")).unwrap(),
+                    StreamingClaim::new(100.0),
+                )
+                .unwrap();
+        }
+        let road = AssetAddress::parse("collisions/road.ybn").unwrap();
+        let bridge = AssetAddress::parse("models/bridge.ydd").unwrap();
+        streaming
+            .request(owner, road.clone(), StreamingClaim::new(10.0))
+            .unwrap();
+        streaming
+            .request(owner, bridge.clone(), StreamingClaim::new(10.0))
+            .unwrap();
+
+        let first = streaming.next_load_candidates(8);
+        assert_eq!(
+            first
+                .iter()
+                .filter(|a| a.logical_path() == "textures/dictionary.ytd")
+                .count(),
+            2
+        );
+        assert!(
+            first.contains(&road),
+            "collision work must not starve behind one YTD"
+        );
+        assert!(
+            first.contains(&bridge),
+            "other source work must stay schedulable"
+        );
+
+        // Account for work already submitted to the persistent pool on an
+        // earlier tick; do not select more entries from that same container.
+        for address in first {
+            streaming.in_flight.insert(address);
+        }
+        let second = streaming.next_load_candidates(8);
+        assert!(second
+            .iter()
+            .all(|a| a.logical_path() != "textures/dictionary.ytd"));
+    }
+
+    #[test]
+    fn queued_dictionary_entries_eventually_become_resident() {
+        let assets = HashMap::from([(
+            "textures/dictionary.ytd".to_owned(),
+            (vec![7; 32], Vec::new()),
+        )]);
+        let mut policy = StreamingPolicy::default();
+        policy.parallel_loads = 8;
+        policy.max_loads_per_tick = 8;
+        policy.max_resident_bytes = 0;
+        let mut streaming = streamer(assets, policy);
+        for index in 0..9 {
+            streaming
+                .request(
+                    StreamingOwnerId::new(99),
+                    AssetAddress::parse(&format!("textures/dictionary.ytd@entry_{index}")).unwrap(),
+                    StreamingClaim::new(3.0),
+                )
+                .unwrap();
+        }
+        streaming.pump();
+        assert_eq!(streaming.stats().loading, 2);
+        assert_eq!(streaming.stats().queued, 7);
+        pump_until(&mut streaming, |streaming| streaming.stats().resident == 9);
+        assert_eq!(streaming.stats().failed, 0);
+        assert_eq!(streaming.stats().resident_sources, 1);
+    }
+
+    #[test]
     fn shared_source_is_accounted_once() {
         let bytes = vec![7; 128];
         let assets = HashMap::from([("assets/bundle".to_owned(), (bytes.clone(), Vec::new()))]);

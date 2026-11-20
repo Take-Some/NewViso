@@ -18,31 +18,55 @@ impl InputSnapshot {
         let state: Value = serde_json::from_slice(&state_bytes)
             .map_err(|error| format!("engine.input/state_json returned invalid JSON: {error}"))?;
 
-        let text_bytes = host::call_service(INPUT_SERVICE, "text_take_json", &[])?;
-        let text_json: Value = serde_json::from_slice(&text_bytes).map_err(|error| {
-            format!("engine.input/text_take_json returned invalid JSON: {error}")
-        })?;
-        let text = text_json
-            .get("text")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned();
-
-        let ime_bytes = host::call_service(INPUT_SERVICE, "ime_commit_take_json", &[])?;
-        let ime_json: Value = serde_json::from_slice(&ime_bytes).map_err(|error| {
-            format!("engine.input/ime_commit_take_json returned invalid JSON: {error}")
-        })?;
-        let ime_commit = ime_json
-            .get("ime_commit")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned();
+        // Compass 0.6 state_json atomically owns/consumes this frame's
+        // text and IME values. Reading text_take_json afterward would lose
+        // them and costs two redundant service calls each game frame.
+        let (text, ime_commit) = if let Some(captured) = Self::embedded_text(&state) {
+            captured
+        } else {
+            // Compatibility with providers that expose text only via V1 take
+            // methods, and do not embed the text object in state_json.
+            let text_bytes = host::call_service(INPUT_SERVICE, "text_take_json", &[])?;
+            let text_json: Value = serde_json::from_slice(&text_bytes).map_err(|error| {
+                format!("engine.input/text_take_json returned invalid JSON: {error}")
+            })?;
+            let ime_bytes = host::call_service(INPUT_SERVICE, "ime_commit_take_json", &[])?;
+            let ime_json: Value = serde_json::from_slice(&ime_bytes).map_err(|error| {
+                format!("engine.input/ime_commit_take_json returned invalid JSON: {error}")
+            })?;
+            (
+                text_json
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned(),
+                ime_json
+                    .get("ime_commit")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned(),
+            )
+        };
 
         Ok(Self {
             state,
             text,
             ime_commit,
         })
+    }
+
+    fn embedded_text(state: &Value) -> Option<(String, String)> {
+        let text = state.get("text")?.as_object()?;
+        Some((
+            text.get("buffer")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned(),
+            text.get("ime_commit")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned(),
+        ))
     }
 
     pub fn ui_input_frame(&self) -> Value {
@@ -187,6 +211,30 @@ impl InputSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn state_snapshot_provides_atomic_text_without_resampling() {
+        let state = json!({
+            "text": { "buffer": "typed", "ime_commit": "confirmed", "ime_preedit": "composing" },
+            "keys": {"down": []},
+            "mouse": {"delta": {"x": 0.0, "y": 0.0}}
+        });
+        let (text, commit) = InputSnapshot::embedded_text(&state).unwrap();
+        assert_eq!(text, "typed");
+        assert_eq!(commit, "confirmed");
+        let frame = InputSnapshot {
+            state,
+            text,
+            ime_commit: commit,
+        }
+        .ui_input_frame();
+        assert_eq!(frame["text"], "typed");
+        assert_eq!(frame["ime_commit"], "confirmed");
+    }
+
+    #[test]
+    fn legacy_snapshot_without_embedded_text_uses_fallback() {
+        assert!(InputSnapshot::embedded_text(&json!({"keys":{"down":[]}})).is_none());
+    }
     #[test]
     fn compass_numeric_snapshot_is_decoded_without_resampling() {
         let input = InputSnapshot {

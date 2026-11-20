@@ -1,16 +1,35 @@
 use super::*;
 
 impl EngineApplication {
-    pub(super) fn apply_entity_transform_batch(&mut self, command: &Value, index: usize) -> Result<(), String> {
+    pub(super) fn apply_entity_transform_batch(
+        &mut self,
+        command: &Value,
+        index: usize,
+    ) -> Result<(), String> {
         let entries = command.get("transforms").and_then(Value::as_array)
             .ok_or_else(|| format!("script command[{index}] scene.entities.transform.batch requires array 'transforms'"))?;
         for (batch_index, entry) in entries.iter().enumerate() {
-            let id = entry.get("id").and_then(Value::as_str).filter(|id| !id.is_empty())
-                .ok_or_else(|| format!("script command[{index}] transform[{batch_index}] requires string 'id'"))?;
-            let position = entry.get("position").map(|_| command_vec3(entry, "position", batch_index)).transpose()?;
-            let rotation = entry.get("rotation_degrees").map(|_| command_vec3(entry, "rotation_degrees", batch_index)).transpose()?;
-            let scale = entry.get("scale").map(|_| command_vec3(entry, "scale", batch_index)).transpose()?;
-            self.scene.set_runtime_entity_transform(id, position, rotation, scale)
+            let id = entry
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| {
+                    format!("script command[{index}] transform[{batch_index}] requires string 'id'")
+                })?;
+            let position = entry
+                .get("position")
+                .map(|_| command_vec3(entry, "position", batch_index))
+                .transpose()?;
+            let rotation = entry
+                .get("rotation_degrees")
+                .map(|_| command_vec3(entry, "rotation_degrees", batch_index))
+                .transpose()?;
+            let scale = entry
+                .get("scale")
+                .map(|_| command_vec3(entry, "scale", batch_index))
+                .transpose()?;
+            self.scene
+                .set_runtime_entity_transform(id, position, rotation, scale)
                 .map_err(|e| format!("script command[{index}] transform[{batch_index}]: {e}"))?;
         }
         Ok(())
@@ -212,13 +231,19 @@ impl EngineApplication {
                 let _ = self.scene.clear_mass_instance_layer(layer)?;
             }
             "scene.character.configure" => {
-                let entity=self.resolve_script_scene_entity(command,index,op)?;
-                let binding=newviso_scene::SceneCharacterBinding::parse(
-                    command.get("character").ok_or("scene.character.configure needs character (or null to remove)")?)?;
-                self.scene.set_entity_character_binding(entity,binding)?;
+                let entity = self.resolve_script_scene_entity(command, index, op)?;
+                let binding = newviso_scene::SceneCharacterBinding::parse(
+                    command
+                        .get("character")
+                        .ok_or("scene.character.configure needs character (or null to remove)")?,
+                )?;
+                self.scene.set_entity_character_binding(entity, binding)?;
             }
             "scene.dynamic_entity.upsert" => {
-                let character=command.get("character").map(newviso_scene::SceneCharacterBinding::parse).transpose()?;
+                let character = command
+                    .get("character")
+                    .map(newviso_scene::SceneCharacterBinding::parse)
+                    .transpose()?;
                 let id = command.get("id").and_then(Value::as_str).ok_or_else(|| {
                     format!(
                         "script command[{index}] scene.dynamic_entity.upsert requires string 'id'"
@@ -252,7 +277,7 @@ impl EngineApplication {
                     .get("solid")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-                let entity=self.scene.upsert_runtime_dynamic_entity(
+                let entity = self.scene.upsert_runtime_dynamic_entity(
                     id,
                     SceneRuntimeEntityDesc {
                         visual,
@@ -269,7 +294,9 @@ impl EngineApplication {
                         fade_range: command_number(command, "fade_range", index)?,
                     },
                 )?;
-                if let Some(character)=character {self.scene.set_entity_character_binding(entity,character)?;}
+                if let Some(character) = character {
+                    self.scene.set_entity_character_binding(entity, character)?;
+                }
             }
             "scene.entity.damage" => {
                 let id = command.get("id").and_then(Value::as_str).ok_or_else(|| {

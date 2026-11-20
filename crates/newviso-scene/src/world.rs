@@ -2,6 +2,10 @@ use crate::math::Vec3;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 const SPATIAL_CELL_SIZE: f32 = 32.0;
+/// Ordinary asset candidates are indexed by nearby cells. A tiny number of
+/// far-distance landmark meshes are tracked explicitly instead of expanding
+/// every frame's spatial lookup to their multi-kilometre streaming range.
+const SPATIAL_LONG_STREAM_THRESHOLD: f32 = 1900.0;
 const MAX_ENTITY_SPATIAL_CELLS: usize = 128;
 const PROCESS_TARGET_FRAME_SECONDS: f32 = 1.0 / 60.0;
 const PROCESS_BASE_UPDATES_PER_FRAME: usize = 256;
@@ -13,6 +17,8 @@ type SpatialCell = (i32, i32);
 mod lifecycle;
 mod mutation;
 mod visibility;
+#[cfg(test)]
+mod load_benchmark;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct SceneEntityId(pub(crate) u64);
@@ -612,6 +618,7 @@ pub(crate) struct SceneWorld {
     spatial_entity_cells: HashMap<SceneEntityId, Vec<SpatialCell>>,
     spatial_oversized: BTreeSet<SceneEntityId>,
     spatial_always_stream: BTreeSet<SceneEntityId>,
+    spatial_long_stream: BTreeSet<SceneEntityId>,
     spatial_max_stream_distance: f32,
 }
 
@@ -646,6 +653,7 @@ impl SceneWorld {
             spatial_entity_cells: HashMap::new(),
             spatial_oversized: BTreeSet::new(),
             spatial_always_stream: BTreeSet::new(),
+            spatial_long_stream: BTreeSet::new(),
             spatial_max_stream_distance: 0.0,
         }
     }
@@ -738,6 +746,35 @@ mod tests {
             fov_y_radians: 70.0_f32.to_radians(),
             aspect: 16.0 / 9.0,
         }
+    }
+
+    #[test]
+    fn distant_landmark_streaming_does_not_expand_every_spatial_cell_query() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        let mut long_road = entity(50, -6400.0, 0);
+        long_road.asset_ref = Some("models/test/city_road.ydr".to_owned());
+        long_road.residency = SceneResidency::Unloaded;
+        long_road.lod.visible_distance = 4800.0;
+        long_road.lod.stream_distance = 4900.0;
+        let mut roadside = entity(51, -120.0, 1);
+        roadside.asset_ref = Some("models/test/roadside.ydr".to_owned());
+        roadside.residency = SceneResidency::Unloaded;
+        roadside.lod.visible_distance = 170.0;
+        roadside.lod.stream_distance = 240.0;
+        world.add_entity(long_road).unwrap();
+        world.add_entity(roadside).unwrap();
+        world.activate_all();
+
+        // Scanning does not expand to 4.9 km because one landmark opted in.
+        assert_eq!(world.spatial_max_stream_distance, SPATIAL_LONG_STREAM_THRESHOLD);
+        assert!(world.spatial_long_stream.contains(&SceneEntityId(50)));
+        assert!(world.visibility_candidates(view()).contains(&SceneEntityId(50)));
+        assert!(!world.scan_visibility(view()).streaming_entities.contains(&SceneEntityId(50)));
+
+        // The long-range road remains eligible when the player gets closer.
+        world.pre_update(Vec3::new(0.0, 0.0, -2400.0), 1.0 / 60.0);
+        world.update();
+        assert!(world.scan_visibility(view()).streaming_entities.contains(&SceneEntityId(50)));
     }
 
     #[test]
@@ -949,6 +986,52 @@ mod tests {
     }
 
     #[test]
+    fn spatial_index_reuses_unchanged_cells_and_updates_streaming_policy() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        let id = SceneEntityId(9801);
+        let mut moving = entity(id.0, -8.0, 0);
+        moving.transform.position = Vec3::new(6.0, 0.0, -8.0);
+        moving.bounds = SceneBounds::from_center_half_extent(
+            moving.transform.position,
+            Vec3::new(1.0, 1.0, 1.0),
+        );
+        world.add_entity(moving).unwrap();
+        let original = world.spatial_entity_cells[&id].clone();
+
+        let inside = Vec3::new(6.5, 0.0, -8.0);
+        world.update_spatial_from(
+            id,
+            SceneTransform { position: inside, ..world.entity(id).unwrap().transform },
+            SceneBounds::from_center_half_extent(inside, Vec3::new(1.0, 1.0, 1.0)),
+            SceneMutationSource::Physics,
+        ).unwrap();
+        assert_eq!(world.spatial_entity_cells[&id], original);
+
+        world.entity_mut(id).unwrap().asset_ref = Some("collision/sector.ybn".into());
+        world.entity_mut(id).unwrap().lod.stream_distance = f32::INFINITY;
+        world.index_spatial_entity(id);
+        assert!(world.spatial_always_stream.contains(&id));
+        world.entity_mut(id).unwrap().asset_ref = None;
+        world.index_spatial_entity(id);
+        assert!(!world.spatial_always_stream.contains(&id));
+
+        let moved = Vec3::new(80.0, 0.0, -8.0);
+        world.update_spatial_from(
+            id,
+            SceneTransform { position: moved, ..world.entity(id).unwrap().transform },
+            SceneBounds::from_center_half_extent(moved, Vec3::new(1.0, 1.0, 1.0)),
+            SceneMutationSource::Physics,
+        ).unwrap();
+        assert_ne!(world.spatial_entity_cells[&id], original);
+        for cell in original {
+            assert!(!world.spatial_cells.get(&cell).is_some_and(|ids| ids.contains(&id)));
+        }
+        for cell in &world.spatial_entity_cells[&id] {
+            assert!(world.spatial_cells[cell].contains(&id));
+        }
+    }
+
+    #[test]
     fn oversized_spatial_entity_fails_open() {
         let mut world = SceneWorld::new(Vec3::ZERO);
         let mut huge = entity(2, -50.0, 0);
@@ -979,6 +1062,51 @@ mod tests {
 
         let plan = world.scan_visibility(view());
         assert_eq!(plan.visible_render_slots, vec![0]);
+    }
+
+    #[test]
+    fn added_entity_with_process_claim_is_scheduled_on_first_frame() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        world.add_entity(entity(9010, -8.0, 0)).unwrap();
+        world.set_process_claim(
+            SceneEntityId(9010),
+            "project.script",
+            "script",
+            true,
+            SceneMutationSource::Script,
+        ).unwrap();
+        assert!(!world.process_is_active(SceneEntityId(9010)));
+        world.pre_update(Vec3::ZERO, 1.0 / 60.0);
+        assert!(world.process_is_active(SceneEntityId(9010)));
+        world.update();
+        assert_eq!(world.process_tickets().len(), 1);
+        assert_eq!(world.process_tickets()[0].entity, SceneEntityId(9010));
+    }
+
+    #[test]
+    fn rejected_entity_parent_does_not_corrupt_world_indexes() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        let mut child = entity(9001, -8.0, 0);
+        child.parent = Some(SceneEntityId(9999));
+        assert!(world.add_entity(child).is_err());
+        assert!(world.entity(SceneEntityId(9001)).is_none());
+        assert_eq!(world.entities.len(), 0);
+        assert_eq!(world.static_render_epoch(), 0);
+        assert_eq!(world.spatial_cell_count(), 0);
+
+        let mut parent = entity(9999, -8.0, 1);
+        parent.name = "parent".to_owned();
+        world.add_entity(parent).unwrap();
+        let mut child = entity(9001, -8.0, 0);
+        child.parent = Some(SceneEntityId(9999));
+        world.add_entity(child).unwrap();
+        assert_eq!(world.entity(SceneEntityId(9999)).unwrap().children, vec![SceneEntityId(9001)]);
+
+        world.request_remove(SceneEntityId(9999)).unwrap();
+        let mut rejected = entity(9002, -8.0, 2);
+        rejected.parent = Some(SceneEntityId(9999));
+        assert!(world.add_entity(rejected).is_err());
+        assert!(world.entity(SceneEntityId(9002)).is_none());
     }
 
     #[test]
@@ -1168,6 +1296,32 @@ mod tests {
 
         world.activate_entity(SceneEntityId(55)).unwrap();
         assert!(world.process_is_active(SceneEntityId(55)));
+    }
+
+    #[test]
+    fn pending_and_flushed_removals_do_not_shadow_recreated_runtime_names() {
+        let mut world = SceneWorld::new(Vec3::ZERO);
+        let mut old = entity(0x4e56_5343_0000_01f2, -8.0, 0);
+        old.name = "bus.left.window".to_owned();
+        world.add_entity(old).unwrap();
+        world.activate_all();
+
+        let first = SceneEntityId(0x4e56_5343_0000_01f2);
+        world.request_remove(first).unwrap();
+        assert_eq!(world.entity(first).unwrap().lifecycle, SceneLifecycle::PendingRemove);
+        assert_eq!(world.entity_id_by_name("bus.left.window"), None);
+        assert!(world.activate_entity(first).is_err());
+
+        // Same logical name is legal after destruction, but receives a new ID.
+        let mut replacement = entity(0x4e56_5343_0000_01f3, -8.0, 1);
+        replacement.name = "bus.left.window".to_owned();
+        let second = replacement.id;
+        world.add_entity(replacement).unwrap();
+        world.activate_entity(second).unwrap();
+        assert_eq!(world.entity_id_by_name("bus.left.window"), Some(second));
+        world.flush_removals();
+        assert_eq!(world.entity_id_by_name("bus.left.window"), Some(second));
+        assert_eq!(world.entity(first).unwrap().lifecycle, SceneLifecycle::Removed);
     }
 
     #[test]

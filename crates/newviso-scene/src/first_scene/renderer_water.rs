@@ -3,13 +3,15 @@ use super::*;
 
 pub(super) fn water_optics_diagnostic() -> i32 {
     static MODE: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
-    *MODE.get_or_init(|| match std::env::var("NEWVISO_WATER_DIAG_OPTICS").as_deref() {
-        Ok("reflection") => 1,
-        Ok("refraction") => 2,
-        Ok("depth") => 3,
-        Ok("scene") => 4,
-        _ => 0,
-    })
+    *MODE.get_or_init(
+        || match std::env::var("NEWVISO_WATER_DIAG_OPTICS").as_deref() {
+            Ok("reflection") => 1,
+            Ok("refraction") => 2,
+            Ok("depth") => 3,
+            Ok("scene") => 4,
+            _ => 0,
+        },
+    )
 }
 
 const WATER_OPTICS_FLOATS: usize = 20;
@@ -122,14 +124,18 @@ impl Scene3dRuntime {
     pub fn water_state_json(&self) -> Value {
         let camera = self.camera.position;
         let sample = self.water_sample([camera.x, camera.z]);
-        let shore = self.water_simulation.closest_shore([camera.x, camera.z])
-            .map(|(point, direction, wave)| json!({
-                "position":[point[0],self.water_simulation.surface.level,point[1]],
-                "direction":[direction[0],0.0,direction[1]],
-                "distance":(point[0]-camera.x).hypot(point[1]-camera.z),
-                "height":wave.height,"vertical_velocity":wave.vertical_velocity,
-                "foam":self.water_simulation.foam_at(point)
-            }));
+        let shore = self
+            .water_simulation
+            .closest_shore([camera.x, camera.z])
+            .map(|(point, direction, wave)| {
+                json!({
+                    "position":[point[0],self.water_simulation.surface.level,point[1]],
+                    "direction":[direction[0],0.0,direction[1]],
+                    "distance":(point[0]-camera.x).hypot(point[1]-camera.z),
+                    "height":wave.height,"vertical_velocity":wave.vertical_velocity,
+                    "foam":self.water_simulation.foam_at(point)
+                })
+            });
         let immersion = self.water_simulation.immersion;
         json!({"enabled":self.water_simulation.enabled,
             "camera":{"position":[camera.x,camera.y,camera.z],
@@ -309,40 +315,54 @@ impl Scene3dRuntime {
             }
         }
         let expanded_vertex_count = mesh_vertices.len() / FLOATS_PER_VERTEX;
-        let (mesh_vertices, indices) = if std::env::var("NEWVISO_LINEAR_WATER").as_deref() == Ok("1") {
-            (mesh_vertices, Vec::new())
-        } else {
-            renderer_water_geometry::index_water_vertices(&mesh_vertices)?
-        };
+        let (mesh_vertices, indices) =
+            if std::env::var("NEWVISO_LINEAR_WATER").as_deref() == Ok("1") {
+                (mesh_vertices, Vec::new())
+            } else {
+                renderer_water_geometry::index_water_vertices(&mesh_vertices)?
+            };
         let surface_vertex_count = u32::try_from(mesh_vertices.len() / FLOATS_PER_VERTEX)
             .map_err(|_| "water vertex count exceeds u32".to_owned())?;
-        let surface_index_count = u32::try_from(indices.len())
-            .map_err(|_| "water index count exceeds u32".to_owned())?;
+        let surface_index_count =
+            u32::try_from(indices.len()).map_err(|_| "water index count exceeds u32".to_owned())?;
         let surface_vertices = render.create_buffer(
             "newviso.water.static_grid",
             (mesh_vertices.len() * 4) as u64,
             "Vertex",
             "CpuToGpu",
         )?;
-        let surface_indices = if indices.is_empty() { 0 } else {
-            match render.create_buffer("newviso.water.static_grid.indices",
-                (indices.len() * 4) as u64, "Index", "CpuToGpu") {
+        let surface_indices = if indices.is_empty() {
+            0
+        } else {
+            match render.create_buffer(
+                "newviso.water.static_grid.indices",
+                (indices.len() * 4) as u64,
+                "Index",
+                "CpuToGpu",
+            ) {
                 Ok(buffer) => buffer,
-                Err(error) => { render.destroy_buffer(surface_vertices); return Err(error); }
+                Err(error) => {
+                    render.destroy_buffer(surface_vertices);
+                    return Err(error);
+                }
             }
         };
         let upload = (|| {
             render.write_buffer_f32(surface_vertices, 0, &mesh_vertices)?;
             if surface_indices != 0 {
                 let mut bytes = Vec::with_capacity(indices.len() * 4);
-                for index in &indices { bytes.extend_from_slice(&index.to_le_bytes()); }
+                for index in &indices {
+                    bytes.extend_from_slice(&index.to_le_bytes());
+                }
                 render.write_buffer(surface_indices, 0, &bytes)?;
             }
             Ok::<(), String>(())
         })();
         if let Err(error) = upload {
             render.destroy_buffer(surface_vertices);
-            if surface_indices != 0 { render.destroy_buffer(surface_indices); }
+            if surface_indices != 0 {
+                render.destroy_buffer(surface_indices);
+            }
             return Err(error);
         }
         host_runtime::debug("newviso.render.water", format!(
@@ -637,7 +657,8 @@ impl Scene3dRuntime {
         let revision = self.water_simulation.field_revision();
         if let Some(gpu) = self.water_gpu.as_mut() {
             if gpu.field_uploaded_revision[slot] != revision {
-                self.water_simulation.fill_gpu_field(&mut gpu.field_upload_data);
+                self.water_simulation
+                    .fill_gpu_field(&mut gpu.field_upload_data);
                 render.write_buffer_f32(gpu.field_buffers[slot], 0, &gpu.field_upload_data)?;
                 gpu.field_uploaded_revision[slot] = revision;
             }
@@ -666,8 +687,9 @@ impl Scene3dRuntime {
                 )?;
             }
         }
-        render.record_unit_batch(|render|
-            self.record_water_optics(render, gpu, slot, batches, particle_batches, weather))
+        render.record_unit_batch(|render| {
+            self.record_water_optics(render, gpu, slot, batches, particle_batches, weather)
+        })
     }
 
     fn record_water_optics(
@@ -702,7 +724,7 @@ impl Scene3dRuntime {
             } else {
                 self.clear_color
             };
-            render.begin_render_target(target, Some(clear), Some(1.0))?;
+            render.begin_render_target(target, Some(clear), Some(if experimental_reverse_z_enabled(){0.0}else{1.0}))?;
             render.set_viewport(targets.width, targets.height)?;
             render.set_scissor(targets.width, targets.height)?;
             if mode != 2 {
@@ -777,8 +799,11 @@ impl Scene3dRuntime {
             // A player and an NPC may share a static batch. Split only batches
             // containing camera-local instances, preserving all world instances.
             for (batch, draw_member) in batches.iter().flat_map(|batch| {
-                let split = batch.instance_count > 1 && batch.stable_ids.iter()
-                    .any(|id| !self.asset_reflections_visible(*id));
+                let split = batch.instance_count > 1
+                    && batch
+                        .stable_ids
+                        .iter()
+                        .any(|id| !self.asset_reflections_visible(*id));
                 let count = if split { batch.stable_ids.len() } else { 1 };
                 (0..count).map(move |member| (batch, split.then_some(member)))
             }) {
@@ -791,7 +816,11 @@ impl Scene3dRuntime {
                 if !self.asset_reflections_visible(*id) {
                     continue;
                 }
-                let instance_count = if draw_member.is_some() { 1 } else { batch.instance_count };
+                let instance_count = if draw_member.is_some() {
+                    1
+                } else {
+                    batch.instance_count
+                };
                 let first_instance = batch.first_instance + draw_member.unwrap_or(0) as u32;
                 let (buffer, offset) = asset_mesh_vertex_binding(mesh, gpu, slot)?;
                 bindings.bind_vertex(render, buffer)?;
@@ -824,9 +853,16 @@ impl Scene3dRuntime {
                         )?;
                     }
                     if mode != 2 {
-                        for (member, id) in batch.stable_ids.iter().enumerate()
+                        for (member, id) in batch
+                            .stable_ids
+                            .iter()
+                            .enumerate()
                             .skip(draw_member.unwrap_or(0))
-                            .take(if draw_member.is_some() { 1 } else { batch.stable_ids.len() })
+                            .take(if draw_member.is_some() {
+                                1
+                            } else {
+                                batch.stable_ids.len()
+                            })
                         {
                             let Some(entity) = self.world.entity(SceneEntityId(*id)) else {
                                 continue;
@@ -852,6 +888,19 @@ impl Scene3dRuntime {
                                 let delta = centre.sub(optical_camera.position);
                                 alpha_draws.push(AlphaAssetDraw {
                                     distance_sq: delta.dot(delta),
+                                    newviso_ml_layer: range.material_slot
+                                        .and_then(|s| mesh.materials.get(s as usize))
+                                        .filter(|material| material.newviso_multilayer)
+                                        .map(|material| material.newviso_ml_layer_index),
+                                    source_surface_key: alpha_source_surface_key(
+                                        &range.mesh_name,
+                                        mesh.first_vertex + range.first_vertex,
+                                        range.material_slot
+                                            .and_then(|s| mesh.materials.get(s as usize))
+                                            .filter(|material| material.newviso_multilayer)
+                                            .map(|material| material.newviso_ml_layer_index),
+                                    ),
+                                    source_entity: *id,
                                     material_group: material,
                                     vertex_buffer: buffer,
                                     vertex_offset: offset,
@@ -865,7 +914,7 @@ impl Scene3dRuntime {
                 }
             }
             if mode != 2 && !alpha_draws.is_empty() {
-                alpha_draws.sort_by(|a, b| b.distance_sq.total_cmp(&a.distance_sq));
+                sort_alpha_asset_draws(&mut alpha_draws);
                 render.set_pipeline(gpu.asset_alpha_pipeline)?;
                 render.set_bind_group(0, group)?;
                 render.set_bind_group(2, weather)?;
@@ -887,7 +936,9 @@ impl Scene3dRuntime {
                 // The depth-writing surface must still transmit/reflect source
                 // bubbles and spray rendered on the opposite side of it.
                 for batch in particle_batches {
-                    let material = batch.material.as_ref()
+                    let material = batch
+                        .material
+                        .as_ref()
                         .and_then(|key| self.particle_gpu_materials.get(key))
                         .map_or(gpu.default_material_bind_group, |m| m.bind_group);
                     render.set_pipeline(if batch.blend == SceneParticleBlend::Additive {
@@ -899,7 +950,8 @@ impl Scene3dRuntime {
                     render.set_bind_group(1, material)?;
                     render.set_bind_group(2, weather)?;
                     render.set_vertex_buffer(
-                        0, gpu.particle_vertex_buffers[slot],
+                        0,
+                        gpu.particle_vertex_buffers[slot],
                         batch.first_vertex as u64 * VERTEX_STRIDE,
                     )?;
                     render.draw(batch.vertex_count)?;
@@ -1104,7 +1156,9 @@ impl Scene3dRuntime {
                 render.destroy_buffer(buffer);
             }
             render.destroy_buffer(water.surface_vertices);
-            if water.surface_indices != 0 { render.destroy_buffer(water.surface_indices); }
+            if water.surface_indices != 0 {
+                render.destroy_buffer(water.surface_indices);
+            }
             water.bumps.shutdown(render);
             water.underwater.shutdown(render);
             render.destroy_sampler(water.sampler);

@@ -24,6 +24,7 @@ layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec4 in_color;
 layout(location = 3) in vec2 in_uv;
 layout(location = 4) in vec4 in_tangent;
+layout(location = 9) in vec2 in_uv1;
 
 layout(location = 5) in vec4 instance_col0;
 layout(location = 6) in vec4 instance_col1;
@@ -37,6 +38,7 @@ layout(location = 3) out vec4 v_shadow_coord;
 layout(location = 4) flat out float v_overlay;
 layout(location = 5) out vec2 v_uv;
 layout(location = 6) out vec4 v_tangent;
+layout(location = 7) out vec2 v_uv1;
 
 void main() {
     mat4 model = mat4(instance_col0, instance_col1, instance_col2, instance_col3);
@@ -53,6 +55,7 @@ void main() {
     v_color = in_color;
     v_overlay = instance_col3.w < 0.0 ? -1.0 : 0.0;
     v_uv = in_uv;
+    v_uv1 = in_uv1;
     v_tangent = vec4(world_tangent, in_tangent.w * orientation);
     v_normal = world_normal;
     v_world_position = world.xyz;

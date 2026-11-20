@@ -157,6 +157,50 @@ impl EngineApplication {
                 }
                 self.scene.set_entity_arm_ik(stable_id, constraints)?;
             }
+            // Explicit externally driven skeletal pose. This shared scene API
+            // accepts world-space bind/physics matrices by named joint, rather
+            // than synthesizing vehicle-specific animation clips each frame.
+            "scene.entity.skeleton.physical_pose.set" => {
+                let id = command.get("id").and_then(Value::as_str).ok_or_else(|| {
+                    format!("script command[{index}] physical_pose.set requires string 'id'")
+                })?;
+                let skip_if_not_ready = command.get("if_ready")
+                    .and_then(Value::as_bool).unwrap_or(false);
+                let Some(entity) = self.scene.runtime_entity_stable_id(id) else {
+                    if skip_if_not_ready { return Ok(()); }
+                    return Err(format!("script command[{index}] physical pose target '{id}' not found"));
+                };
+                if !self.scene.entity_model_installed(entity) {
+                    if skip_if_not_ready { return Ok(()); }
+                    return Err(format!("script command[{index}] physical pose target '{id}' has no loaded model"));
+                }
+                let values = command.get("joints").and_then(Value::as_array)
+                    .ok_or_else(|| format!("script command[{index}] physical_pose.set requires joints array"))?;
+                if values.is_empty() || values.len()>128 {
+                    return Err(format!("script command[{index}] physical_pose.set must have 1..128 joints"));
+                }
+                let mut joints = Vec::<(String,[f32;16])>::with_capacity(values.len());
+                for (ji,joint) in values.iter().enumerate() {
+                    let name = joint.get("name").and_then(Value::as_str)
+                        .filter(|x| !x.is_empty()).ok_or_else(|| format!(
+                            "script command[{index}] joints[{ji}] requires a joint name"))?;
+                    let values = joint.get("world_matrix").and_then(Value::as_array)
+                        .filter(|a| a.len()==16).ok_or_else(|| format!(
+                            "script command[{index}] joints[{ji}] requires 16-element world_matrix"))?;
+                    let mut matrix=[0.0_f32;16];
+                    for (k,value) in values.iter().enumerate() {
+                        matrix[k]=value.as_f64()
+                            .filter(|x| x.is_finite() && x.abs() <= 1.0e9)
+                            .ok_or_else(|| format!(
+                                "script command[{index}] joints[{ji}].world_matrix[{k}] must be finite"))? as f32;
+                    }
+                    if joints.iter().any(|(key,_)| key.eq_ignore_ascii_case(name)) {
+                        return Err(format!("script command[{index}] duplicate joint name '{name}'"));
+                    }
+                    joints.push((name.to_owned(),matrix));
+                }
+                self.scene.set_entity_physical_pose(entity,&joints)?;
+            }
             "scene.entity.animation.play" => {
                 let id = command.get("id").and_then(Value::as_str).ok_or_else(|| {
                     format!(

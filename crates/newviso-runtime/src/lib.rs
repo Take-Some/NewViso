@@ -98,6 +98,9 @@ mod application_character_audio;
 mod application_characters;
 mod application_content;
 mod application_editor;
+mod application_main_menu;
+mod application_main_menu_settings;
+mod application_ink_animation;
 mod application_endorphin;
 mod application_events;
 mod application_particle_debris;
@@ -106,6 +109,7 @@ mod application_peds;
 mod application_physics;
 mod application_settings;
 mod application_startup_loading;
+mod application_loading_screen;
 use application_physics::PhysicsRuntime;
 mod application_climate;
 mod application_cold;
@@ -113,6 +117,11 @@ mod application_platform;
 mod application_script_commands;
 mod application_startup_intro;
 mod application_streaming;
+mod application_hud_overlay;
+mod application_hud_font;
+mod application_hud_icons;
+mod application_sector_streaming;
+mod application_streaming_materialization;
 mod application_vehicle_tracks;
 mod application_vehicles;
 mod application_weather;
@@ -348,6 +357,21 @@ struct EngineApplication {
     scripts: Option<ScriptRuntime>,
     project_context: Value,
     ui_template: Option<Value>,
+    hud_quads: Vec<SceneOverlayQuad>,
+    hud_texts: Vec<application_hud_font::HudText>,
+    hud_icons: Vec<application_hud_icons::HudIcon>,
+    hud_polygons: Vec<application_hud_overlay::HudPolygon>,
+    /// Authored painter order: 0=quad, 1=Unicode text, 2=original INK icon.
+    hud_item_order: Vec<(u8, usize)>,
+    hud_font: Option<application_hud_font::HudFontAtlas>,
+    hud_icon_atlas: Option<application_hud_icons::HudIconAtlas>,
+    hud_font_uploaded: bool,
+    hud_icons_uploaded: bool,
+    hud_last_framebuffer_size: Option<[u32; 2]>,
+    hud_overlay_cache: Option<([u32; 2], Value)>,
+    main_menu: Option<application_main_menu::MainMenuState>,
+    loading_ui_visible: bool,
+    loading_ui_template: Option<Value>,
     ui_bindings: BTreeMap<String, Value>,
     last_ui_surface: Option<Value>,
     content_manager: Option<ContentManager>,
@@ -358,6 +382,7 @@ struct EngineApplication {
     scene_materialization_queue: VecDeque<u64>,
     scene_materialization_pending: BTreeSet<u64>,
     scene_prepare_pool: application_streaming::ScenePreparePool,
+    sector_streamer: Option<application_sector_streaming::SectorStreamer>,
     scene_model_prepare_in_flight: BTreeSet<u64>,
     scene_model_prepare_waiters: BTreeMap<u64, BTreeSet<u64>>,
     scene_prepared_models:
@@ -382,6 +407,7 @@ struct EngineApplication {
     startup_gpu_upload_peak_jobs: u32,
     startup_map_status: String,
     startup_map_detail: String,
+    startup_map_asset_progress_json: String,
     exit_requested: bool,
     cursor_captured: bool,
     window_focused: bool,
@@ -399,6 +425,7 @@ impl EngineApplication {
         settings: ProjectRuntimeSettings,
         editor_mode: bool,
         world_startup: WorldStartup,
+        project_root: PathBuf,
     ) -> Result<Self, String> {
         settings.validate().map_err(|error| error.to_string())?;
         // Register the *exact* scene terrain triangles before the physics
@@ -452,6 +479,16 @@ impl EngineApplication {
         let streaming_policy = streaming_policy_from_project(&settings.streaming);
         let scene_prepare_pool =
             application_streaming::ScenePreparePool::new(settings.streaming.parallel_loads)?;
+        let hud_font = application_hud_font::HudFontAtlas::load(&project_root)?;
+        let hud_icon_atlas = application_hud_icons::HudIconAtlas::load(&project_root)?;
+        let sector_streamer = if editor_mode {
+            None
+        } else {
+            application_sector_streaming::SectorStreamer::from_project(
+                project_root,
+                settings.variables.get("sector_streaming").unwrap_or(&Value::Null),
+            )?
+        };
         let cold = application_cold::ColdRuntime::restore(&world_startup.cold)?;
         if let Some(physics) = physics.as_mut() {
             physics.load_door_checkpoint(&world_startup.doors)?;
@@ -494,6 +531,20 @@ impl EngineApplication {
             physics,
             scripts,
             project_context,
+            hud_quads: Vec::new(),
+            hud_texts: Vec::new(),
+            hud_icons: Vec::new(),
+            hud_polygons: Vec::new(),
+            hud_item_order: Vec::new(),
+            hud_font,
+            hud_icon_atlas,
+            hud_font_uploaded: false,
+            hud_icons_uploaded: false,
+            hud_last_framebuffer_size: None,
+            hud_overlay_cache: None,
+            main_menu: application_main_menu::MainMenuState::from_template(ui_template.as_ref()),
+            loading_ui_visible: false,
+            loading_ui_template: None,
             ui_template,
             ui_bindings: BTreeMap::new(),
             last_ui_surface: None,
@@ -505,6 +556,7 @@ impl EngineApplication {
             scene_materialization_queue: VecDeque::new(),
             scene_materialization_pending: BTreeSet::new(),
             scene_prepare_pool,
+            sector_streamer,
             scene_model_prepare_in_flight: BTreeSet::new(),
             scene_model_prepare_waiters: BTreeMap::new(),
             scene_prepared_models: BTreeMap::new(),
@@ -527,6 +579,7 @@ impl EngineApplication {
             startup_gpu_upload_peak_jobs: 0,
             startup_map_status: "Discovering map assets...".to_owned(),
             startup_map_detail: "Preparing initial model and texture residency.".to_owned(),
+            startup_map_asset_progress_json: String::new(),
             exit_requested: false,
             cursor_captured: false,
             window_focused: true,

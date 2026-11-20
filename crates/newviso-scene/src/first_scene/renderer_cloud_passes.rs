@@ -1,11 +1,18 @@
 //! Offscreen depth preparation and volumetric cloud history.
 use super::*;
 impl Scene3dRuntime {
-    pub(super) fn record_cloud_prepasses(&mut self,render:&RenderClient,gpu:GpuScene,
-        width:u32,height:u32,frame_index:u64,frame_slot:usize,
-        hiz_draws:&[(u32,u64)],direct_opaque_fallback:&[DirectAssetDraw])
-        ->Result<Option<(u32,u32,u32)>,String>{
-        let mut volumetric_composite=None;
+    pub(super) fn record_cloud_prepasses(
+        &mut self,
+        render: &RenderClient,
+        gpu: GpuScene,
+        width: u32,
+        height: u32,
+        frame_index: u64,
+        frame_slot: usize,
+        hiz_draws: &[(u32, u64)],
+        direct_opaque_fallback: &[DirectAssetDraw],
+    ) -> Result<Option<(u32, u32, u32)>, String> {
+        let mut volumetric_composite = None;
         // Build a low-resolution linear scene-depth proxy from the current
         // camera before drawing CloudHat geometry. This is provider-neutral and
         // gives the cloud shader a sampled opaque-scene distance for soft
@@ -20,15 +27,15 @@ impl Scene3dRuntime {
                 render.begin_render_target(
                     clouds.soft_depth_render_target,
                     Some([clear_linear_depth, 0.0, 0.0, 0.0]),
-                    Some(1.0),
+                    Some(if experimental_reverse_z_enabled(){0.0}else{1.0}),
                 )?;
                 render.set_viewport(clouds.soft_depth_resolution, clouds.soft_depth_resolution)?;
                 render.set_scissor(clouds.soft_depth_resolution, clouds.soft_depth_resolution)?;
                 render.set_pipeline(clouds.soft_depth_pipeline)?;
                 render.set_bind_group(0, clouds.soft_depth_bind_groups[frame_slot])?;
 
-                self.draw_indexed_terrain_depth(render,frame_slot)?;
-            let dynamic_depth_vertices = self.shadow_vertex_count();
+                self.draw_indexed_terrain_depth(render, frame_slot)?;
+                let dynamic_depth_vertices = self.shadow_vertex_count();
                 if dynamic_depth_vertices > 0 {
                     render.set_vertex_buffer(0, gpu.shadow_vertex_buffers[frame_slot], 0)?;
                     render.draw(dynamic_depth_vertices)?;
@@ -47,7 +54,12 @@ impl Scene3dRuntime {
                         gpu.visibility_indirect_buffers[frame_slot],
                         &hiz_draws,
                     )?;
-                    draw_direct_draws(render,direct_opaque_fallback,None,Some(gpu.asset_vertex_buffer))?;
+                    draw_direct_draws(
+                        render,
+                        direct_opaque_fallback,
+                        None,
+                        Some(gpu.asset_vertex_buffer),
+                    )?;
                 }
                 render.end_render_target()?;
             }
@@ -106,13 +118,13 @@ impl Scene3dRuntime {
             render.begin_render_target(
                 depth_target,
                 Some([clear_linear_depth, 0.0, 0.0, 0.0]),
-                Some(1.0),
+                Some(if experimental_reverse_z_enabled(){0.0}else{1.0}),
             )?;
             render.set_viewport(cloud_width, cloud_height)?;
             render.set_scissor(cloud_width, cloud_height)?;
             render.set_pipeline(depth_pipeline)?;
             render.set_bind_group(0, depth_bind_group)?;
-            self.draw_indexed_terrain_depth(render,frame_slot)?;
+            self.draw_indexed_terrain_depth(render, frame_slot)?;
 
             let dynamic_depth_vertices = self.shadow_vertex_count();
             if dynamic_depth_vertices > 0 {
@@ -132,7 +144,12 @@ impl Scene3dRuntime {
                     gpu.visibility_indirect_buffers[frame_slot],
                     &hiz_draws,
                 )?;
-                draw_direct_draws(render,direct_opaque_fallback,None,Some(gpu.asset_vertex_buffer))?;
+                draw_direct_draws(
+                    render,
+                    direct_opaque_fallback,
+                    None,
+                    Some(gpu.asset_vertex_buffer),
+                )?;
             }
             render.end_render_target()?;
 

@@ -1,8 +1,8 @@
 //! Bounded animation scheduling: select the best N jobs instead of sorting every
 //! visible entity. The ordering remains identical to a full priority sort.
+use std::cmp::Ordering;
 #[cfg(test)]
 use std::io::Write as _;
-use std::cmp::Ordering;
 
 pub(super) type Candidate = (f64, f32, u64, f64);
 
@@ -34,12 +34,14 @@ mod tests {
     #[test]
     fn bounded_schedule_matches_full_sort() {
         let original: Vec<_> = (0..512)
-            .map(|id| (
-                ((id * 37) % 13) as f64 / 4.0,
-                ((id * 61) % 97) as f32,
-                id as u64,
-                id as f64,
-            ))
+            .map(|id| {
+                (
+                    ((id * 37) % 13) as f64 / 4.0,
+                    ((id * 61) % 97) as f32,
+                    id as u64,
+                    id as f64,
+                )
+            })
             .collect();
         let mut expected = original.clone();
         expected.sort_unstable_by(candidate_priority);
@@ -57,12 +59,16 @@ mod tests {
     fn benchmark_skinning_selection_vs_full_sort() {
         use std::{hint::black_box, time::Instant};
 
-        let candidates = (0..20_000u64).map(|id| (
-            ((id * 37) % 211) as f64 / 16.0,
-            ((id * 61) % 997) as f32,
-            id,
-            id as f64,
-        )).collect::<Vec<_>>();
+        let candidates = (0..20_000u64)
+            .map(|id| {
+                (
+                    ((id * 37) % 211) as f64 / 16.0,
+                    ((id * 61) % 997) as f32,
+                    id,
+                    id as f64,
+                )
+            })
+            .collect::<Vec<_>>();
         let repetitions = 50;
         let full_started = Instant::now();
         for _ in 0..repetitions {

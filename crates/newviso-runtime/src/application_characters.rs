@@ -15,79 +15,10 @@ const NAV_TARGET_EPSILON: f32 = 0.12;
 const FACING_SPEED_EPSILON: f32 = 0.05;
 const MAX_FACING_TURN_RATE_RADIANS_PER_SECOND: f32 = std::f32::consts::TAU;
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
-pub(super) struct PhysicalCharacterBinding {
-    pub actor_id: String,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub controller: CharacterConfig,
-    #[serde(default)]
-    pub body_center_offset_y: Option<f32>,
-    #[serde(default = "default_arrival_radius")]
-    pub arrival_radius: f32,
-    #[serde(default = "default_time_horizon")]
-    pub steering_time_horizon: f32,
-    #[serde(default = "default_separation_weight")]
-    pub separation_weight: f32,
-    #[serde(default = "default_gravity")]
-    pub gravity: f32,
-}
-
-fn default_true() -> bool {
-    true
-}
-fn default_arrival_radius() -> f32 {
-    0.18
-}
-fn default_time_horizon() -> f32 {
-    1.5
-}
-fn default_separation_weight() -> f32 {
-    2.0
-}
-fn default_gravity() -> f32 {
-    9.81
-}
-
-impl PhysicalCharacterBinding {
-    fn validate(&self) -> Result<(), String> {
-        if self.actor_id.trim().is_empty()
-            || self.actor_id.len() > 128
-            || !self.arrival_radius.is_finite()
-            || !(0.01..=5.0).contains(&self.arrival_radius)
-            || !self.steering_time_horizon.is_finite()
-            || !(0.05..=30.0).contains(&self.steering_time_horizon)
-            || !self.separation_weight.is_finite()
-            || !(0.0..=100.0).contains(&self.separation_weight)
-            || !self.gravity.is_finite()
-            || !(0.0..=1000.0).contains(&self.gravity)
-            || self
-                .body_center_offset_y
-                .is_some_and(|value| !value.is_finite() || !(-10.0..=10.0).contains(&value))
-        {
-            return Err("invalid physical world-actor character binding".to_owned());
-        }
-        self.controller.validate()
-    }
-
-    pub(super) fn center_offset_y(&self) -> f32 {
-        self.body_center_offset_y
-            .unwrap_or(self.controller.radius + self.controller.half_height)
-    }
-
-    fn actor_to_center(&self, actor_position: [f32; 3]) -> [f32; 3] {
-        [
-            actor_position[0],
-            actor_position[1] + self.center_offset_y(),
-            actor_position[2],
-        ]
-    }
-
-    fn center_to_actor(&self, center: [f32; 3]) -> [f32; 3] {
-        [center[0], center[1] - self.center_offset_y(), center[2]]
-    }
-}
+#[path = "application_characters_binding.rs"]
+mod binding;
+pub(super) use binding::PhysicalCharacterBinding;
+use binding::{default_arrival_radius, default_gravity, default_separation_weight, default_time_horizon};
 
 #[derive(Clone, Debug, Default)]
 struct PhysicalPathState {

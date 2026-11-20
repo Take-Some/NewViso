@@ -1,0 +1,9 @@
+[package]
+name = "newviso-derived-cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Content-addressed, validated, bounded on-disk cache for NewViso derived assets"
+
+[dependencies]
+blake3.workspace = true

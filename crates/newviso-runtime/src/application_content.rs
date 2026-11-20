@@ -131,11 +131,28 @@ impl EngineApplication {
         self.publish_content_manager_if_changed()
     }
     pub(super) fn publish_bound_ui_if_changed(&mut self) -> Result<(), String> {
+        if let Some(ink) = self.main_menu.as_mut().and_then(|menu| menu.ink.as_mut()) {
+            ink.ensure_loaded();
+        }
         let Some(template) = self.ui_template.as_ref() else {
             return Ok(());
         };
 
-        let materialized = materialize_ui_template(template, &self.ui_bindings);
+        let mut materialized = materialize_ui_template(template, &self.ui_bindings);
+        if let Some(menu) = self.main_menu.as_ref() {
+            if materialized.get("surface_id").and_then(Value::as_str) == Some(menu.surface_id.as_str()) {
+                materialized["visible"] = Value::Bool(menu.visible);
+                application_main_menu::prepare_menu_surface(
+                    &mut materialized, menu.started, menu.settings_open, menu.reduced_motion,
+                );
+                if let Some(ink) = menu.ink.as_ref() {
+                    ink.apply(&mut materialized, menu.reduced_motion);
+                }
+                application_main_menu_settings::apply_to_surface(
+                    &mut materialized, &menu.prefs, menu.settings_open, &menu.category,
+                );
+            }
+        }
         if self.last_ui_surface.as_ref() == Some(&materialized) {
             return Ok(());
         }

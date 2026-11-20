@@ -91,6 +91,11 @@ pub(super) fn create_scene_pipelines(
             offset: 52,
             format: VertexFormat::Float32x4,
         },
+        VertexAttribute {
+            location: 9,
+            offset: 68,
+            format: VertexFormat::Float32x2,
+        },
     ];
 
     let instance_attributes = [
@@ -136,6 +141,9 @@ pub(super) fn create_scene_pipelines(
     let gbuffer_pipeline = render.create_pipeline_mrt_with_layouts(
         GraphicsPipelineDesc {
             color_format: "Rgba8Unorm",
+            // Opaque GBuffer resolves exact depth ties deterministically;
+            // equal-depth geometry cannot overwrite previously drawn pixels.
+            depth_compare: if experimental_reverse_z_enabled() {"Greater"} else {"Less"},
             ..scene_pipeline_desc(
                 "newviso.first_scene.gbuffer.pipeline",
                 "newviso.scene.gbuffer.rsc7.weather.v1",
@@ -216,6 +224,9 @@ pub(super) fn create_scene_pipelines(
     let asset_gbuffer_pipeline = render.create_pipeline_mrt_with_layouts(
         GraphicsPipelineDesc {
             color_format: "Rgba8Unorm",
+            // Opaque GBuffer resolves exact depth ties deterministically;
+            // equal-depth geometry cannot overwrite previously drawn pixels.
+            depth_compare: if experimental_reverse_z_enabled() {"Greater"} else {"Less"},
             ..scene_pipeline_desc(
                 "newviso.scene.asset_instanced.gbuffer.pipeline",
                 "newviso.scene.asset_instanced.gbuffer.v1",
@@ -265,6 +276,7 @@ pub(super) fn create_scene_pipelines(
         },
     ];
     let shadow_pipeline = render.create_pipeline(GraphicsPipelineDesc {
+        depth_compare: "LessOrEqual", // shadow map stays conventional
         color_format: "R32Float",
         ..scene_pipeline_desc(
             "newviso.scene.shadow.pipeline",
@@ -290,6 +302,7 @@ pub(super) fn create_scene_pipelines(
     ];
     let asset_shadow_pipeline = render.create_pipeline_with_layouts(
         GraphicsPipelineDesc {
+            depth_compare: "LessOrEqual", // instanced shadow map stays conventional
             color_format: "R32Float",
             ..scene_pipeline_desc(
                 "newviso.scene.asset_instanced.shadow.pipeline",

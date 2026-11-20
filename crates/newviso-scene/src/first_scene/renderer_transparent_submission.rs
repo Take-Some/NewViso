@@ -28,6 +28,11 @@ impl Scene3dRuntime {
                 ) {
                     continue;
                 }
+                let source_material = range.material_slot
+                    .and_then(|slot| mesh.materials.get(slot as usize));
+                let newviso_ml_layer = source_material
+                    .filter(|material| material.newviso_multilayer)
+                    .map(|material| material.newviso_ml_layer_index);
                 let material_group = match range.material_slot {
                     Some(slot) => {
                         let Some(material) = self.asset_gpu_materials.get(&(mesh.model_id.0, slot))
@@ -88,6 +93,13 @@ impl Scene3dRuntime {
                 let distance_sq = delta.dot(delta);
                 alpha_draws.push(AlphaAssetDraw {
                     distance_sq,
+                    newviso_ml_layer,
+                    source_surface_key: alpha_source_surface_key(
+                        &range.mesh_name,
+                        mesh.first_vertex.saturating_add(range.first_vertex),
+                        newviso_ml_layer,
+                    ),
+                    source_entity: id.0,
                     material_group,
                     vertex_buffer,
                     vertex_offset,

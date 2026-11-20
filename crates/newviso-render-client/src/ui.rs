@@ -9,8 +9,9 @@ fn ui_envelope(
     domain: render_api::UiLayerDomain,
     frame_index: u64,
 ) -> Result<RenderFrameEnvelope, String> {
-    let draw_list: UiDrawList =
+    let mut draw_list: UiDrawList =
         serde_json::from_value(draw_list).map_err(|e| format!("invalid UI draw stream: {e}"))?;
+    crate::ui_asset_textures::attach(&mut draw_list);
     let extent = Extent2D::new(
         draw_list.screen_size_px[0].max(1),
         draw_list.screen_size_px[1].max(1),
@@ -94,6 +95,27 @@ impl RenderClient<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ui_and_hud_use_presentation_layer_without_world_lighting_resources() {
+        for domain in [
+            render_api::UiLayerDomain::GameViewport,
+            render_api::UiLayerDomain::System,
+            render_api::UiLayerDomain::Editor,
+        ] {
+            let mut ui=UiDrawList::new();
+            ui.screen_size_px=[1920,1080];
+            let frame=ui_envelope(serde_json::to_value(ui).unwrap(),domain,47).unwrap();
+            assert_eq!(frame.graph.passes.len(),1);
+            assert_eq!(frame.graph.passes[0].kind,RenderGraphPassKind::UiComposite);
+            assert_eq!(frame.graph.passes[0].domain,
+                       RenderGraphPassDomain::Presentation);
+            assert_eq!(frame.graph.resources.len(),1);
+            assert_eq!(frame.ui_layers.packets.len(),1);
+            assert_eq!(frame.ui_layers.packets[0].frame_index,47);
+            assert_eq!(frame.ui_layers.packets[0].domain,domain);
+        }
+    }
+
     #[test]
     fn overlay_routes_by_domain_and_preserves_frame_identity() {
         let mut list = UiDrawList::new();

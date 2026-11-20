@@ -15,7 +15,9 @@ pub(super) struct RenderPolicy {
     pub shadow_softness: f32,
 }
 
-fn default_shadow_softness() -> f32 { 1.0 }
+fn default_shadow_softness() -> f32 {
+    1.0
+}
 
 impl Default for RenderPolicy {
     fn default() -> Self {

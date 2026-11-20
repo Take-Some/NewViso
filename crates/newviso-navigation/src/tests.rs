@@ -259,3 +259,57 @@ fn nearby_snap_candidates_do_not_grow_with_distant_tiles() {
     assert!(nav.remove_tile("tile-0"));
     assert_eq!(nav.closest_polygon(point, 0.25), None);
 }
+
+#[test]
+fn cheap_off_mesh_detour_does_not_lose_to_overestimating_heuristic() {
+    fn add(nav: &mut NavigationRuntime, id: u64, x: f32, z: f32) {
+        let vertices = [
+            [x - 0.5, 0.0, z - 0.5],
+            [x, 0.0, z + 0.5],
+            [x + 0.5, 0.0, z - 0.5],
+        ];
+        nav.spatial_index.insert(id, vertices);
+        nav.polygons.insert(
+            id,
+            Polygon {
+                id,
+                vertices,
+                centroid: [x, 0.0, z],
+                portals: Vec::new(),
+            },
+        );
+    }
+    let portal = |to, midpoint, scale| Portal {
+        to,
+        left: midpoint,
+        right: midpoint,
+        cost_scale: scale,
+        off_mesh: true,
+        step_height: 0.0,
+    };
+    let mut nav = NavigationRuntime::default();
+    add(&mut nav, 1, 0.0, 0.0);
+    add(&mut nav, 2, 0.0, 20.0);
+    add(&mut nav, 3, 10.0, 0.0);
+    nav.polygons.get_mut(&1).unwrap().portals = vec![
+        portal(3, [5.0, 0.0, 0.0], 1.0),
+        portal(2, [0.0, 0.0, 10.0], 0.001),
+    ];
+    nav.polygons.get_mut(&2).unwrap().portals = vec![portal(3, [5.0, 0.0, 10.0], 0.001)];
+    nav.links.insert(
+        "cheap-detour".into(),
+        OffMeshLink {
+            id: "cheap-detour".into(),
+            start: [0.0, 0.0, 0.0],
+            end: [0.0, 0.0, 20.0],
+            bidirectional: false,
+            cost_scale: 0.001,
+            kind: String::new(),
+            enabled: true,
+        },
+    );
+
+    let result = nav.solve_now([0.0, 0.0, 0.0], [10.0, 0.0, 0.0], 0.1);
+    assert_eq!(result.status, PathStatus::Found);
+    assert_eq!(result.corridor, vec![1, 2, 3]);
+}

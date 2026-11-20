@@ -23,7 +23,9 @@ mod systems;
 
 use audio_fx::*;
 use helpers::*;
-use newviso_audio_client::{AudioClient, AudioVoiceUpdateRequest, ImpactMaterial, PhysicsAudioContact, PhysicsAudioRouter};
+use newviso_audio_client::{
+    AudioClient, AudioVoiceUpdateRequest, ImpactMaterial, PhysicsAudioContact, PhysicsAudioRouter,
+};
 use newviso_model::{ModelFragmentPartRole, ModelResource, ModelWheelSlot};
 use newviso_scene::{SceneLightDesc, SceneLightType, SceneModelDent, SceneModelPartPose};
 use newviso_vehicle::{

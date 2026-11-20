@@ -30,6 +30,7 @@ layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec4 in_color;
 layout(location = 3) in vec2 in_uv;
 layout(location = 4) in vec4 in_tangent;
+layout(location = 9) in vec2 in_uv1;
 
 layout(location = 0) out vec4 v_color;
 layout(location = 1) out vec3 v_normal;
@@ -38,11 +39,13 @@ layout(location = 3) out vec4 v_shadow_coord;
 layout(location = 4) flat out float v_overlay;
 layout(location = 5) out vec2 v_uv;
 layout(location = 6) out vec4 v_tangent;
+layout(location = 7) out vec2 v_uv1;
 
 void main() {
     v_color = in_color;
     v_overlay = in_position_mode.w;
     v_uv = in_uv;
+    v_uv1 = in_uv1;
     v_tangent = in_tangent;
 
     if (in_position_mode.w > 0.5) {

@@ -1,6 +1,6 @@
+use super::*;
 #[cfg(test)]
 use std::io::Write as _;
-use super::*;
 use std::time::Instant;
 
 fn chip(index: usize) -> Cube {
@@ -83,7 +83,8 @@ fn debris_mass_instance_stress() {
             chip(index).append_vertices(&mut vertices);
         }
         let elapsed = started.elapsed().as_secs_f64() * 1000.0;
-        let _ = writeln!(std::io::stdout().lock(),
+        let _ = writeln!(
+            std::io::stdout().lock(),
             "DEBRIS_STRESS legacy count={} ms={:.3} floats={} bytes={} mib={:.2}",
             count,
             elapsed,
@@ -111,7 +112,8 @@ fn debris_mass_instance_stress() {
             ));
         }
         let elapsed = started.elapsed().as_secs_f64() * 1000.0;
-        let _ = writeln!(std::io::stdout().lock(),
+        let _ = writeln!(
+            std::io::stdout().lock(),
             "DEBRIS_STRESS production_matrix count={} ms={:.3} bytes={} mib={:.2}",
             count,
             elapsed,
@@ -130,7 +132,8 @@ fn debris_mass_instance_stress() {
             append_compact_record(&cube, &mut compact);
         }
         let elapsed = started.elapsed().as_secs_f64() * 1000.0;
-        let _ = writeln!(std::io::stdout().lock(),
+        let _ = writeln!(
+            std::io::stdout().lock(),
             "DEBRIS_STRESS compact count={} ms={:.3} floats={} bytes={} mib={:.2}",
             count,
             elapsed,
@@ -144,7 +147,8 @@ fn debris_mass_instance_stress() {
     for count in [1_000_000usize, 5_000_000usize] {
         let legacy_bytes = count as u64 * CUBE_VERTEX_COUNT as u64 * FLOATS_PER_VERTEX as u64 * 4;
         let compact_bytes = count as u64 * 14 * 4;
-        let _ = writeln!(std::io::stdout().lock(),
+        let _ =
+            writeln!(std::io::stdout().lock(),
             "DEBRIS_STRESS projected count={} legacy_mib={:.2} compact_mib={:.2} reduction_x={:.2}",
             count,
             legacy_bytes as f64 / (1024.0 * 1024.0),

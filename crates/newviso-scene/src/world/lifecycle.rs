@@ -31,11 +31,16 @@ impl SceneWorld {
         self.last_dt = dt;
         self.process_elapsed_seconds += f64::from(dt);
 
+        let mut newly_active = Vec::new();
         for entity in &mut self.entities {
             if entity.lifecycle == SceneLifecycle::Added {
                 entity.lifecycle = SceneLifecycle::Active;
+                newly_active.push(entity.id);
             }
             entity.priority_score = 0.0;
+        }
+        for id in newly_active {
+            self.refresh_process_membership(id);
         }
     }
 

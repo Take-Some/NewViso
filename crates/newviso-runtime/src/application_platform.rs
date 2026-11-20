@@ -3,12 +3,60 @@ use super::*;
 mod frame;
 mod performance;
 
+/// The native boot compositor yields to project-owned presentation.
+fn project_ui_owns_loading_presentation(
+    menu_visible: bool,
+    launch_requested: bool,
+    authored_loader_visible: bool,
+) -> bool {
+    menu_visible || launch_requested || authored_loader_visible
+}
+
+pub(super) fn benchmark_autostart_enabled() -> bool {
+    std::env::var("NEWVISO_PERF_TRACE").as_deref() == Ok("1")
+        && std::env::var("NEWVISO_BENCHMARK_AUTOSTART").as_deref() == Ok("1")
+}
+
+/// Startup argument recognized by the executable; all other initialization is unaffected.
+fn has_no_intro_flag(args: impl IntoIterator<Item = std::ffi::OsString>) -> bool {
+    args.into_iter()
+        .any(|arg| matches!(arg.to_str(), Some("-noIntro" | "--no-intro")))
+}
+
+fn skip_intro_requested() -> bool {
+    has_no_intro_flag(std::env::args_os().skip(1))
+}
+
+#[cfg(test)]
+mod intro_launch_tests {
+    use super::{has_no_intro_flag, project_ui_owns_loading_presentation};
+
+    #[test]
+    fn native_boot_presentation_yields_to_project_loading() {
+        assert!(!project_ui_owns_loading_presentation(false, false, false));
+        assert!(project_ui_owns_loading_presentation(true, false, false));
+        assert!(project_ui_owns_loading_presentation(false, true, false));
+        assert!(project_ui_owns_loading_presentation(false, false, true));
+        assert!(project_ui_owns_loading_presentation(false, true, true));
+    }
+
+    #[test]
+    fn skip_intro_matches_exact_switches_only() {
+        for flag in ["-noIntro", "--no-intro"] {
+            assert!(has_no_intro_flag(["--project", "FirstFPS", flag].map(Into::into)));
+        }
+        for flag in ["-noIntroExtra", "--intro", "-NOINTRO"] {
+            assert!(!has_no_intro_flag([flag].map(Into::into)));
+        }
+    }
+}
+
 impl PlatformApplication for EngineApplication {
     fn on_window_ready(&mut self, ready: PlatformWindowReadyV1) -> Result<(), String> {
         // Platform has already created the permanent game HWND. Present the
         // optional startup movie directly on it, before Vulkan or map loading.
         // Missing/broken media is not fatal to the project.
-        if !self.editor_mode {
+        if !self.editor_mode && !benchmark_autostart_enabled() && !skip_intro_requested() {
             if let Err(error) = application_startup_intro::play_if_present(ready.handles.window) {
                 host::warn(
                     "newviso.intro",
@@ -56,20 +104,18 @@ impl PlatformApplication for EngineApplication {
             }),
         )?;
 
-        if self.scripts.is_some() {
-            bugtrap::set_phase("scripts.start");
-            let runtime_state = self.script_frame_state();
-            let control = {
-                let scripts = self
-                    .scripts
-                    .as_mut()
-                    .ok_or_else(|| "script runtime disappeared during start".to_owned())?;
-                scripts.start_with_runtime(&self.project_context, &runtime_state)?
-            };
-            self.exit_requested |= control.exit_requested;
-            self.ui_bindings.extend(control.ui_bindings);
-            self.apply_script_commands(&control.commands)?;
-            self.sync_world_actor_presentations()?;
+        // Benchmark-only autostart takes the same residency-gated Play path
+        // as the front-end button. Ordinary project behavior is unchanged.
+        if benchmark_autostart_enabled() {
+            if let Some(menu) = self.main_menu.as_mut() {
+                menu.launch_requested = true;
+                menu.visible = false;
+                host::info("newviso.benchmark",
+                    "autostart requested: waiting for ordinary map residency");
+            }
+        }
+        if self.main_menu.is_none() {
+            self.start_project_scripts()?;
         }
 
         bugtrap::checkpoint("scene.renderer.initialize");
@@ -80,7 +126,7 @@ impl PlatformApplication for EngineApplication {
         self.publish_content_manager_if_changed()?;
 
         self.ready = true;
-        self.world_save_allowed = true;
+        self.world_save_allowed = self.main_menu.is_none();
 
         host::info(
             "newviso.runtime",
@@ -94,7 +140,18 @@ impl PlatformApplication for EngineApplication {
     }
 
     fn loading_overlay(&self) -> PlatformLoadingOverlayV1 {
-        self.startup_map_loading_overlay()
+        // Single-HWND presentation ownership: an authored project loading
+        // screen (or a pending Play action) preempts the Winit boot compositor.
+        // Otherwise two separate threads present alternating fullscreen frames
+        // to the same window during map streaming, producing visible flicker.
+        if self.ready || project_ui_owns_loading_presentation(
+            self.main_menu.as_ref().is_some_and(|menu| menu.visible),
+            self.main_menu.as_ref().is_some_and(|menu| menu.launch_requested),
+            self.loading_ui_visible,
+        ) {
+            return PlatformLoadingOverlayV1::default();
+        }
+        PlatformLoadingOverlayV1::default()
     }
 
     fn on_window_focused(&mut self, focused: bool) -> Result<(), String> {

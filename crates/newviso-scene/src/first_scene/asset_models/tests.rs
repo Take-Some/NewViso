@@ -139,11 +139,14 @@ mod joint_partition_tests {
         // Model pass coverage survives skin partitioning and local draw expansion.
         let mut shadow_model = model.clone();
         shadow_model.meshes[0].render_passes = newviso_model::MeshRenderPasses {
-            color: false, shadow: true,
+            color: false,
+            shadow: true,
         };
         let (shadow_vertices, shadow_ranges) = expand_model_triangles(&shadow_model).unwrap();
         assert_eq!(shadow_vertices.len(), vertices.len());
-        assert!(shadow_ranges.iter().all(|range| !range.render_passes.color && range.render_passes.shadow));
+        assert!(shadow_ranges
+            .iter()
+            .all(|range| !range.render_passes.color && range.render_passes.shadow));
     }
 }
 
@@ -177,6 +180,7 @@ mod fragment_capture_tests {
             tangent: [1.0, 0.0, 0.0, 1.0],
             color: [1.0; 4],
             uv: [0.0; 2],
+            uv1: [0.0; 2],
             joints: [0; 8],
             weights: [0.0; 8],
             skin_influences: 0,
@@ -224,7 +228,6 @@ mod fragment_capture_tests {
     }
 }
 
-
 #[cfg(test)]
 mod authored_vertex_color_tests {
     use super::*;
@@ -232,38 +235,80 @@ mod authored_vertex_color_tests {
     fn vertex_tint_is_explicit_and_does_not_enable_imported_masks() {
         let mut resolved = SceneResolvedMaterial {
             material: Arc::new(MaterialResource {
-                id: newviso_resource_runtime::AssetId(1), name: "authored".into(),
-                shader: "pbr.default".into(), surface_domain: "surface".into(),
-                shading_model: "pbr".into(), blend: BlendMode::Opaque, two_sided: false,
-                alpha_cutoff: None, textures: Vec::new(), params: Vec::new(),
+                id: newviso_resource_runtime::AssetId(1),
+                name: "authored".into(),
+                shader: "pbr.default".into(),
+                surface_domain: "surface".into(),
+                shading_model: "pbr".into(),
+                blend: BlendMode::Opaque,
+                two_sided: false,
+                alpha_cutoff: None,
+                textures: Vec::new(),
+                params: Vec::new(),
             }),
-            base_color: None, normal: None, specular: None, emissive: None,
-            environment: None, auxiliary_textures: BTreeMap::new(),
+            base_color: None,
+            normal: None,
+            specular: None,
+            emissive: None,
+            environment: None,
+            auxiliary_textures: BTreeMap::new(),
         };
-        assert_eq!(CpuAssetMaterial::from_resolved(&resolved).uniform_data()[6] as u32 & 64, 0);
-        Arc::make_mut(&mut resolved.material).params.push(newviso_materials::MaterialParameter {
-            name: "use_vertex_color".into(), value: MaterialParamValue::Bool(true),
-        });
-        assert_eq!(CpuAssetMaterial::from_resolved(&resolved).uniform_data()[6] as u32 & 64, 64);
+        assert_eq!(
+            CpuAssetMaterial::from_resolved(&resolved).uniform_data()[6] as u32 & 64,
+            0
+        );
+        Arc::make_mut(&mut resolved.material)
+            .params
+            .push(newviso_materials::MaterialParameter {
+                name: "use_vertex_color".into(),
+                value: MaterialParamValue::Bool(true),
+            });
+        assert_eq!(
+            CpuAssetMaterial::from_resolved(&resolved).uniform_data()[6] as u32 & 64,
+            64
+        );
         Arc::make_mut(&mut resolved.material).params[0].value = MaterialParamValue::Bool(false);
-        assert_eq!(CpuAssetMaterial::from_resolved(&resolved).uniform_data()[6] as u32 & 64, 0);
+        assert_eq!(
+            CpuAssetMaterial::from_resolved(&resolved).uniform_data()[6] as u32 & 64,
+            0
+        );
     }
 
     #[test]
     fn gltf_factors_opt_into_channel_contract_without_changing_legacy_materials() {
         let mut resolved = SceneResolvedMaterial {
             material: Arc::new(MaterialResource {
-                id: AssetId(1), name: "gltf".into(), shader: "pbr.default".into(),
-                surface_domain: "surface".into(), shading_model: "pbr".into(),
-                blend: BlendMode::Opaque, two_sided: true, alpha_cutoff: None,
-                textures: Vec::new(), params: Vec::new(),
-            }), base_color: None, normal: None, specular: None, emissive: None,
-            environment: None, auxiliary_textures: BTreeMap::new(),
+                id: AssetId(1),
+                name: "gltf".into(),
+                shader: "pbr.default".into(),
+                surface_domain: "surface".into(),
+                shading_model: "pbr".into(),
+                blend: BlendMode::Opaque,
+                two_sided: true,
+                alpha_cutoff: None,
+                textures: Vec::new(),
+                params: Vec::new(),
+            }),
+            base_color: None,
+            normal: None,
+            specular: None,
+            emissive: None,
+            environment: None,
+            auxiliary_textures: BTreeMap::new(),
         };
-        assert_eq!(CpuAssetMaterial::from_resolved(&resolved).uniform_data()[6] as u32 & 256, 0);
+        assert_eq!(
+            CpuAssetMaterial::from_resolved(&resolved).uniform_data()[6] as u32 & 256,
+            0
+        );
         Arc::make_mut(&mut resolved.material).params.extend([
-            newviso_materials::MaterialParameter {name: "metallic_factor".into(), value: MaterialParamValue::Float(0.0)},
-            newviso_materials::MaterialParameter {name: "roughness_factor".into(), value: MaterialParamValue::Float(0.8)},
+            newviso_materials::MaterialParameter {
+                name: "metallic_factor".into(),
+                value: MaterialParamValue::Float(0.0),
+            },
+            newviso_materials::MaterialParameter {
+                name: "roughness_factor".into(),
+                value: MaterialParamValue::Float(0.8),
+            },
         ]);
         let cpu = CpuAssetMaterial::from_resolved(&resolved);
         let uniforms = cpu.uniform_data();
@@ -274,3 +319,72 @@ mod authored_vertex_color_tests {
     }
 }
 
+
+#[cfg(test)]
+mod generic_dual_uv_tests {
+    use super::*;
+    use newviso_model::{Bounds3, IndexBuffer, MeshPrimitive, MeshResource, VertexStream};
+    use newviso_resource_runtime::AssetId;
+
+    fn uv_stream(channel: u8, coords: &[[f32; 2]; 3]) -> VertexStream {
+        VertexStream {
+            semantic: VertexSemantic::TexCoord(channel),
+            format: ModelVertexFormat::Float32x2,
+            stride: 8,
+            vertex_count: 3,
+            data: Arc::from(coords.iter()
+                .flat_map(|uv| uv.iter().flat_map(|value| value.to_le_bytes()))
+                .collect::<Vec<_>>()),
+        }
+    }
+
+    #[test]
+    fn imported_uv1_is_distinct_from_uv0_in_packed_gpu_vertices() {
+        let bounds = Bounds3 { min: [0.0; 3], max: [1.0; 3] };
+        let positions = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let mesh = MeshResource {
+            name: "generic_two_uv_mesh".into(),
+            render_passes: Default::default(),
+            bounds,
+            vertex_streams: vec![
+                VertexStream {
+                    semantic: VertexSemantic::Position,
+                    format: ModelVertexFormat::Float32x3,
+                    stride: 12,
+                    vertex_count: 3,
+                    data: Arc::from(positions.iter()
+                        .flat_map(|v| v.to_le_bytes())
+                        .collect::<Vec<_>>()),
+                },
+                uv_stream(0, &[[0.1,0.2],[0.2,0.3],[0.3,0.4]]),
+                uv_stream(1, &[[0.6,0.8],[0.7,0.9],[0.8,1.0]]),
+            ],
+            index_buffer: IndexBuffer {
+                format: ModelIndexFormat::U32,
+                index_count: 3,
+                data: Arc::from([0u32,1,2].iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect::<Vec<_>>()),
+            },
+            primitives: vec![MeshPrimitive {
+                first_index: 0, index_count: 3,
+                base_vertex: 0, material_slot: None,
+            }],
+        };
+        let model = ModelResource {
+            id: AssetId(1209), name: "two_uv".into(),
+            bounds, meshes: vec![mesh], material_slots: Vec::new(),
+            skin_source_to_model: identity_matrix(),
+            skeleton: None, animations: Vec::new(), fragment: None,
+        };
+        let (vertices, ranges) = expand_model_triangles(&model).unwrap();
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(vertices[0].uv, [0.1,0.2]);
+        assert_eq!(vertices[0].uv1, [0.6,0.8]);
+        let mut packed = Vec::new();
+        append_local_asset_vertices(&mut packed, &vertices);
+        assert_eq!(packed.len(), 3 * FLOATS_PER_VERTEX);
+        assert_eq!(&packed[11..13], &[0.1,0.2]);
+        assert_eq!(&packed[17..19], &[0.6,0.8]);
+    }
+}

@@ -40,9 +40,9 @@ fn dashboard_profile(name: &str) -> Option<u32> {
 }
 
 impl SceneVehicleDashboard {
-    fn uniform_data(self, profile: u32) -> [f32; 12] {
-        // Dashboard materials use the existing 48-byte material ABI. The
-        // dashboard flag selects this layout before any surface lighting.
+    fn uniform_data(self, profile: u32) -> [f32; 20] {
+        // The dashboard flag selects its existing twelve semantic floats;
+        // the remaining fields are padding for the shared 80-byte material UBO.
         [
             self.speed_mph,
             self.revs,
@@ -56,6 +56,8 @@ impl SceneVehicleDashboard {
             self.vacuum,
             (self.gear as f32 + 1.0) + self.odometer_miles.floor() * 16.0,
             (self.lamps | (profile << 16)) as f32,
+            0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0,
         ]
     }
 }
@@ -170,7 +172,7 @@ impl Scene3dRuntime {
                         let buffer = render.create_frame_buffer(
                             slot,
                             &format!("newviso.dashboard.{}.{}.slot.{slot}", key.0, key.1),
-                            48,
+                            80,
                             "Uniform",
                             "CpuToGpu",
                         )?;
@@ -186,7 +188,7 @@ impl Scene3dRuntime {
                                 None,
                             ],
                             Some(gpu.material_sampler),
-                            Some((buffer, 0, 48)),
+                            Some((buffer, 0, 80)),
                         ) {
                             Ok(group) => group,
                             Err(error) => {

@@ -104,8 +104,16 @@ pub(super) fn view_basis(forward: Vec3, up_hint: Vec3) -> (Vec3, Vec3, Vec3) {
     let up = right.cross(forward).normalized();
     (right, up, forward)
 }
+pub(super) fn experimental_reverse_z_enabled()->bool {
+    std::env::var("NEWVISO_EXPERIMENTAL_REVERSED_Z").as_deref()==Ok("1")
+}
 pub(super) fn camera_view_projection(camera: &Camera, aspect: f32) -> [f32; 16] {
-    perspective_view_projection(
+    let project=if experimental_reverse_z_enabled() {
+        perspective_view_projection_reverse_z
+    } else {
+        perspective_view_projection
+    };
+    project(
         camera.position,
         camera.target.sub(camera.position).normalized(),
         camera.up,
@@ -153,6 +161,42 @@ pub(super) fn perspective_view_projection(
         [forward.x, forward.y, forward.z, -forward.dot(eye)],
     ])
 }
+/// Vulkan reversed-Z perspective projection: depth=1 at near and depth=0
+/// at far. Kept separate from conventional shadow projections; switching the
+/// runtime requires synchronized depth clear, GPU tests, Hi-Z, deferred and
+/// sampled-depth consumers. This helper must never be called in isolation.
+pub(super) fn perspective_view_projection_reverse_z(
+    eye: Vec3,
+    forward: Vec3,
+    up_hint: Vec3,
+    fov_y_degrees: f32,
+    aspect: f32,
+    near: f32,
+    far: f32,
+) -> [f32; 16] {
+    let near=near.max(0.001);
+    let far=far.max(near+0.001);
+    let mut matrix=perspective_view_projection(
+        eye,forward,up_hint,fov_y_degrees,aspect,near,far,
+    );
+    let forward=forward.normalized();
+    let z_scale=-near/(far-near);
+    let z_bias=near*far/(far-near);
+    // Third output row in column-major GLSL matrix.
+    matrix[2]=forward.x*z_scale;
+    matrix[6]=forward.y*z_scale;
+    matrix[10]=forward.z*z_scale;
+    matrix[14]=z_bias-forward.dot(eye)*z_scale;
+    matrix
+}
+
+/// Metric view-Z reconstruction for Vulkan reversed-Z [0,1] depth.
+pub(super) fn reverse_z_view_depth(depth:f32,near:f32,far:f32)->f32 {
+    let near=near.max(0.001);
+    let far=far.max(near+0.001);
+    (near*far)/(near+(far-near)*depth.clamp(0.0,1.0))
+}
+
 pub(super) fn orthographic_view_projection(
     eye: Vec3,
     forward: Vec3,
@@ -203,9 +247,13 @@ pub(super) fn light_direction(rotation_degrees: Vec3) -> Vec3 {
 /// filter, preventing delayed shadows after scene cuts or fast travel.
 pub(super) fn track_shadow_focus(previous: Option<Vec3>, camera: Vec3, dt: f32) -> Vec3 {
     let Some(old) = previous else { return camera };
-    if !dt.is_finite() || dt <= 0.0 { return old; }
+    if !dt.is_finite() || dt <= 0.0 {
+        return old;
+    }
     let movement = camera.sub(old);
-    if movement.dot(movement) > 24.0 * 24.0 { return camera; }
+    if movement.dot(movement) > 24.0 * 24.0 {
+        return camera;
+    }
     let factor = 1.0 - (-dt.min(0.25) / 0.12).exp();
     old.add(movement.mul(factor))
 }
@@ -213,7 +261,9 @@ pub(super) fn track_shadow_focus(previous: Option<Vec3>, camera: Vec3, dt: f32) 
 /// Continuous C1 light-space texel interpolation. No full-texel jumps
 /// on cell crossings, and zero derivative on the integer boundaries.
 pub(super) fn continuous_shadow_texel(value: f32, texel_size: f32) -> f32 {
-    if !texel_size.is_finite() || texel_size <= 0.0 { return value; }
+    if !texel_size.is_finite() || texel_size <= 0.0 {
+        return value;
+    }
     let scaled = value / texel_size;
     let cell = scaled.floor();
     let phase = scaled - cell;

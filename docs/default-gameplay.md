@@ -19,7 +19,7 @@ only the project hooks. Safe mode continues to suppress scripting.
 The host composes the engine and project lifecycle graphs. It loads Shared settings, deep-merges
 project settings, activates a physics backend automatically for the Shared player, and exposes
 generic commands. Character selection, movement policy and view switching are authored in Shared
-TypeScript. The sky is assigned by `scene.sky.dome.set` during Shared startup before GPU allocation.
+TypeScript. The merged Shared/project sky geometry and textures are installed by native NewViso bootstrap before Vulkan scene initialization. Shared startup scripts only update mutable sky atmosphere, clock and visuals; they must not issue `scene.sky.dome.set` after the renderer has allocated GPU resources (in particular when a project main menu delays `on_start`).
 
 Sky geometry alone is not a visible atmosphere. Shared startup additionally applies
 the complete nonzero atmosphere profile from engine_world.sky.atmosphere in the

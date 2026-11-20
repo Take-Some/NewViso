@@ -342,14 +342,16 @@ impl WaterSimulation {
         // Forcing UVs are separable in x/z. Cache the 256 axis coordinates
         // instead of repeating wrapped texture addressing for all 65,536 cells.
         // Arithmetic and wrapped L8 interpolation remain identical.
-        let wave_x: [WaveAxis; GRID_SIZE] = std::array::from_fn(|x|
-            ocean.axis((self.origin[0] + x as f32 * CELL_METRES) / 512.0 + seconds / 400.0));
-        let wave_y: [WaveAxis; GRID_SIZE] = std::array::from_fn(|y|
-            ocean.axis((self.origin[1] + y as f32 * CELL_METRES) / 512.0 + phase));
-        let noise_x: [WaveAxis; GRID_SIZE] = std::array::from_fn(|y|
-            ocean.axis(noise[0] + y as f32 / 32.0));
-        let noise_y: [WaveAxis; GRID_SIZE] = std::array::from_fn(|x|
-            ocean.axis(noise[1] + x as f32 / 32.0));
+        let wave_x: [WaveAxis; GRID_SIZE] = std::array::from_fn(|x| {
+            ocean.axis((self.origin[0] + x as f32 * CELL_METRES) / 512.0 + seconds / 400.0)
+        });
+        let wave_y: [WaveAxis; GRID_SIZE] = std::array::from_fn(|y| {
+            ocean.axis((self.origin[1] + y as f32 * CELL_METRES) / 512.0 + phase)
+        });
+        let noise_x: [WaveAxis; GRID_SIZE] =
+            std::array::from_fn(|y| ocean.axis(noise[0] + y as f32 / 32.0));
+        let noise_y: [WaveAxis; GRID_SIZE] =
+            std::array::from_fn(|x| ocean.axis(noise[1] + x as f32 / 32.0));
         let sample = |x: usize, y: usize| self.heights[y * n + x];
         for y in 0..n {
             for x in 0..n {
@@ -363,8 +365,7 @@ impl WaterSimulation {
                     * (sample(xm, y) + sample(xp, y) + sample(x, ym) + sample(x, yp))
                     + 0.08 * (sample(xm, ym) + sample(xp, ym) + sample(xm, yp) + sample(xp, yp));
                 let wave = ocean.sample_axes(wave_x[x], wave_y[y]) - 0.5 + 2.0 / 255.0;
-                let noise_value =
-                    ocean.sample_axes(noise_x[y], noise_y[x]) - 0.5 + 2.0 / 255.0;
+                let noise_value = ocean.sample_axes(noise_x[y], noise_y[x]) - 0.5 + 2.0 / 255.0;
                 let velocity = self.velocities[i] + (gain * wave + disturb * noise_value) * dt;
                 self.velocities[i] = (velocity
                     - ((self.heights[i] - average) * 40.0 + self.heights[i] * 0.5) * dt)
@@ -582,8 +583,11 @@ impl WaterSimulation {
     }
 
     pub fn impact(&mut self, position: [f32; 2], strength: f32) {
-        if !self.enabled || self.heights.is_empty() || !strength.is_finite()
-            || !position.iter().all(|value| value.is_finite()) {
+        if !self.enabled
+            || self.heights.is_empty()
+            || !strength.is_finite()
+            || !position.iter().all(|value| value.is_finite())
+        {
             return;
         }
         self.field_revision = self.field_revision.wrapping_add(1).max(1);
@@ -613,7 +617,10 @@ impl WaterSimulation {
 /// rows/columns prevents linear-buffer row wrapping, including teleports.
 fn shift_water_field(field: &mut [f32], delta: [i32; 2]) {
     let n = GRID_SIZE as i32;
-    if delta.iter().any(|value| value.unsigned_abs() >= GRID_SIZE as u32) {
+    if delta
+        .iter()
+        .any(|value| value.unsigned_abs() >= GRID_SIZE as u32)
+    {
         field.fill(0.0);
         return;
     }
@@ -845,8 +852,8 @@ mod tests {
             let dy = (uv[1] * maximum).fract();
             let texel = 1.0 / maximum;
             let a = fetch(uv[0], uv[1]) * (1.0 - dx) + fetch(uv[0] + texel, uv[1]) * dx;
-            let b = fetch(uv[0], uv[1] + texel) * (1.0 - dx)
-                + fetch(uv[0] + texel, uv[1] + texel) * dx;
+            let b =
+                fetch(uv[0], uv[1] + texel) * (1.0 - dx) + fetch(uv[0] + texel, uv[1] + texel) * dx;
             a * (1.0 - dy) + b * dy
         };
         for i in -1000..1000 {
@@ -900,16 +907,33 @@ mod tests {
     #[test]
     fn in_place_grid_shift_preserves_retained_cells_and_clears_every_exposed_edge() {
         let original: Vec<f32> = (0..GRID_SIZE * GRID_SIZE).map(|i| i as f32 + 1.0).collect();
-        for delta in [[1, -2], [-3, 1], [0, 4], [2, 0], [-255, 255], [256, -3], [-500, 0]] {
+        for delta in [
+            [1, -2],
+            [-3, 1],
+            [0, 4],
+            [2, 0],
+            [-255, 255],
+            [256, -3],
+            [-500, 0],
+        ] {
             let mut shifted = original.clone();
             shift_water_field(&mut shifted, delta);
             for y in 0..GRID_SIZE {
                 for x in 0..GRID_SIZE {
                     let source = [x as i32 + delta[0], y as i32 + delta[1]];
-                    let expected = if source.iter().all(|value| (0..GRID_SIZE as i32).contains(value)) {
+                    let expected = if source
+                        .iter()
+                        .all(|value| (0..GRID_SIZE as i32).contains(value))
+                    {
                         original[source[1] as usize * GRID_SIZE + source[0] as usize]
-                    } else {0.0};
-                    assert_eq!(shifted[y * GRID_SIZE + x], expected, "delta={delta:?} x={x} y={y}");
+                    } else {
+                        0.0
+                    };
+                    assert_eq!(
+                        shifted[y * GRID_SIZE + x],
+                        expected,
+                        "delta={delta:?} x={x} y={y}"
+                    );
                 }
             }
         }
@@ -925,22 +949,37 @@ mod tests {
         let origin = sim.origin();
         let world = |x: f32, z: f32| [origin[0] + x * CELL_METRES, origin[1] + z * CELL_METRES];
         for (point, expected) in [
-            ([0.0, 128.0], 0.0), ([255.0, 128.0], 0.0),
-            ([128.0, 0.0], 0.0), ([128.0, 255.0], 0.0),
-            ([8.0, 128.0], 0.3), ([247.0, 128.0], 0.3),
-            ([8.0, 8.0], 0.15), ([16.0, 128.0], 0.6), ([128.0, 128.0], 0.6),
+            ([0.0, 128.0], 0.0),
+            ([255.0, 128.0], 0.0),
+            ([128.0, 0.0], 0.0),
+            ([128.0, 255.0], 0.0),
+            ([8.0, 128.0], 0.3),
+            ([247.0, 128.0], 0.3),
+            ([8.0, 8.0], 0.15),
+            ([16.0, 128.0], 0.6),
+            ([128.0, 128.0], 0.6),
         ] {
-            assert!((sim.sample(world(point[0], point[1])).height - sim.surface.level - expected).abs() < 1e-6);
+            assert!(
+                (sim.sample(world(point[0], point[1])).height - sim.surface.level - expected).abs()
+                    < 1e-6
+            );
         }
         assert_eq!(sim.sample(world(-0.1, 128.0)).height, sim.surface.level);
         assert!(sim.sample(world(0.1, 128.0)).height.abs() < 0.001);
         assert_eq!(sim.heights[128 * GRID_SIZE + 128], 0.6);
         let packed = sim.gpu_field();
-        for i in [0, GRID_SIZE - 1, (GRID_SIZE - 1) * GRID_SIZE, GRID_SIZE * GRID_SIZE - 1] {
+        for i in [
+            0,
+            GRID_SIZE - 1,
+            (GRID_SIZE - 1) * GRID_SIZE,
+            GRID_SIZE * GRID_SIZE - 1,
+        ] {
             assert_eq!(&packed[i * 4..i * 4 + 4], &[0.0; 4]);
         }
-        assert_eq!(&packed[(128 * GRID_SIZE + 128) * 4..(128 * GRID_SIZE + 128) * 4 + 4],
-                   &[0.6, 0.4 * 0.75, 0.8, 0.3 * 2.0]);
+        assert_eq!(
+            &packed[(128 * GRID_SIZE + 128) * 4..(128 * GRID_SIZE + 128) * 4 + 4],
+            &[0.6, 0.4 * 0.75, 0.8, 0.3 * 2.0]
+        );
     }
 
     #[test]
@@ -952,7 +991,9 @@ mod tests {
         }
         let packed = sim.gpu_field();
         let gpu_at = |x: f32, z: f32, channel: usize| {
-            if x < 0.0 || z < 0.0 || x > 255.0 || z > 255.0 { return 0.0; }
+            if x < 0.0 || z < 0.0 || x > 255.0 || z > 255.0 {
+                return 0.0;
+            }
             let i = x.floor() as usize;
             let j = z.floor() as usize;
             let next_x = (i + 1).min(255);
@@ -960,15 +1001,17 @@ mod tests {
             let u = x.fract();
             let v = z.fract();
             let at = |a: usize, b: usize| packed[(b * GRID_SIZE + a) * 4 + channel];
-            (at(i,j)*(1.0-u)+at(next_x,j)*u)*(1.0-v)
-                +(at(i,next_z)*(1.0-u)+at(next_x,next_z)*u)*v
+            (at(i, j) * (1.0 - u) + at(next_x, j) * u) * (1.0 - v)
+                + (at(i, next_z) * (1.0 - u) + at(next_x, next_z) * u) * v
         };
-        for x in [-0.25, 0.0, 0.2, 7.3, 15.9, 16.1, 128.5, 247.4, 254.8, 255.0, 255.25] {
+        for x in [
+            -0.25, 0.0, 0.2, 7.3, 15.9, 16.1, 128.5, 247.4, 254.8, 255.0, 255.25,
+        ] {
             for z in [0.2, 8.7, 128.5, 247.1, 255.0] {
-                let origin=sim.origin();
-                let query=sim.sample([origin[0]+x*CELL_METRES,origin[1]+z*CELL_METRES]);
-                assert!((query.height-sim.surface.level-gpu_at(x,z,0)).abs()<2e-6);
-                assert!((query.vertical_velocity-gpu_at(x,z,1)).abs()<2e-6);
+                let origin = sim.origin();
+                let query = sim.sample([origin[0] + x * CELL_METRES, origin[1] + z * CELL_METRES]);
+                assert!((query.height - sim.surface.level - gpu_at(x, z, 0)).abs() < 2e-6);
+                assert!((query.vertical_velocity - gpu_at(x, z, 1)).abs() < 2e-6);
             }
         }
     }

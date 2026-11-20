@@ -79,6 +79,13 @@ impl WorldStartup {
             doors: Value::Null,
             persistence: None,
         };
+        // Benchmarks must neither restore a private gameplay checkpoint nor
+        // modify persistent save slots when the bounded run exits.
+        if application_platform::benchmark_autostart_enabled() {
+            host::info("newviso.benchmark",
+                "world persistence disabled for reproducible benchmark run");
+            return Ok(startup);
+        }
         let Some(relative) = settings.save_path.as_deref() else {
             return Ok(startup);
         };
@@ -179,6 +186,28 @@ impl EngineApplication {
             host::warn("newviso.world", format!("world autosave failed: {error}"));
             store.last_error = Some(error);
         }
+    }
+
+    /// Explicit Ink save action. Uses the same validated checkpoint,
+    /// project-root confinement, checksum, fsync and previous-good backup
+    /// as autosave. Never saves during startup, loading or an unsafe world
+    /// transition. This writes the configured project checkpoint slot.
+    pub(super) fn save_world_from_ink_ui(&mut self) -> Result<(), String> {
+        if !self.ready || !self.world_save_allowed {
+            return Err("world is not ready for an Ink save action".into());
+        }
+        if self.world_persistence.is_none() {
+            return Err("project does not configure a persistent save path".into());
+        }
+        let climate=self.climate_checkpoint();
+        let cold=self.cold.checkpoint();
+        let doors=self.physics.as_ref()
+            .map_or(Value::Null, PhysicsRuntime::door_checkpoint);
+        let store=self.world_persistence.as_mut().expect("checked above");
+        store.save_with_doors(
+            &self.living_world,&self.world_actor_presentations,
+            &self.items,&climate,&cold,&doors,
+        )
     }
 
     pub(super) fn save_world_on_shutdown(&mut self) {

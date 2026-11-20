@@ -38,6 +38,8 @@ layout(set = 1, binding = 6, std140) uniform MaterialParams {
     vec4 shading0; // x normal strength, y spec intensity, z spec falloff, w fresnel
     vec4 shading1; // x emissive multiplier, y alpha cutoff, z flags, w opacity
     vec4 shading2; // x environment reflection strength
+    vec4 shading3; // multilayer rough levels in white/black and out white/black
+    vec4 shading4; // x multilayer signed microblend normal strength
 } material;
 
 layout(set = 2, binding = 0) uniform texture2D t_weather_puddle_layout;
@@ -55,6 +57,7 @@ layout(location = 3) in vec4 v_shadow_coord;
 layout(location = 4) flat in float v_overlay;
 layout(location = 5) in vec2 v_uv;
 layout(location = 6) in vec4 v_tangent;
+layout(location = 7) in vec2 v_uv1;
 
 layout(location = 0) out vec4 out_albedo_occlusion;
 layout(location = 1) out vec4 out_normal_twiddle;
@@ -67,6 +70,10 @@ const int MATERIAL_ALPHA_TEST = 8;
 const int MATERIAL_ALPHA_BLEND = 16;
 const int MATERIAL_ENVIRONMENT_REFLECTION = 32;
 const int MATERIAL_USE_VERTEX_COLOR = 64;
+const int MATERIAL_NEWVISO_MULTILAYER = 32768;
+#include "material_uv.glsl"
+#include "material_levels.glsl"
+#include "material_micro_normal.glsl"
 
 #include "shadow_pcss.glsl"
 #include "island_surface.glsl"
@@ -89,7 +96,10 @@ vec3 surface_normal(int flags) {
     vec3 bitangent =
         normalize(cross(n, tangent)) * (v_tangent.w < 0.0 ? -1.0 : 1.0);
 
-    vec3 encoded = texture(sampler2D(t_normal, s_material), v_uv).rgb;
+    vec2 normal_uv = (flags & MATERIAL_NEWVISO_MULTILAYER) != 0
+        ? nv_material_uv(flags, NV_UV_NORMAL1, v_uv, v_uv1)
+            * material.shading2.x + material.shading0.zw : v_uv;
+    vec3 encoded = texture(sampler2D(t_normal, s_material), normal_uv).rgb;
     vec3 tangent_normal;
     if (encoded.b < 0.01) {
         vec2 xy = encoded.rg * 2.0 - 1.0;
@@ -99,7 +109,7 @@ vec3 surface_normal(int flags) {
     }
     tangent_normal.xy *= max(material.shading0.x, 0.0);
     tangent_normal = normalize(tangent_normal);
-    return normalize(mat3(tangent, bitangent, n) * tangent_normal);
+    return nv_ml_microblend_normal(normalize(mat3(tangent, bitangent, n) * tangent_normal), flags);
 }
 
 void main() {
@@ -114,7 +124,11 @@ void main() {
     int flags = int(material.shading1.z + 0.5);
     bool snow_material = nv_is_snow_surface(v_color.a);
     bool wet_ground = v_color.a > 1.225 && v_color.a < 1.265;
-    vec4 base_color = texture(sampler2D(t_base_color, s_material), v_uv);
+    bool newviso_multilayer = (flags & MATERIAL_NEWVISO_MULTILAYER) != 0;
+    vec2 layer_uv = newviso_multilayer ? nv_material_uv(flags, NV_UV_COLOR1, v_uv, v_uv1)
+        * material.shading2.x + material.shading0.zw : v_uv;
+    vec4 base_color = texture(sampler2D(t_base_color, s_material), layer_uv);
+    if (newviso_multilayer) base_color.a = 1.0; // Source mask controls opacity
     if ((flags & MATERIAL_USE_VERTEX_COLOR) != 0 && !snow_material && !wet_ground) {
         base_color *= v_color;
     }
@@ -169,7 +183,11 @@ void main() {
     base_color.rgb *= mix(1.0, 0.72, wet_surface);
 
     vec3 specular_map = (flags & MATERIAL_HAS_SPECULAR) != 0
-        ? texture(sampler2D(t_specular, s_material), v_uv).rgb
+        ? texture(sampler2D(t_specular, s_material),
+            newviso_multilayer
+                ? nv_material_uv(flags, NV_UV_ROUGHNESS1, v_uv, v_uv1)
+                    * material.shading2.x + material.shading0.zw
+                : layer_uv).rgb
         : vec3(1.0);
     float specular_intensity =
         max(material.shading0.y, 0.0) * dot(specular_map, vec3(0.3333333))
@@ -181,6 +199,10 @@ void main() {
     );
     float roughness = clamp(sqrt(2.0 / (specular_falloff + 2.0)), 0.035, 1.0);
     roughness = mix(roughness, 0.055, wet_surface);
+    if (newviso_multilayer) {
+        // REDengine MLSetup R maps are roughness, NOT PBR metallic inputs.
+        roughness = mix(nv_remap_roughness(specular_map.r, material.shading3), 0.055, wet_surface);
+    }
     if (!snow_material) nv_island_surface(base_color, n, specular_intensity, roughness);
     if (wet_ground) {
         float frost=smoothstep(0.002,0.08,max(v_uv.y,0.0));
@@ -200,10 +222,17 @@ void main() {
         1.0
     );
     float metallic_fresnel = clamp(
-        max(material.shading0.w, material.shading2.x * 0.5),
+        max(newviso_multilayer ? 0.06 : material.shading0.w, (newviso_multilayer ? 0.0 : material.shading2.x) * 0.5),
         0.0,
         1.0
     );
+    if (newviso_multilayer) {
+        float src = material.shading0.y;
+        metallic_fresnel = src < 0.0 ? clamp(specular_map.r, 0.0, 1.0)
+                                     : clamp(src, 0.0, 1.0);
+        diffuse_spec_mix = mix(0.04, 1.0, metallic_fresnel);
+        base_color.rgb *= 1.0 - metallic_fresnel;
+    }
     if ((flags & 256) != 0) {
         metallic_fresnel = clamp(specular_map.b * material.shading2.y, 0.0, 1.0);
         roughness = mix(clamp(specular_map.g * material.shading2.z, 0.035, 1.0), 0.055, wet_surface);

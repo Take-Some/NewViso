@@ -108,12 +108,11 @@ impl EngineApplication {
         root.insert("water".to_owned(), self.scene.water_state_json());
         root.insert(
             "audio_loops".to_owned(),
-            json!(
-                self.script_audio_loops
-                    .iter()
-                    .map(|(key, (cue, voice))| json!({"key":key,"cue":cue,"voice_id":voice}))
-                    .collect::<Vec<_>>()
-            ),
+            json!(self
+                .script_audio_loops
+                .iter()
+                .map(|(key, (cue, voice))| json!({"key":key,"cue":cue,"voice_id":voice}))
+                .collect::<Vec<_>>()),
         );
 
         if let Some(physics) = self.physics.as_ref() {
@@ -217,6 +216,12 @@ impl EngineApplication {
                 "collision_prepare_in_flight": collision_prepare_in_flight
             }),
         );
+        // Real game state projected through source Ink controller view-model
+        // contracts. UI providers never own inventory or vehicle semantics.
+        let ink_ui = newviso_ui_client::ink_game_state::view_models_from_sources(
+            root.get("items"), root.get("vehicles"), "player",
+        );
+        root.insert("ink_ui".to_owned(), ink_ui);
         runtime_state
     }
 
@@ -257,12 +262,11 @@ impl EngineApplication {
         root.insert("water".to_owned(), self.scene.water_state_json());
         root.insert(
             "audio_loops".to_owned(),
-            json!(
-                self.script_audio_loops
-                    .iter()
-                    .map(|(key, (cue, voice))| json!({"key":key,"cue":cue,"voice_id":voice}))
-                    .collect::<Vec<_>>()
-            ),
+            json!(self
+                .script_audio_loops
+                .iter()
+                .map(|(key, (cue, voice))| json!({"key":key,"cue":cue,"voice_id":voice}))
+                .collect::<Vec<_>>()),
         );
 
         root.insert("player_camera".to_owned(), self.player_camera_frame_state());
@@ -440,6 +444,12 @@ impl EngineApplication {
             "gta_character_scene_interests".to_owned(),
             Value::Array(gta_character_scene_interests),
         );
+        // Real game state projected through source Ink controller view-model
+        // contracts. UI providers never own inventory or vehicle semantics.
+        let ink_ui = newviso_ui_client::ink_game_state::view_models_from_sources(
+            root.get("items"), root.get("vehicles"), "player",
+        );
+        root.insert("ink_ui".to_owned(), ink_ui);
         runtime_state
     }
 }

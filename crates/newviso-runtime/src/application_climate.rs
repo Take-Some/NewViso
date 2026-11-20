@@ -5,10 +5,10 @@ use newviso_environment::{
     WeatherCycleEntry, WeatherMachine, WeatherSimulation, WeatherTuning,
 };
 use serde::{Deserialize, Serialize};
+mod cloud_rendering;
 mod commands;
 mod presentation;
 mod rendering;
-mod cloud_rendering;
 
 #[derive(Clone, Debug, Deserialize)]
 struct ClimatePolicy {
@@ -68,16 +68,27 @@ struct ClimateWindForcing {
 }
 impl ClimateWindForcing {
     fn validate(&self) -> Result<(), String> {
-        if self.snow_mist_setting.as_ref().is_some_and(|name|name.is_empty()||name.len()>128) {
+        if self
+            .snow_mist_setting
+            .as_ref()
+            .is_some_and(|name| name.is_empty() || name.len() > 128)
+        {
             return Err("invalid snow mist layer name".into());
         }
-        if self.snow_precipitation.is_some_and(|v|!v.is_finite()||!(0.0..=1.0).contains(&v)){
+        if self
+            .snow_precipitation
+            .is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v))
+        {
             return Err("invalid climate snow precipitation".into());
         }
-        let norm=self.wind_direction[0].hypot(self.wind_direction[1]);
-        if !self.wind_speed.is_finite() || !(0.0..=200.0).contains(&self.wind_speed) ||
-            !self.wind_direction.iter().all(|v|v.is_finite()) || !(0.95..=1.05).contains(&norm) ||
-            !self.snow_mist.is_finite() || !(0.0..=1.0).contains(&self.snow_mist) {
+        let norm = self.wind_direction[0].hypot(self.wind_direction[1]);
+        if !self.wind_speed.is_finite()
+            || !(0.0..=200.0).contains(&self.wind_speed)
+            || !self.wind_direction.iter().all(|v| v.is_finite())
+            || !(0.95..=1.05).contains(&norm)
+            || !self.snow_mist.is_finite()
+            || !(0.0..=1.0).contains(&self.snow_mist)
+        {
             return Err("invalid climate wind forcing".into());
         }
         Ok(())
@@ -331,8 +342,10 @@ impl ClimateRuntime {
         for m in state.modifiers.values() {
             f.apply_modifier(m)?;
         }
-        if let Some(forcing)=&state.wind_forcing {forcing.validate()?;}
-        self.wind_forcing=state.wind_forcing;
+        if let Some(forcing) = &state.wind_forcing {
+            forcing.validate()?;
+        }
+        self.wind_forcing = state.wind_forcing;
         self.clock = state.clock;
         self.weather = state.weather;
         self.simulation = state.simulation;
@@ -393,18 +406,25 @@ impl EngineApplication {
 mod precipitation_forcing_tests {
     use super::*;
     #[test]
-    fn old_wind_checkpoints_keep_the_profile_precipitation(){
-        let f:ClimateWindForcing=serde_json::from_value(json!({
-            "wind_speed":28,"wind_direction":[0.6,0.8],"snow_mist":0.7})).unwrap();
-        f.validate().unwrap();assert_eq!(f.snow_precipitation,None);
+    fn old_wind_checkpoints_keep_the_profile_precipitation() {
+        let f: ClimateWindForcing = serde_json::from_value(json!({
+            "wind_speed":28,"wind_direction":[0.6,0.8],"snow_mist":0.7}))
+        .unwrap();
+        f.validate().unwrap();
+        assert_eq!(f.snow_precipitation, None);
     }
     #[test]
-    fn dry_wind_and_sky_snow_have_independent_authoritative_forcing(){
-        let mut f:ClimateWindForcing=serde_json::from_value(json!({
+    fn dry_wind_and_sky_snow_have_independent_authoritative_forcing() {
+        let mut f: ClimateWindForcing = serde_json::from_value(json!({
             "wind_speed":28,"wind_direction":[0.6,0.8],"snow_mist":0.7,
-            "snow_precipitation":0})).unwrap();
-        f.validate().unwrap();assert_eq!(f.snow_precipitation,Some(0.0));assert_eq!(f.snow_mist,0.7);
-        f.snow_precipitation=Some(1.1);assert!(f.validate().is_err());
-        f.snow_precipitation=Some(f32::NAN);assert!(f.validate().is_err());
+            "snow_precipitation":0}))
+        .unwrap();
+        f.validate().unwrap();
+        assert_eq!(f.snow_precipitation, Some(0.0));
+        assert_eq!(f.snow_mist, 0.7);
+        f.snow_precipitation = Some(1.1);
+        assert!(f.validate().is_err());
+        f.snow_precipitation = Some(f32::NAN);
+        assert!(f.validate().is_err());
     }
 }

@@ -72,15 +72,19 @@ impl EngineApplication {
                 }
             }
             "scene.weather.wind.set" => {
-                let mut forcing:ClimateWindForcing=serde_json::from_value(
-                    command.get("forcing").cloned().ok_or("wind command requires forcing")?)
-                    .map_err(|e|format!("climate wind: {e}"))?;
+                let mut forcing: ClimateWindForcing = serde_json::from_value(
+                    command
+                        .get("forcing")
+                        .cloned()
+                        .ok_or("wind command requires forcing")?,
+                )
+                .map_err(|e| format!("climate wind: {e}"))?;
                 forcing.validate()?;
-                let norm=forcing.wind_direction[0].hypot(forcing.wind_direction[1]);
-                forcing.wind_direction=forcing.wind_direction.map(|v|v/norm);
-                c.wind_forcing=Some(forcing);
+                let norm = forcing.wind_direction[0].hypot(forcing.wind_direction[1]);
+                forcing.wind_direction = forcing.wind_direction.map(|v| v / norm);
+                c.wind_forcing = Some(forcing);
             }
-            "scene.weather.wind.clear" => c.wind_forcing=None,
+            "scene.weather.wind.clear" => c.wind_forcing = None,
             "scene.weather.resume" => c.weather.resume(),
             "scene.weather.dynamic.set" => {
                 if boolean("enabled")? {

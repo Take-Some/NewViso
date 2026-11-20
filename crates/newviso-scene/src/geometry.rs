@@ -171,6 +171,7 @@ pub(super) fn append_overlay_vertex(out: &mut Vec<f32>, clip_x: f32, clip_y: f32
     out.extend_from_slice(&color);
     out.extend_from_slice(&[0.0, 0.0]);
     out.extend_from_slice(&[1.0, 0.0, 0.0, 1.0]);
+    out.extend_from_slice(&[0.0, 0.0]); // TEXCOORD_1
 }
 
 pub(super) fn append_local_asset_vertex(
@@ -180,8 +181,11 @@ pub(super) fn append_local_asset_vertex(
     tangent: [f32; 4],
     color: [f32; 4],
     uv: [f32; 2],
+    uv1: [f32; 2],
 ) {
     append_world_vertex_uv_tangent(out, position, normal, color, uv, tangent);
+    let end = out.len();
+    out[end - 2..end].copy_from_slice(&uv1);
 }
 
 /// Column-major model matrix matching transform_point exactly:
@@ -205,7 +209,12 @@ pub(super) fn instance_model_matrix(
     ]
 }
 
-pub(super) fn append_world_vertex(out: &mut Vec<f32>, position: Vec3, normal: Vec3, color: [f32; 4]) {
+pub(super) fn append_world_vertex(
+    out: &mut Vec<f32>,
+    position: Vec3,
+    normal: Vec3,
+    color: [f32; 4],
+) {
     append_world_vertex_uv_tangent(
         out,
         position,
@@ -229,6 +238,7 @@ fn append_world_vertex_uv_tangent(
     out.extend_from_slice(&color);
     out.extend_from_slice(&uv);
     out.extend_from_slice(&tangent);
+    out.extend_from_slice(&uv); // generic surfaces use UV0 as fallback UV1
 }
 
 fn sphere_normal(theta: f32, phi: f32) -> Vec3 {

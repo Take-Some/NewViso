@@ -1,0 +1,12 @@
+[package]
+name = "newviso-plugin-abi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+abi_stable.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+newengine-contract-api = { package = "newviso-contract-api", path = "../newviso-contract-api" }
+newengine-service-api = { package = "newviso-service-api", path = "../newviso-service-api" }

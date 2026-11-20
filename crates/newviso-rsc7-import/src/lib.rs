@@ -2,6 +2,7 @@ mod character_animation;
 mod character_skeleton;
 mod fragment_physics;
 mod material;
+mod texture_ddc;
 
 pub use character_animation::load_model_animation_clip;
 pub use material::SemanticMaterialDecoder;
@@ -127,17 +128,48 @@ impl ResourceDecoder for SemanticTextureDecoder {
         } else {
             TEXTURE_RUNTIME_OUTPUT_ALIAS
         };
+        // Opt-in measured provider-call latency. NewViso cannot infer
+        // provider inflate/cache behavior from total startup frame time.
+        // Report only slow semantic decodes; no assets are decoded twice for
+        // telemetry and no texture/collision readiness rules are changed.
+        let ddc =
+            texture_ddc::TextureCacheBinding::from_environment(_bytes, address, entry, output);
+        if let Some(texture) = ddc
+            .as_ref()
+            .and_then(|cache| cache.read_validated(address, entry))
+        {
+            return Ok(Some(Arc::new(texture)));
+        }
+        let trace = std::env::var_os("NEWVISO_PERF_TRACE").is_some();
+        let decode_started = trace.then(std::time::Instant::now);
         let wire = assets.decode(
             address.logical_path(),
             output,
             json!({"texture_name": entry}),
         )?;
+        let provider_ms = decode_started.map(|start| start.elapsed().as_secs_f64() * 1000.0);
         let texture = decode_texture_resource(address, entry, &wire)?;
+        if let Some(cache) = &ddc {
+            cache.store(&wire);
+        }
+        if let Some(provider_ms) = provider_ms {
+            if provider_ms >= 25.0 {
+                newviso_host::info(
+                    "newviso.perf.texture_decode",
+                    format!(
+                        "source={} entry={} provider_ms={provider_ms:.3} source_bytes={} packet_bytes={} mips={}",
+                        address.logical_path(),
+                        entry,
+                        _bytes.len(),
+                        wire.len(),
+                        texture.mips.len(),
+                    ),
+                );
+            }
+        }
         Ok(Some(Arc::new(texture)))
     }
 }
-
-
 
 fn decode_texture_resource(
     address: &AssetAddress,
@@ -370,6 +402,9 @@ fn decode_model_resource(
     // across many rigid semantic index groups. Share identical wire slices in
     // memory instead of allocating one Arc payload per split mesh.
     let mut shared_stream_data = std::collections::BTreeMap::<(usize, usize), Arc<[u8]>>::new();
+    // Multilayer overlay meshes reuse the same index buffer payload. Share
+    // immutable bytes instead of decoding and allocating them once per layer.
+    let mut shared_index_data = std::collections::BTreeMap::<(usize, usize), Arc<[u8]>>::new();
     for (mesh_index, mesh) in mesh_values.iter().enumerate() {
         let mesh_name = required_str(mesh, "name")
             .map_err(|error| format!("mesh[{mesh_index}] {error}"))?
@@ -422,6 +457,8 @@ fn decode_model_resource(
         };
         let index_count = required_u32(index_meta, "index_count")?;
         let index_data = payload_slice(payload, index_meta, "index buffer")?;
+        let index_offset = required_usize(index_meta, "offset")?;
+        let index_length = required_usize(index_meta, "length")?;
         let index_stride = match index_format {
             IndexFormat::U16 => 2usize,
             IndexFormat::U32 => 4usize,
@@ -455,6 +492,11 @@ fn decode_model_resource(
             })
             .collect::<Result<Vec<_>, String>>()?;
 
+        let shared_indices = shared_index_data
+            .entry((index_offset, index_length))
+            .or_insert_with(|| Arc::from(index_data))
+            .clone();
+
         meshes.push(MeshResource {
             name: mesh_name,
             render_passes: decode_mesh_render_passes(mesh)?,
@@ -462,7 +504,7 @@ fn decode_model_resource(
             index_buffer: IndexBuffer {
                 format: index_format,
                 index_count,
-                data: Arc::from(index_data),
+                data: shared_indices,
             },
             primitives,
             bounds: mesh_bounds,
@@ -653,11 +695,15 @@ fn decode_mesh_render_passes(mesh: &Value) -> Result<newviso_model::MeshRenderPa
     let read = |name: &str| -> Result<bool, String> {
         match value.get(name) {
             None => Ok(true),
-            Some(value) => value.as_bool()
+            Some(value) => value
+                .as_bool()
                 .ok_or_else(|| format!("mesh render_passes.{name} must be boolean")),
         }
     };
-    Ok(newviso_model::MeshRenderPasses { color: read("color")?, shadow: read("shadow")? })
+    Ok(newviso_model::MeshRenderPasses {
+        color: read("color")?,
+        shadow: read("shadow")?,
+    })
 }
 
 fn decode_optional_skeleton(value: Option<&Value>) -> Result<Option<ModelSkeleton>, String> {
@@ -1074,6 +1120,186 @@ fn build_builtin_material_resource(
         value: MaterialParamValue::Float(value),
     })
     .collect::<Vec<_>>();
+    // Format-neutral PBR factors: both scene render paths expect packed G=roughness,
+    // B=metallic data. Fail closed on invalid source values; do not reinterpret
+    // these as the legacy specular/fresnel parameters.
+    for key in ["metallic_factor", "roughness_factor"] {
+        if let Some(raw) = slot.get("shading").and_then(|v| v.get(key)) {
+            let value = raw
+                .as_f64()
+                .ok_or_else(|| format!("material '{name}' {key} must be numeric"))?;
+            if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                return Err(format!("material '{name}' {key} must be in [0,1]"));
+            }
+            params.push(MaterialParameter {
+                name: key.to_owned(),
+                value: MaterialParamValue::Float(value as f32),
+            });
+        }
+    }
+    // Source REDengine MLSetup material inputs are semantic/typed metadata,
+    // not arbitrary hash-bound shader parameters. The scene forward/GBuffer
+    // shaders consume these values from the existing 3-vec4 material UBO.
+    if shader.eq_ignore_ascii_case("newviso.multilayer") {
+        let original = slot
+            .get("newviso_multilayer")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "NewViso multilayer requires a newviso_multilayer object".to_owned())?;
+        let values = [
+            (
+                "newviso_ml_mat_tile",
+                "mat_tile",
+                1.0_f32,
+                0.01_f32,
+                1024.0_f32,
+            ),
+            (
+                "newviso_ml_microblend_tile",
+                "microblend_tile",
+                1.0,
+                0.01,
+                1024.0,
+            ),
+            (
+                "newviso_ml_microblend_contrast",
+                "microblend_contrast",
+                0.0,
+                0.0,
+                1.0,
+            ),
+            ("newviso_ml_layer_opacity", "layer_opacity", 1.0, 0.0, 1.0),
+            ("newviso_ml_metalness_mode", "metalness", 0.0, -1.0, 1.0),
+            (
+                "newviso_ml_micro_normal_strength",
+                "microblend_normal_strength",
+                0.0,
+                -8.0,
+                8.0,
+            ),
+        ];
+        for (name, key, default, minimum, maximum) in values {
+            let value = original
+                .get(key)
+                .map(|value| value.as_f64())
+                .unwrap_or(Some(default as f64))
+                .ok_or_else(|| format!("NewViso multilayer parameter '{key}' is not numeric"))?
+                as f32;
+            if !value.is_finite() || value < minimum || value > maximum {
+                return Err(format!(
+                    "NewViso multilayer parameter '{key}' outside [{minimum},{maximum}]"
+                ));
+            }
+            params.push(MaterialParameter {
+                name: name.to_owned(),
+                value: MaterialParamValue::Float(value),
+            });
+        }
+        // UV selectors are source-authored per sampled texture. Without an
+        // override, color, normal and roughness use UV1 while the REDengine
+        // MLMask and microblend use UV0. No importer-side UV baking, no
+        // model/vehicle names, and no one-off asset conversion.
+        let uv_channels = original.get("uv_channels");
+        if uv_channels.is_some_and(|entry| !entry.is_object()) {
+            return Err("NewViso multilayer uv_channels must be an object".to_owned());
+        }
+        for (role, param, default_channel) in [
+            ("color", "newviso_ml_color_uv", 1_i32),
+            ("normal", "newviso_ml_normal_uv", 1),
+            ("roughness", "newviso_ml_roughness_uv", 1),
+            ("mask", "newviso_ml_mask_uv", 0),
+            ("microblend", "newviso_ml_microblend_uv", 0),
+        ] {
+            let channel = uv_channels
+                .and_then(|channels| channels.get(role))
+                .map(|value| value.as_i64())
+                .unwrap_or(Some(i64::from(default_channel)))
+                .ok_or_else(|| {
+                    format!("NewViso multilayer uv_channels.{role} must be integer 0 or 1")
+                })?;
+            if !(0..=1).contains(&channel) {
+                return Err(format!(
+                    "NewViso multilayer uv_channels.{role} must be 0 or 1"
+                ));
+            }
+            params.push(MaterialParameter {
+                name: param.to_owned(),
+                value: MaterialParamValue::Int(channel as i32),
+            });
+        }
+        // Source multilayer roughness has independent input/output endpoint
+        // lookups; keep the original per-layer values, not just the R map.
+        // Both pairs default to identity for backwards-compatible models.
+        for (property, name_prefix) in [
+            ("rough_levels_in", "newviso_ml_rough_in"),
+            ("rough_levels_out", "newviso_ml_rough_out"),
+        ] {
+            let values = if let Some(value) = original.get(property) {
+                let pair = value.as_array().ok_or_else(|| {
+                    format!("NewViso multilayer {property} must be [white, black]")
+                })?;
+                if pair.len() != 2 {
+                    return Err(format!(
+                        "NewViso multilayer {property} needs exactly two values"
+                    ));
+                }
+                [
+                    pair[0]
+                        .as_f64()
+                        .ok_or_else(|| format!("{property}[0] must be numeric"))?,
+                    pair[1]
+                        .as_f64()
+                        .ok_or_else(|| format!("{property}[1] must be numeric"))?,
+                ]
+            } else {
+                [1.0, 0.0]
+            };
+            for (label, value) in ["white", "black"].iter().zip(values) {
+                if !value.is_finite() || !(-8.0..=8.0).contains(&value) {
+                    return Err(format!(
+                        "NewViso multilayer {property}.{label} must be finite in [-8,8]"
+                    ));
+                }
+                params.push(MaterialParameter {
+                    name: format!("{name_prefix}_{label}"),
+                    value: MaterialParamValue::Float(value as f32),
+                });
+            }
+        }
+
+        // Source UV transforms are semantic rather than baked into geometry.
+        for (name, key) in [
+            ("newviso_ml_offset_uv", "uv_offset"),
+            ("newviso_ml_offset_micro", "microblend_offset"),
+        ] {
+            let values = original.get(key).and_then(Value::as_array);
+            for component in 0..2 {
+                let value = values
+                    .and_then(|items| items.get(component))
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0) as f32;
+                if !value.is_finite() || value.abs() > 1024.0 {
+                    return Err(format!("NewViso ML offset '{key}[{component}]' is invalid"));
+                }
+                params.push(MaterialParameter {
+                    name: format!("{name}{component}"),
+                    value: MaterialParamValue::Float(value),
+                });
+            }
+        }
+    }
+    if shader.eq_ignore_ascii_case("newviso.multilayer") {
+        let layer = slot
+            .get("newviso_multilayer")
+            .and_then(|value| value.get("layer_index"))
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "newviso.multilayer needs layer_index".to_owned())?;
+        let layer = i32::try_from(layer)
+            .map_err(|_| "newviso.multilayer layer_index overflow".to_owned())?;
+        params.push(MaterialParameter {
+            name: "newviso_ml_layer_index".to_owned(),
+            value: MaterialParamValue::Int(layer),
+        });
+    }
     if let Some(render_bucket) = slot
         .get("source_shader")
         .and_then(|source| source.get("render_bucket"))
@@ -1308,6 +1534,7 @@ fn parse_semantic(value: &str) -> Result<VertexSemantic, String> {
         "normal" => Ok(VertexSemantic::Normal),
         "tangent" => Ok(VertexSemantic::Tangent),
         "texcoord0" => Ok(VertexSemantic::TexCoord(0)),
+        "texcoord1" => Ok(VertexSemantic::TexCoord(1)),
         "color0" => Ok(VertexSemantic::Color(0)),
         "joint_indices" => Ok(VertexSemantic::JointIndices),
         "joint_weights" => Ok(VertexSemantic::JointWeights),
@@ -1443,6 +1670,112 @@ mod tests {
     use super::*;
 
     #[test]
+    fn builtin_multilayer_imports_independent_uv_roles() {
+        let address = AssetAddress::parse("models/shared/generic_surface.ydr").unwrap();
+        let shading = ImportedMaterialShading {
+            normal_strength: 1.0,
+            specular_intensity: 0.0,
+            specular_falloff: 32.0,
+            specular_fresnel: 0.0,
+            emissive_multiplier: 0.0,
+            environment_reflection: 0.0,
+            alpha_cutoff: 0.5,
+            opacity: 1.0,
+        };
+        let source = json!({
+            "shader": "newviso.multilayer",
+            "newviso_multilayer": {
+                "layer_index": 2,
+                "uv_channels": {
+                    "color": 0,
+                    "normal": 1,
+                    "roughness": 0,
+                    "mask": 1,
+                    "microblend": 0
+                }
+            }
+        });
+        let result = build_builtin_material_resource(
+            &address,
+            0,
+            "general_layer",
+            &source,
+            "surface",
+            "alpha",
+            &[],
+            shading,
+        )
+        .unwrap();
+        let params = result
+            .params
+            .iter()
+            .filter_map(|param| match param.value {
+                MaterialParamValue::Int(channel) => Some((param.name.as_str(), channel)),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(params["newviso_ml_color_uv"], 0);
+        assert_eq!(params["newviso_ml_normal_uv"], 1);
+        assert_eq!(params["newviso_ml_roughness_uv"], 0);
+        assert_eq!(params["newviso_ml_mask_uv"], 1);
+        assert_eq!(params["newviso_ml_microblend_uv"], 0);
+        assert_eq!(params["newviso_ml_layer_index"], 2);
+
+        let mut invalid = source.clone();
+        invalid["newviso_multilayer"]["uv_channels"]["normal"] = json!(2);
+        let err = build_builtin_material_resource(
+            &address,
+            0,
+            "general_layer",
+            &invalid,
+            "surface",
+            "alpha",
+            &[],
+            shading,
+        )
+        .unwrap_err();
+        assert!(err.contains("uv_channels.normal"));
+    }
+
+    #[test]
+    fn builtin_multilayer_without_uv_overrides_retains_legacy_defaults() {
+        let address = AssetAddress::parse("models/shared/paint.ydr").unwrap();
+        let source = json!({
+            "shader": "newviso.multilayer",
+            "newviso_multilayer": { "layer_index": 0 }
+        });
+        let result = build_builtin_material_resource(
+            &address,
+            0,
+            "source_base",
+            &source,
+            "surface",
+            "opaque",
+            &[],
+            ImportedMaterialShading {
+                normal_strength: 1.0,
+                specular_intensity: 0.0,
+                specular_falloff: 32.0,
+                specular_fresnel: 0.0,
+                emissive_multiplier: 0.0,
+                environment_reflection: 0.0,
+                alpha_cutoff: 0.5,
+                opacity: 1.0,
+            },
+        )
+        .unwrap();
+        let uv = ["color", "normal", "roughness", "mask", "microblend"];
+        let expected = [1, 1, 1, 0, 0];
+        for (role, channel) in uv.iter().zip(expected) {
+            let key = format!("newviso_ml_{role}_uv");
+            assert!(result.params.iter().any(|param| {
+                param.name == key
+                    && matches!(param.value, MaterialParamValue::Int(value) if value == channel)
+            }));
+        }
+    }
+
+    #[test]
     fn fragment_authored_light_survives_semantic_decode() {
         let value = json!({
             "schema": "northstar.model.fragment.v1",
@@ -1518,8 +1851,8 @@ mod tests {
 
     #[test]
     fn semantic_texture_references_preserve_provider_owned_identity() {
-        let address=AssetAddress::parse("textures/dictionary@MiXeD").unwrap();
-        assert_eq!(address.canonical(),"textures/dictionary@MiXeD");
+        let address = AssetAddress::parse("textures/dictionary@MiXeD").unwrap();
+        assert_eq!(address.canonical(), "textures/dictionary@MiXeD");
     }
 
     #[test]
@@ -1665,14 +1998,21 @@ mod mesh_render_pass_tests {
     use super::*;
     #[test]
     fn mesh_render_passes_preserve_shadow_only_geometry() {
-        let passes = decode_mesh_render_passes(&json!({"render_passes":{"color":false,"shadow":true}})).unwrap();
+        let passes =
+            decode_mesh_render_passes(&json!({"render_passes":{"color":false,"shadow":true}}))
+                .unwrap();
         assert!(!passes.color && passes.shadow);
-        let main = decode_mesh_render_passes(&json!({"render_passes":{"color":true,"shadow":false}})).unwrap();
+        let main =
+            decode_mesh_render_passes(&json!({"render_passes":{"color":true,"shadow":false}}))
+                .unwrap();
         assert!(main.color && !main.shadow);
     }
     #[test]
     fn mesh_render_passes_keep_legacy_coverage_and_reject_malformed_policy() {
-        assert_eq!(decode_mesh_render_passes(&json!({})).unwrap(), Default::default());
+        assert_eq!(
+            decode_mesh_render_passes(&json!({})).unwrap(),
+            Default::default()
+        );
         assert!(decode_mesh_render_passes(&json!({"render_passes":{"color":"false"}})).is_err());
         assert!(decode_mesh_render_passes(&json!({"render_passes":0})).is_err());
     }

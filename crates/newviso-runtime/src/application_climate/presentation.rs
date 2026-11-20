@@ -112,17 +112,17 @@ impl ClimateRuntime {
             self.simulation.wind_direction.cos(),
             self.simulation.wind_direction.sin(),
         ];
-        if let Some(forcing)=&self.wind_forcing {
-            if let Some(snow)=forcing.snow_precipitation{
-                self.simulation.snow=snow;
-                effects.snow=snow*(1.0-no_fx);
+        if let Some(forcing) = &self.wind_forcing {
+            if let Some(snow) = forcing.snow_precipitation {
+                self.simulation.snow = snow;
+                effects.snow = snow * (1.0 - no_fx);
             }
-            effects.wind_speed=forcing.wind_speed;
-            effects.wind_direction=forcing.wind_direction;
-            effects.snow_mist=effects.snow_mist.max(forcing.snow_mist)*(1.0-no_fx);
-            if let Some(setting)=&forcing.snow_mist_setting {
-                effects.current_mist_setting=setting.clone();
-                effects.next_mist_setting=setting.clone();
+            effects.wind_speed = forcing.wind_speed;
+            effects.wind_direction = forcing.wind_direction;
+            effects.snow_mist = effects.snow_mist.max(forcing.snow_mist) * (1.0 - no_fx);
+            if let Some(setting) = &forcing.snow_mist_setting {
+                effects.current_mist_setting = setting.clone();
+                effects.next_mist_setting = setting.clone();
             }
         }
         if f.number("no_gpu_fx", 0.0) > 0.5 {
@@ -367,8 +367,12 @@ impl ClimateRuntime {
             scale_diffuse_fill_ambient_wrap
         );
         let (light_color, lunar_intensity) = cloud_rendering::cloud_light(f, &celestial);
-        hat.cloud_light_color = [light_color[0] * sky_scale, light_color[1] * sky_scale,
-            light_color[2] * sky_scale, 1.0];
+        hat.cloud_light_color = [
+            light_color[0] * sky_scale,
+            light_color[1] * sky_scale,
+            light_color[2] * sky_scale,
+            1.0,
+        ];
         hat.light_direction = Some(if celestial.sun_fade > 0.0 {
             celestial.sun_direction
         } else {

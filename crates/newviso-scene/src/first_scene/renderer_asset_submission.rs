@@ -14,7 +14,8 @@ impl Scene3dRuntime {
         gpu: GpuScene,
         frame_slot: usize,
     ) -> Result<FrameAssetSubmission, String> {
-        let (instance_batches,visible_instance_slots)=self.build_frame_asset_instances(render,gpu,frame_slot)?;
+        let (instance_batches, visible_instance_slots) =
+            self.build_frame_asset_instances(render, gpu, frame_slot)?;
 
         // Build one fail-open indirect command per opaque/cutout primitive
         // range and spatial instance batch. The Vulkan visibility provider may

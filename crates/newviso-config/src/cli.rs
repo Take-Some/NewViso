@@ -161,6 +161,11 @@ where
             set_override(&mut out, "runtime.editor_mode", "true".to_owned())?;
             continue;
         }
+        // Skip only the optional startup video; asset and platform setup still run.
+        if arg == "-noIntro" || arg == "--no-intro" {
+            out.applied.push("launch.no_intro=true".to_owned());
+            continue;
+        }
         if arg == "--safe-mode" {
             set_override(&mut out, "runtime.safe_mode", "true".to_owned())?;
             continue;
@@ -238,6 +243,17 @@ fn set_override(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_intro_launch_switch_is_accepted_without_changing_bootstrap_settings() {
+        for flag in ["-noIntro", "--no-intro"] {
+            let parsed = parse_cli(["--project", "FirstFPS", flag]).unwrap();
+            assert_eq!(parsed.project_path.as_deref(), Some(std::path::Path::new("FirstFPS")));
+            assert!(parsed.values.is_empty());
+            assert!(parsed.applied.iter().any(|entry| entry == "launch.no_intro=true"));
+        }
+        assert!(parse_cli(["-noIntroExtra"]).is_err());
+    }
     #[test]
     fn runtime_arguments_are_separate_from_bootstrap_and_keep_order() {
         let c = parse_cli([

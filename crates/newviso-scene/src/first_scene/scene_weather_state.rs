@@ -113,10 +113,16 @@ impl Scene3dRuntime {
         }
         if let Some(clouds) = &sky.clouds {
             let vectors = [
-                clouds.generation, clouds.density, clouds.lighting, clouds.detail,
-                clouds.small, clouds.small_color,
+                clouds.generation,
+                clouds.density,
+                clouds.lighting,
+                clouds.detail,
+                clouds.small,
+                clouds.small_color,
             ];
-            if vectors.iter().flatten()
+            if vectors
+                .iter()
+                .flatten()
                 .chain(clouds.base_color.iter())
                 .chain(clouds.mid_color.iter())
                 .chain(clouds.shadow_color.iter())

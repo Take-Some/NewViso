@@ -1,5 +1,6 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+mod assets;
 mod backend;
 mod composition;
 mod contract;
@@ -10,6 +11,7 @@ mod methods;
 mod observability;
 mod resolver;
 
+pub use assets::*;
 pub use backend::*;
 pub use composition::*;
 pub use contract::*;

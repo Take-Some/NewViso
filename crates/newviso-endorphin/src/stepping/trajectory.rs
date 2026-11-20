@@ -19,7 +19,7 @@ impl SwingStep {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{StepGround, math};
+    use crate::{math, StepGround};
 
     #[test]
     fn swing_meets_both_contacts_without_a_velocity_or_acceleration_jump() {

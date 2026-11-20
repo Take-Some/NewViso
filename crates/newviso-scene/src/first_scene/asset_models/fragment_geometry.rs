@@ -95,7 +95,10 @@ pub(super) fn apply_fragment_dents(
 }
 
 /// Closest point including edges, with barycentrics for the original glass UVs.
-pub(super) fn closest_fragment_triangle(p: [f32; 3], t: [[f32; 3]; 3]) -> Option<([f32; 3], [f32; 3])> {
+pub(super) fn closest_fragment_triangle(
+    p: [f32; 3],
+    t: [[f32; 3]; 3],
+) -> Option<([f32; 3], [f32; 3])> {
     let sub = |a: [f32; 3], b: [f32; 3]| std::array::from_fn(|i| a[i] - b[i]);
     let dot = |a: [f32; 3], b: [f32; 3]| (0..3).map(|i| a[i] * b[i]).sum::<f32>();
     let ab = sub(t[1], t[0]);

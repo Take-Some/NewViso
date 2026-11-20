@@ -218,6 +218,41 @@ struct RawSourceCacheState {
     resident_bytes: u64,
 }
 
+impl RawSourceCacheState {
+    fn touch(&mut self, path: &str) {
+        if let Some(index) = self.order.iter().position(|item| item == path) {
+            if let Some(item) = self.order.remove(index) {
+                self.order.push_back(item);
+            }
+        }
+    }
+
+    fn insert_ready(&mut self, path: String, cached: CachedRawSource, budget: u64) {
+        if let Some(RawSourceCacheEntry::Ready(previous)) = self.entries.remove(&path) {
+            self.resident_bytes = self
+                .resident_bytes
+                .saturating_sub(previous.bytes.len() as u64);
+        }
+        self.order.retain(|item| item != &path);
+        let size = cached.bytes.len() as u64;
+        if size > budget {
+            return;
+        }
+        self.resident_bytes = self.resident_bytes.saturating_add(size);
+        self.order.push_back(path.clone());
+        self.entries
+            .insert(path, RawSourceCacheEntry::Ready(cached));
+        while self.resident_bytes > budget {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            if let Some(RawSourceCacheEntry::Ready(old)) = self.entries.remove(&oldest) {
+                self.resident_bytes = self.resident_bytes.saturating_sub(old.bytes.len() as u64);
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct RawSourceCache {
     state: std::sync::Mutex<RawSourceCacheState>,
@@ -245,6 +280,10 @@ impl AssetSource for AssetClientSource {
             let mut state = self.cache.state.lock().expect("raw source cache poisoned");
             match state.entries.get(&logical_path) {
                 Some(RawSourceCacheEntry::Ready(cached)) => {
+                    let cached = cached.clone();
+                    // Hot dictionaries remain resident while independent sources
+                    // are admitted, even when the latter were loaded more recently.
+                    state.touch(&logical_path);
                     return Ok(ResolvedAsset {
                         source: ResolvedAssetSource {
                             mount_id: "engine.assets".to_owned(),
@@ -273,37 +312,26 @@ impl AssetSource for AssetClientSource {
             }
         }
 
-        let loaded = AssetClient::new().raw_bytes(&logical_path);
+        // Hashing a 190 MiB dictionary under the cache mutex blocks every
+        // other source worker, including collision loads. Verify bytes first.
+        let loaded = AssetClient::new().raw_bytes(&logical_path).map(|bytes| {
+            let bytes: Arc<[u8]> = Arc::from(bytes);
+            let hash = blake3::hash(bytes.as_ref());
+            let source_revision =
+                u64::from_le_bytes(hash.as_bytes()[0..8].try_into().expect("BLAKE3 prefix"));
+            (bytes, source_revision)
+        });
         let mut state = self.cache.state.lock().expect("raw source cache poisoned");
         match loaded {
-            Ok(bytes) => {
-                let bytes: Arc<[u8]> = Arc::from(bytes);
-                let hash = blake3::hash(bytes.as_ref());
-                let source_revision =
-                    u64::from_le_bytes(hash.as_bytes()[0..8].try_into().expect("BLAKE3 prefix"));
-                let cached = CachedRawSource {
-                    bytes: Arc::clone(&bytes),
-                    source_revision,
-                };
-                state.resident_bytes = state.resident_bytes.saturating_add(bytes.len() as u64);
-                state.order.push_back(logical_path.clone());
-                state
-                    .entries
-                    .insert(logical_path.clone(), RawSourceCacheEntry::Ready(cached));
-
-                while state.resident_bytes > ASSET_CLIENT_RAW_CACHE_BYTES {
-                    let Some(oldest) = state.order.pop_front() else {
-                        break;
-                    };
-                    if oldest == logical_path {
-                        state.order.push_back(oldest);
-                        break;
-                    }
-                    if let Some(RawSourceCacheEntry::Ready(old)) = state.entries.remove(&oldest) {
-                        state.resident_bytes =
-                            state.resident_bytes.saturating_sub(old.bytes.len() as u64);
-                    }
-                }
+            Ok((bytes, source_revision)) => {
+                state.insert_ready(
+                    logical_path.clone(),
+                    CachedRawSource {
+                        bytes: Arc::clone(&bytes),
+                        source_revision,
+                    },
+                    ASSET_CLIENT_RAW_CACHE_BYTES,
+                );
                 self.cache.wake.notify_all();
                 Ok(ResolvedAsset {
                     source: ResolvedAssetSource {
@@ -654,6 +682,33 @@ mod tests {
         let address = AssetAddress::parse("maps/import/ybn/hi@bh1_06_0.ybn").unwrap();
         assert_eq!(address.logical_path(), "maps/import/ybn/hi@bh1_06_0.ybn");
         assert_eq!(address.entry(), None);
+    }
+
+    #[test]
+    fn raw_source_cache_retains_hot_dictionary_and_respects_budget() {
+        fn cached(size: usize, revision: u64) -> CachedRawSource {
+            CachedRawSource {
+                bytes: Arc::from(vec![revision as u8; size]),
+                source_revision: revision,
+            }
+        }
+        let mut cache = RawSourceCacheState::default();
+        cache.insert_ready("textures/dictionary.ytd".to_owned(), cached(6, 1), 10);
+        cache.insert_ready("models/a.ydd".to_owned(), cached(4, 2), 10);
+        assert_eq!(cache.resident_bytes, 10);
+
+        cache.touch("textures/dictionary.ytd");
+        cache.insert_ready("collisions/road.ybn".to_owned(), cached(4, 3), 10);
+        assert!(cache.entries.contains_key("textures/dictionary.ytd"));
+        assert!(!cache.entries.contains_key("models/a.ydd"));
+        assert!(cache.entries.contains_key("collisions/road.ybn"));
+        assert_eq!(cache.resident_bytes, 10);
+
+        // An oversize source is still returned to its caller by resolve(),
+        // but cannot be retained in this bounded raw-source cache.
+        cache.insert_ready("textures/oversize.ytd".to_owned(), cached(11, 4), 10);
+        assert!(!cache.entries.contains_key("textures/oversize.ytd"));
+        assert_eq!(cache.resident_bytes, 10);
     }
 
     #[test]

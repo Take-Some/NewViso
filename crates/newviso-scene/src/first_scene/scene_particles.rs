@@ -169,17 +169,28 @@ impl Scene3dRuntime {
     }
 
     /// A fixed-size, age-limited set of impact wakes for the GPU ocean shader.
-    pub fn add_water_impact(&mut self, position:[f32;3], intensity:f32) -> Result<(),String> {
-        if position.iter().any(|v|!v.is_finite()) || !intensity.is_finite()
-            || !(0.05..=8.0).contains(&intensity) {
-            return Err("scene.water.impact requires finite position and intensity 0.05..8".to_owned());
+    pub fn add_water_impact(&mut self, position: [f32; 3], intensity: f32) -> Result<(), String> {
+        if position.iter().any(|v| !v.is_finite())
+            || !intensity.is_finite()
+            || !(0.05..=8.0).contains(&intensity)
+        {
+            return Err(
+                "scene.water.impact requires finite position and intensity 0.05..8".to_owned(),
+            );
         }
-        let now=self.water_simulation.seconds() as f32;
-        self.water_simulation.impact([position[0],position[2]],intensity);
-        self.water_impacts.retain(|impact|now-impact.start_time < 2.8);
-        if self.water_impacts.len()>=8 {self.water_impacts.remove(0);}
+        let now = self.water_simulation.seconds() as f32;
+        self.water_simulation
+            .impact([position[0], position[2]], intensity);
+        self.water_impacts
+            .retain(|impact| now - impact.start_time < 2.8);
+        if self.water_impacts.len() >= 8 {
+            self.water_impacts.remove(0);
+        }
         self.water_impacts.push(WaterImpact {
-            x:position[0],z:position[2],start_time:now,intensity
+            x: position[0],
+            z: position[2],
+            start_time: now,
+            intensity,
         });
         Ok(())
     }

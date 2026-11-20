@@ -34,7 +34,10 @@ pub(super) fn decode_indices(buffer: &newviso_model::IndexBuffer) -> Result<Vec<
     }
 }
 
-pub(super) fn read_vec2(stream: &newviso_model::VertexStream, index: usize) -> Result<[f32; 2], String> {
+pub(super) fn read_vec2(
+    stream: &newviso_model::VertexStream,
+    index: usize,
+) -> Result<[f32; 2], String> {
     if stream.format != ModelVertexFormat::Float32x2 {
         return Err(format!(
             "vertex stream {:?} must be Float32x2",
@@ -60,7 +63,10 @@ pub(super) fn read_vec2(stream: &newviso_model::VertexStream, index: usize) -> R
     ])
 }
 
-pub(super) fn read_vec3(stream: &newviso_model::VertexStream, index: usize) -> Result<Vec3, String> {
+pub(super) fn read_vec3(
+    stream: &newviso_model::VertexStream,
+    index: usize,
+) -> Result<Vec3, String> {
     if stream.format != ModelVertexFormat::Float32x3 {
         return Err(format!(
             "vertex stream {:?} must be Float32x3",
@@ -87,7 +93,10 @@ pub(super) fn read_vec3(stream: &newviso_model::VertexStream, index: usize) -> R
     ))
 }
 
-pub(super) fn read_vec4(stream: &newviso_model::VertexStream, index: usize) -> Result<[f32; 4], String> {
+pub(super) fn read_vec4(
+    stream: &newviso_model::VertexStream,
+    index: usize,
+) -> Result<[f32; 4], String> {
     if stream.format != ModelVertexFormat::Float32x4 {
         return Err(format!(
             "vertex stream {:?} must be Float32x4",

@@ -19,15 +19,23 @@ pub(super) struct WeatherCollisionMap {
 }
 impl Default for WeatherCollisionMap {
     fn default() -> Self {
-        Self { origin: [0.0; 2], spacing: 4.0,
-            heights: [NO_SURFACE; WEATHER_HEIGHT_FLOATS], ready: false,
-            pending_origin: [0.0; 2], pending: [NO_SURFACE; WEATHER_HEIGHT_FLOATS],
-            cursor: 0, camera_velocity: Vec3::ZERO, previous_eye: None }
+        Self {
+            origin: [0.0; 2],
+            spacing: 4.0,
+            heights: [NO_SURFACE; WEATHER_HEIGHT_FLOATS],
+            ready: false,
+            pending_origin: [0.0; 2],
+            pending: [NO_SURFACE; WEATHER_HEIGHT_FLOATS],
+            cursor: 0,
+            camera_velocity: Vec3::ZERO,
+            previous_eye: None,
+        }
     }
 }
 impl WeatherCollisionMap {
     pub fn track_camera(&mut self, eye: Vec3, dt: f32) {
-        self.camera_velocity = self.previous_eye
+        self.camera_velocity = self
+            .previous_eye
             .filter(|old| eye.sub(*old).length() < 25.0)
             .map(|old| eye.sub(old).mul(1.0 / dt.max(0.001)))
             .unwrap_or(Vec3::ZERO);
@@ -37,12 +45,18 @@ impl WeatherCollisionMap {
         if self.cursor == 0 {
             self.spacing = spacing;
             let radius = (WEATHER_HEIGHT_SIDE / 2) as f32 * spacing;
-            self.pending_origin = [(eye.x / spacing).floor() * spacing - radius,
-                                   (eye.z / spacing).floor() * spacing - radius];
+            self.pending_origin = [
+                (eye.x / spacing).floor() * spacing - radius,
+                (eye.z / spacing).floor() * spacing - radius,
+            ];
         }
         let extent = (WEATHER_HEIGHT_SIDE - 1) as f32 * self.spacing;
-        if self.ready && (eye.x < self.origin[0] || eye.z < self.origin[1]
-            || eye.x > self.origin[0] + extent || eye.z > self.origin[1] + extent) {
+        if self.ready
+            && (eye.x < self.origin[0]
+                || eye.z < self.origin[1]
+                || eye.x > self.origin[0] + extent
+                || eye.z > self.origin[1] + extent)
+        {
             self.ready = false;
             self.cursor = 0;
             self.begin(eye, spacing);
@@ -61,20 +75,22 @@ impl Scene3dRuntime {
     /// The runtime supplies exact resident triangle queries. Scene-owned
     /// heightfields, primitives and enabled water provide their own surfaces.
     pub fn refresh_weather_collision_map(
-        &mut self, mut physical_height: impl FnMut(f32, f32, f32) -> Option<f32>,
+        &mut self,
+        mut physical_height: impl FnMut(f32, f32, f32) -> Option<f32>,
     ) {
-        if self.weather_gpu_fx.is_none() ||
-            self.active_weather_world_layers().is_empty() {
+        if self.weather_gpu_fx.is_none() || self.active_weather_world_layers().is_empty() {
             self.weather_collision.ready = false;
             self.weather_collision.cursor = 0;
             return;
         }
-        let (spacing, budget) = self.weather_gpu_fx.as_ref()
+        let (spacing, budget) = self
+            .weather_gpu_fx
+            .as_ref()
             .map(|r| (r.collision_cell_metres, r.collision_probes_per_frame))
             .unwrap_or((4.0, 99));
         self.weather_collision.begin(self.camera.position, spacing);
-        let end = (self.weather_collision.cursor + budget)
-            .min(WEATHER_HEIGHT_SIDE * WEATHER_HEIGHT_SIDE);
+        let end =
+            (self.weather_collision.cursor + budget).min(WEATHER_HEIGHT_SIDE * WEATHER_HEIGHT_SIDE);
         let top = self.camera.position.y + 256.0;
         for index in self.weather_collision.cursor..end {
             let x = self.weather_collision.pending_origin[0]
@@ -85,11 +101,16 @@ impl Scene3dRuntime {
             for entity in self.world.solid_entities() {
                 // Imported model bounds are broad phase only; use the runtime
                 // triangle query above. Only scene primitives own render slots.
-                let Some(slot) = entity.render_slot else { continue; };
+                let Some(slot) = entity.render_slot else {
+                    continue;
+                };
                 let surface = if let Some(terrain) = self.terrain_meshes.get(&slot) {
                     terrain.surface_height(x, z)
                 } else {
-                    let b = self.world.collision_bounds(entity.id).unwrap_or(entity.bounds);
+                    let b = self
+                        .world
+                        .collision_bounds(entity.id)
+                        .unwrap_or(entity.bounds);
                     (x >= b.min.x && x <= b.max.x && z >= b.min.z && z <= b.max.z)
                         .then_some(b.max.y)
                 };
@@ -131,9 +152,9 @@ mod tests {
     fn camera_cuts_do_not_generate_extreme_rain_streaks() {
         let mut m = WeatherCollisionMap::default();
         m.track_camera(Vec3::ZERO, 0.016);
-        m.track_camera(Vec3::new(1.0,0.0,0.0), 0.1);
+        m.track_camera(Vec3::new(1.0, 0.0, 0.0), 0.1);
         assert!((m.camera_velocity.x - 10.0).abs() < 0.001);
-        m.track_camera(Vec3::new(500.0,0.0,0.0), 0.016);
+        m.track_camera(Vec3::new(500.0, 0.0, 0.0), 0.016);
         assert_eq!(m.camera_velocity.x, 0.0);
     }
 }

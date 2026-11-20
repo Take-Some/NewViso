@@ -181,11 +181,10 @@ mod tests {
         )
         .unwrap();
         assert!((p.target[0] - 0.2).abs() < 1e-5 && (p.target[2] - 0.12).abs() < 1e-5);
-        assert!(
-            p.corners
-                .iter()
-                .all(|p| p[2] > 0.0 && p[2] < 0.4 && p[1].abs() < 1e-5)
-        );
+        assert!(p
+            .corners
+            .iter()
+            .all(|p| p[2] > 0.0 && p[2] < 0.4 && p[1].abs() < 1e-5));
         let short = newviso_collision::SupportSurface::from_quad(
             0,
             [
@@ -196,22 +195,20 @@ mod tests {
             ],
         )
         .unwrap();
-        assert!(
-            on_surface(
-                &short,
-                [0.0; 3],
-                1,
-                sole,
-                [0.2, 0.08, 0.12],
-                [0.0, 0.0, 0.0, 1.0],
-                [0.2, 0.8, 0.12],
-                1.0,
-                0.0,
-                Default::default(),
-                false
-            )
-            .is_none()
-        );
+        assert!(on_surface(
+            &short,
+            [0.0; 3],
+            1,
+            sole,
+            [0.2, 0.08, 0.12],
+            [0.0, 0.0, 0.0, 1.0],
+            [0.2, 0.8, 0.12],
+            1.0,
+            0.0,
+            Default::default(),
+            false
+        )
+        .is_none());
     }
     #[test]
     fn terrain_tilt_preserves_authored_heel_roll_and_clearance() {

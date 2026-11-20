@@ -56,17 +56,19 @@ impl Scene3dRuntime {
         terrain.extend(other);
         terrain
     }
-    pub(super) fn cached_primitive_main_blocks(&mut self,aspect:f32)->Vec<Arc<[f32]>>{
+    pub(super) fn cached_primitive_main_blocks(&mut self, aspect: f32) -> Vec<Arc<[f32]>> {
         vec![self.cached_primitive_main_tail(aspect)]
     }
-    pub(super) fn cached_primitive_shadow_blocks(&mut self)->Vec<Arc<[f32]>>{
+    pub(super) fn cached_primitive_shadow_blocks(&mut self) -> Vec<Arc<[f32]>> {
         vec![self.cached_primitive_shadow_tail()]
     }
 
     fn primitive_entries(&self, slots: impl IntoIterator<Item = usize>) -> Vec<PrimitiveEntry> {
         slots
             .into_iter()
-            .filter(|slot| !self.water_render_slots.contains(slot)&&!self.terrain_meshes.contains_key(slot))
+            .filter(|slot| {
+                !self.water_render_slots.contains(slot) && !self.terrain_meshes.contains_key(slot)
+            })
             .filter_map(|slot| {
                 let cube = self.cubes.get(slot)?;
                 if let Some(terrain) = self.terrain_meshes.get(&slot) {

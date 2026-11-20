@@ -1,5 +1,5 @@
 //! A planner tick reads each resident frame once, including missing frames.
-use super::{BodyPose, ground};
+use super::{ground, BodyPose};
 
 pub(super) struct PoseObservation<F> {
     sample: F,

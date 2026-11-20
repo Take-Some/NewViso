@@ -1,12 +1,12 @@
 mod drive;
 mod feet;
 mod foot_motion;
-pub use feet::{FootLeg, MAX_SUPPORT_LIMBS, validate_foot_profile};
+pub use feet::{validate_foot_profile, FootLeg, MAX_SUPPORT_LIMBS};
 pub use foot_motion::{FootMotionInput, FootMotionOutput, FootMotionProfile, FootMotionState};
 mod stairs;
 pub use drive::GroundDrive;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 pub use stairs::{StairAdjustment, StairController};
 
 pub type Vec3 = [f32; 3];

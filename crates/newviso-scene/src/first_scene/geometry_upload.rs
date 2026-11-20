@@ -20,92 +20,122 @@ pub(super) struct GeometryUploadCache {
 fn packed_bytes(values: &[f32]) -> &[u8] {
     // f32 has no padding. An immutable byte view also distinguishes signed
     // zero and NaN payloads, preserving exactly what the renderer receives.
-    unsafe {
-        std::slice::from_raw_parts(values.as_ptr().cast(), std::mem::size_of_val(values))
-    }
+    unsafe { std::slice::from_raw_parts(values.as_ptr().cast(), std::mem::size_of_val(values)) }
 }
 
 /// Return merged dirty float ranges within an unchanged-size geometry block.
 /// Fixed vertex stride makes comparisons safe for Vulkan draw vertex offsets.
-fn dirty_block_ranges(old:&[f32],new:&[f32])->Vec<(usize,usize)>{
-    if old.len()!=new.len(){return vec![(0,new.len())];}
-    let mut ranges=Vec::<(usize,usize)>::new();
-    for start in (0..new.len()).step_by(CHUNK_FLOATS){
-        let end=(start+CHUNK_FLOATS).min(new.len());
-        if packed_bytes(&old[start..end])==packed_bytes(&new[start..end]){continue;}
-        if let Some(last)=ranges.last_mut(){
+fn dirty_block_ranges(old: &[f32], new: &[f32]) -> Vec<(usize, usize)> {
+    if old.len() != new.len() {
+        return vec![(0, new.len())];
+    }
+    let mut ranges = Vec::<(usize, usize)>::new();
+    for start in (0..new.len()).step_by(CHUNK_FLOATS) {
+        let end = (start + CHUNK_FLOATS).min(new.len());
+        if packed_bytes(&old[start..end]) == packed_bytes(&new[start..end]) {
+            continue;
+        }
+        if let Some(last) = ranges.last_mut() {
             // Merge nearby writes to avoid excessive driver submission calls.
-            if start-last.1<=CHUNK_FLOATS*2 {
-                last.1=end;
+            if start - last.1 <= CHUNK_FLOATS * 2 {
+                last.1 = end;
                 continue;
             }
         }
-        ranges.push((start,end));
+        ranges.push((start, end));
     }
     ranges
 }
 impl GeometryUploadCache {
-    fn pending_blocks(&self, slot: usize, buffer: u32, blocks: &[Arc<[f32]>]) -> Vec<(usize,usize)> {
-        let old=self.block_sources[slot].as_ref().filter(|(id,_)| *id==buffer).map(|(_,blocks)| blocks);
-        let mut offset=0;
-        let mut old_offset=0;
-        let mut pending=Vec::new();
+    fn pending_blocks(
+        &self,
+        slot: usize,
+        buffer: u32,
+        blocks: &[Arc<[f32]>],
+    ) -> Vec<(usize, usize)> {
+        let old = self.block_sources[slot]
+            .as_ref()
+            .filter(|(id, _)| *id == buffer)
+            .map(|(_, blocks)| blocks);
+        let mut offset = 0;
+        let mut old_offset = 0;
+        let mut pending = Vec::new();
         for (index, block) in blocks.iter().enumerate() {
-            let previous=old.and_then(|blocks| blocks.get(index));
-            let unchanged=previous.is_some_and(|previous|
-                offset==old_offset && Arc::ptr_eq(previous,block));
-            if !unchanged && !block.is_empty() { pending.push((index,offset)); }
-            offset+=block.len();
-            old_offset+=previous.map_or(0,|block| block.len());
+            let previous = old.and_then(|blocks| blocks.get(index));
+            let unchanged = previous
+                .is_some_and(|previous| offset == old_offset && Arc::ptr_eq(previous, block));
+            if !unchanged && !block.is_empty() {
+                pending.push((index, offset));
+            }
+            offset += block.len();
+            old_offset += previous.map_or(0, |block| block.len());
         }
         pending
     }
 
-    pub(super) fn sync_blocks(&mut self, render: &RenderClient, slot: usize,
-        buffer: u32, blocks: &[Arc<[f32]>]) -> Result<usize,String>
-    {
-        if slot>=SCENE_FRAME_SLOTS { return Err("geometry upload exceeds frame ring".into()); }
-        let pending=self.pending_blocks(slot,buffer,blocks);
-        let previous=self.block_sources[slot].as_ref()
-            .filter(|(id,_)|*id==buffer)
-            .map(|(_,blocks)|blocks.as_slice());
-        let mut bytes=0;
-        let mut old_offset=0_usize;
-        let mut old_positions=Vec::new();
-        if let Some(old)=previous {
-            for block in old{old_positions.push(old_offset);old_offset+=block.len();}
+    pub(super) fn sync_blocks(
+        &mut self,
+        render: &RenderClient,
+        slot: usize,
+        buffer: u32,
+        blocks: &[Arc<[f32]>],
+    ) -> Result<usize, String> {
+        if slot >= SCENE_FRAME_SLOTS {
+            return Err("geometry upload exceeds frame ring".into());
         }
-        for (index,offset) in pending {
-            let block=&blocks[index];
-            let old=previous.and_then(|a|a.get(index));
-            let safe_same_offset=old_positions.get(index).copied()==Some(offset)
-                &&old.is_some_and(|a|a.len()==block.len());
-            let ranges=if safe_same_offset {
-                dirty_block_ranges(old.unwrap(),block)
-            }else{vec![(0,block.len())]};
-            for (start,end) in ranges{
-                if start==end{continue;}
-                let byte_offset=offset.checked_add(start)
-                    .and_then(|v|u64::try_from(v).ok())
-                    .and_then(|v|v.checked_mul(4))
-                    .ok_or_else(||"geometry block byte offset overflow".to_owned())?;
-                render.write_buffer_f32(buffer,byte_offset,&block[start..end])?;
-                bytes+=(end-start)*4;
+        let pending = self.pending_blocks(slot, buffer, blocks);
+        let previous = self.block_sources[slot]
+            .as_ref()
+            .filter(|(id, _)| *id == buffer)
+            .map(|(_, blocks)| blocks.as_slice());
+        let mut bytes = 0;
+        let mut old_offset = 0_usize;
+        let mut old_positions = Vec::new();
+        if let Some(old) = previous {
+            for block in old {
+                old_positions.push(old_offset);
+                old_offset += block.len();
+            }
+        }
+        for (index, offset) in pending {
+            let block = &blocks[index];
+            let old = previous.and_then(|a| a.get(index));
+            let safe_same_offset = old_positions.get(index).copied() == Some(offset)
+                && old.is_some_and(|a| a.len() == block.len());
+            let ranges = if safe_same_offset {
+                dirty_block_ranges(old.unwrap(), block)
+            } else {
+                vec![(0, block.len())]
+            };
+            for (start, end) in ranges {
+                if start == end {
+                    continue;
+                }
+                let byte_offset = offset
+                    .checked_add(start)
+                    .and_then(|v| u64::try_from(v).ok())
+                    .and_then(|v| v.checked_mul(4))
+                    .ok_or_else(|| "geometry block byte offset overflow".to_owned())?;
+                render.write_buffer_f32(buffer, byte_offset, &block[start..end])?;
+                bytes += (end - start) * 4;
             }
         }
         // Commit only after every write succeeded, keeping retries complete.
-        self.block_sources[slot]=Some((buffer,blocks.to_vec()));
-        self.shared_source=None;
+        self.block_sources[slot] = Some((buffer, blocks.to_vec()));
+        self.shared_source = None;
         self.data.clear();
         self.revisions.clear();
-        for uploaded in &mut self.uploaded { uploaded.clear(); }
+        for uploaded in &mut self.uploaded {
+            uploaded.clear();
+        }
         Ok(bytes)
     }
 
     fn update(&mut self, values: &[f32]) {
         let old_len = self.data.len();
         self.data.resize(values.len(), 0.0);
-        self.revisions.resize(values.len().div_ceil(CHUNK_FLOATS), 0);
+        self.revisions
+            .resize(values.len().div_ceil(CHUNK_FLOATS), 0);
         for (chunk, incoming) in values.chunks(CHUNK_FLOATS).enumerate() {
             let start = chunk * CHUNK_FLOATS;
             let end = start + incoming.len();
@@ -145,25 +175,38 @@ impl GeometryUploadCache {
     }
 
     #[allow(dead_code)]
-    pub(super) fn sync_shared(&mut self, render: &RenderClient, slot: usize,
-        buffer: u32, values: &Arc<[f32]>) -> Result<usize,String>
-    {
-        if slot >= SCENE_FRAME_SLOTS { return Err("geometry upload exceeds frame ring".into()); }
-        self.block_sources=Default::default();
-        if !self.shared_source.as_ref().is_some_and(|old| Arc::ptr_eq(old,values)) {
+    pub(super) fn sync_shared(
+        &mut self,
+        render: &RenderClient,
+        slot: usize,
+        buffer: u32,
+        values: &Arc<[f32]>,
+    ) -> Result<usize, String> {
+        if slot >= SCENE_FRAME_SLOTS {
+            return Err("geometry upload exceeds frame ring".into());
+        }
+        self.block_sources = Default::default();
+        if !self
+            .shared_source
+            .as_ref()
+            .is_some_and(|old| Arc::ptr_eq(old, values))
+        {
             self.update(values);
             self.shared_source = Some(Arc::clone(values));
         }
-        self.sync_pending(render,slot,buffer)
+        self.sync_pending(render, slot, buffer)
     }
 
-    fn sync_pending(&mut self, render: &RenderClient, slot: usize,
-        buffer: u32) -> Result<usize,String>
-    {
-        let ranges = self.pending_ranges(slot,buffer);
-        let bytes = ranges.iter().map(|(start,end)| (end-start)*4).sum();
+    fn sync_pending(
+        &mut self,
+        render: &RenderClient,
+        slot: usize,
+        buffer: u32,
+    ) -> Result<usize, String> {
+        let ranges = self.pending_ranges(slot, buffer);
+        let bytes = ranges.iter().map(|(start, end)| (end - start) * 4).sum();
         if !ranges.is_empty() {
-            render.write_buffer_f32_ranges(buffer,&self.data,&ranges)?;
+            render.write_buffer_f32_ranges(buffer, &self.data, &ranges)?;
             self.uploaded[slot].clone_from(&self.revisions);
         }
         Ok(bytes)
@@ -180,7 +223,7 @@ impl GeometryUploadCache {
         if slot >= SCENE_FRAME_SLOTS {
             return Err("geometry upload exceeds frame ring".into());
         }
-        self.block_sources=Default::default();
+        self.block_sources = Default::default();
         self.shared_source = None;
         self.update(values);
         let ranges = self.pending_ranges(slot, buffer);
@@ -203,44 +246,60 @@ mod tests {
     }
 
     #[test]
-    fn sparse_snow_mutations_upload_only_changed_vertex_chunks(){
-        let old=vec![1.0;CHUNK_FLOATS*32];
-        let mut new=old.clone();
-        new[CHUNK_FLOATS*5+11]=2.0;
-        new[CHUNK_FLOATS*24+3]=4.0;
-        let regions=dirty_block_ranges(&old,&new);
-        assert_eq!(regions,vec![
-          (CHUNK_FLOATS*5,CHUNK_FLOATS*6),
-          (CHUNK_FLOATS*24,CHUNK_FLOATS*25)
-        ]);
-        assert_eq!(regions.iter().map(|(a,b)|b-a).sum::<usize>(),
-                   CHUNK_FLOATS*2);
-        assert!(dirty_block_ranges(&new,&new).is_empty());
-        assert_eq!(dirty_block_ranges(&[0.0;1],&[2.0;3]),[(0,3)]);
+    fn sparse_snow_mutations_upload_only_changed_vertex_chunks() {
+        let old = vec![1.0; CHUNK_FLOATS * 32];
+        let mut new = old.clone();
+        new[CHUNK_FLOATS * 5 + 11] = 2.0;
+        new[CHUNK_FLOATS * 24 + 3] = 4.0;
+        let regions = dirty_block_ranges(&old, &new);
+        assert_eq!(
+            regions,
+            vec![
+                (CHUNK_FLOATS * 5, CHUNK_FLOATS * 6),
+                (CHUNK_FLOATS * 24, CHUNK_FLOATS * 25)
+            ]
+        );
+        assert_eq!(
+            regions.iter().map(|(a, b)| b - a).sum::<usize>(),
+            CHUNK_FLOATS * 2
+        );
+        assert!(dirty_block_ranges(&new, &new).is_empty());
+        assert_eq!(dirty_block_ranges(&[0.0; 1], &[2.0; 3]), [(0, 3)]);
     }
     #[test]
     fn changing_visibility_tail_keeps_immutable_prefix_in_every_frame_slot() {
-        let prefix: Arc<[f32]>=Arc::from(vec![1.;CHUNK_FLOATS*8]);
-        let tail: Arc<[f32]>=Arc::from([2.;17]);
-        let initial=vec![Arc::clone(&prefix),Arc::clone(&tail)];
-        let mut cache=GeometryUploadCache::default();
+        let prefix: Arc<[f32]> = Arc::from(vec![1.; CHUNK_FLOATS * 8]);
+        let tail: Arc<[f32]> = Arc::from([2.; 17]);
+        let initial = vec![Arc::clone(&prefix), Arc::clone(&tail)];
+        let mut cache = GeometryUploadCache::default();
         for slot in 0..SCENE_FRAME_SLOTS {
-            assert_eq!(cache.pending_blocks(slot,100+slot as u32,&initial),
-                [(0,0),(1,prefix.len())]);
-            cache.block_sources[slot]=Some((100+slot as u32,initial.clone()));
+            assert_eq!(
+                cache.pending_blocks(slot, 100 + slot as u32, &initial),
+                [(0, 0), (1, prefix.len())]
+            );
+            cache.block_sources[slot] = Some((100 + slot as u32, initial.clone()));
         }
-        let changed=vec![Arc::clone(&prefix),Arc::from([3.;34])];
+        let changed = vec![Arc::clone(&prefix), Arc::from([3.; 34])];
         for slot in 0..SCENE_FRAME_SLOTS {
-            assert_eq!(cache.pending_blocks(slot,100+slot as u32,&changed),[(1,prefix.len())]);
+            assert_eq!(
+                cache.pending_blocks(slot, 100 + slot as u32, &changed),
+                [(1, prefix.len())]
+            );
         }
         // Uncommitted writes remain pending after failure.
-        assert_eq!(cache.pending_blocks(0,100,&changed),[(1,prefix.len())]);
-        assert_eq!(cache.pending_blocks(0,200,&changed),[(0,0),(1,prefix.len())]);
-        let shifted=vec![Arc::from([1.;17]),Arc::clone(&tail)];
-        assert_eq!(cache.pending_blocks(0,100,&shifted),[(0,0),(1,17)]);
+        assert_eq!(cache.pending_blocks(0, 100, &changed), [(1, prefix.len())]);
+        assert_eq!(
+            cache.pending_blocks(0, 200, &changed),
+            [(0, 0), (1, prefix.len())]
+        );
+        let shifted = vec![Arc::from([1.; 17]), Arc::clone(&tail)];
+        assert_eq!(cache.pending_blocks(0, 100, &shifted), [(0, 0), (1, 17)]);
         // Retiring the tail also retires its cached contents.
-        cache.block_sources[0]=Some((100,vec![prefix]));
-        assert_eq!(cache.pending_blocks(0,100,&initial),[(1,initial[0].len())]);
+        cache.block_sources[0] = Some((100, vec![prefix]));
+        assert_eq!(
+            cache.pending_blocks(0, 100, &initial),
+            [(1, initial[0].len())]
+        );
     }
 
     #[test]
@@ -249,7 +308,10 @@ mod tests {
         let values = vec![1.0; CHUNK_FLOATS * 3];
         cache.update(&values);
         for slot in 0..SCENE_FRAME_SLOTS {
-            assert_eq!(cache.pending_ranges(slot, 100 + slot as u32), [(0, values.len())]);
+            assert_eq!(
+                cache.pending_ranges(slot, 100 + slot as u32),
+                [(0, values.len())]
+            );
             accept(&mut cache, slot);
         }
         cache.update(&values);
@@ -271,11 +333,16 @@ mod tests {
         values[CHUNK_FLOATS + 7] = 2.0;
         cache.update(&values);
         for slot in 0..SCENE_FRAME_SLOTS {
-            assert_eq!(cache.pending_ranges(slot, 100 + slot as u32),
-                [(CHUNK_FLOATS, CHUNK_FLOATS * 2)]);
+            assert_eq!(
+                cache.pending_ranges(slot, 100 + slot as u32),
+                [(CHUNK_FLOATS, CHUNK_FLOATS * 2)]
+            );
         }
         // A failed/uncommitted write must still be requested next time.
-        assert_eq!(cache.pending_ranges(0, 100), [(CHUNK_FLOATS, CHUNK_FLOATS * 2)]);
+        assert_eq!(
+            cache.pending_ranges(0, 100),
+            [(CHUNK_FLOATS, CHUNK_FLOATS * 2)]
+        );
     }
 
     #[test]

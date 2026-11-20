@@ -100,8 +100,11 @@ pub(super) fn load_shared_weather_gpu_fx() -> Result<Option<WeatherGpuFxResource
         layers.insert(
             name.clone(),
             WeatherGpuFxLayerDesc {
-                particle_count: row.get("runtimeParticleCount").and_then(Value::as_u64)
-                    .and_then(|v| u32::try_from(v).ok()).unwrap_or(match system_type {
+                particle_count: row
+                    .get("runtimeParticleCount")
+                    .and_then(Value::as_u64)
+                    .and_then(|v| u32::try_from(v).ok())
+                    .unwrap_or(match system_type {
                         WeatherGpuFxSystemType::Drop => 1200,
                         WeatherGpuFxSystemType::Mist => 96,
                         WeatherGpuFxSystemType::Ground => 320,
@@ -287,10 +290,16 @@ pub(super) fn load_shared_weather_gpu_fx() -> Result<Option<WeatherGpuFxResource
 
     Ok(Some(WeatherGpuFxResources {
         layers,
-        collision_cell_metres: catalog.pointer("/rain/runtime/collision_cell_metres")
-            .and_then(Value::as_f64).map(|v| v as f32).unwrap_or(4.0),
-        collision_probes_per_frame: catalog.pointer("/rain/runtime/collision_probes_per_frame")
-            .and_then(Value::as_u64).and_then(|v| usize::try_from(v).ok()).unwrap_or(99),
+        collision_cell_metres: catalog
+            .pointer("/rain/runtime/collision_cell_metres")
+            .and_then(Value::as_f64)
+            .map(|v| v as f32)
+            .unwrap_or(4.0),
+        collision_probes_per_frame: catalog
+            .pointer("/rain/runtime/collision_probes_per_frame")
+            .and_then(Value::as_u64)
+            .and_then(|v| usize::try_from(v).ok())
+            .unwrap_or(99),
         textures,
         puddle_layout_texture,
         puddle_normal_textures,

@@ -39,11 +39,11 @@ impl EngineApplication {
                     .filter(|v| !v.trim().is_empty())
             })
             .ok_or_else(|| {
-                format!("script command[{index}] audio.loop.set requires clip (XVAG) or legacy cue")
+                format!("script command[{index}] audio.loop.set requires clip (WAV/XVAG) or legacy cue")
             })?;
-        // Validate before comparing/stopping a currently running loop.
+        // Validate before disrupting any existing playing voice.
         if native_clip.is_some() {
-            newviso_audio_client::normalize_xvag_uri(cue)?;
+            normalize_loopable_audio_clip(cue)?;
         }
         let gain = command
             .get("gain")
@@ -85,7 +85,7 @@ impl EngineApplication {
                 .get("route")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
-            audio.play_xvag(&request)?
+            audio.play(&request)?
         } else {
             // Transitional compatibility: already-authored YSCD projects.
             let address = AssetAddress::parse(cue)?;

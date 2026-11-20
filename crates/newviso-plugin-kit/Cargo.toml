@@ -1,0 +1,10 @@
+[package]
+name = "newviso-plugin-kit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+abi_stable.workspace = true
+serde_json.workspace = true
+newengine-plugin-api = { package = "newviso-plugin-abi", path = "../newviso-plugin-abi" }

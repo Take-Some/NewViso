@@ -42,6 +42,7 @@ pub(crate) struct OrbitCamera {
     pub(crate) distance: f32,
     pub(crate) rotate_sensitivity: f32,
     pub(crate) zoom_sensitivity: f32,
+    pub(crate) zoom_enabled: bool,
     pub(crate) min_distance: f32,
     pub(crate) max_distance: f32,
     pub(crate) min_pitch_degrees: f32,
@@ -64,6 +65,7 @@ impl OrbitCamera {
             // injects it from Shared Assets before the platform becomes live.
             rotate_sensitivity: 0.0,
             zoom_sensitivity: 0.0,
+            zoom_enabled: true,
             min_distance: 0.0,
             max_distance: 0.0,
             min_pitch_degrees: 0.0,
@@ -92,7 +94,7 @@ impl OrbitCamera {
             );
         }
 
-        if wheel_y != 0.0 {
+        if self.zoom_enabled && wheel_y != 0.0 {
             self.distance *= (-wheel_y * self.zoom_sensitivity).exp();
             self.distance = self.distance.clamp(self.min_distance, self.max_distance);
         }

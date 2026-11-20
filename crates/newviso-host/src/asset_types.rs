@@ -160,6 +160,40 @@ mod asset_type_path_tests {
     use super::AssetTypesService;
 
     #[test]
+    fn current_format_registration_gateway_round_trip() {
+        super::ensure_asset_types_registry().expect("asset-types host registry");
+        let registration = serde_json::json!({
+            "descriptor": {
+                "extension": "migration_test_fmt",
+                "priority": 500,
+                "module_id": "test.newviso.formats.migration"
+            }
+        });
+        let received = crate::call_service(
+            "engine.assets.types",
+            "asset.types.register_json_v1",
+            &serde_json::to_vec(&registration).unwrap(),
+        )
+        .expect("host accepted format registration");
+        let response: serde_json::Value = serde_json::from_slice(&received).unwrap();
+        assert_eq!(response["extension"], "migration_test_fmt");
+
+        let query = serde_json::json!({"logical_path": "test/source.migration_test_fmt"});
+        let resolved = crate::call_service(
+            "engine.assets.types",
+            "asset.types.resolve_json_v1",
+            &serde_json::to_vec(&query).unwrap(),
+        )
+        .expect("host asset type resolve");
+        let found: serde_json::Value = serde_json::from_slice(&resolved).unwrap();
+        assert_eq!(found["known"], true);
+        assert_eq!(
+            found["descriptor"]["module_id"],
+            "test.newviso.formats.migration"
+        );
+    }
+
+    #[test]
     fn rsc7_at_sign_inside_basename_keeps_extension() {
         assert_eq!(
             AssetTypesService::extension_from_path("maps/ybn/hi@bh1_06_0.ybn"),

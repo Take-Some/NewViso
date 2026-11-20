@@ -147,24 +147,34 @@ fn invalid_saves_fail_without_overwriting_evidence() {
 }
 
 #[test]
-fn autosave_admission_keeps_snapshots_out_of_ordinary_and_disabled_frames(){
-    let dir=ProjectDir::new();let mut configuration=settings();
-    configuration.autosave_interval_seconds=0.0;
-    let mut startup=WorldStartup::open(&dir.0,"test",&configuration).unwrap();
-    let store=startup.persistence.as_mut().unwrap();
-    let mut snapshots=0;
+fn autosave_admission_keeps_snapshots_out_of_ordinary_and_disabled_frames() {
+    let dir = ProjectDir::new();
+    let mut configuration = settings();
+    configuration.autosave_interval_seconds = 0.0;
+    let mut startup = WorldStartup::open(&dir.0, "test", &configuration).unwrap();
+    let store = startup.persistence.as_mut().unwrap();
+    let mut snapshots = 0;
     for _ in 0..1000 {
-        if store.autosave_due(0.01){snapshots+=1;}
+        if store.autosave_due(0.01) {
+            snapshots += 1;
+        }
     }
-    assert_eq!(snapshots,0,"disabled autosave must not request checkpoint construction");
-    store.settings.autosave_interval_seconds=0.1;store.elapsed_since_attempt=0.0;
+    assert_eq!(
+        snapshots, 0,
+        "disabled autosave must not request checkpoint construction"
+    );
+    store.settings.autosave_interval_seconds = 0.1;
+    store.elapsed_since_attempt = 0.0;
     assert!(!store.autosave_due(0.05));
-    for dt in [0.0,-0.1,f32::NAN,f32::INFINITY] {
+    for dt in [0.0, -0.1, f32::NAN, f32::INFINITY] {
         assert!(!store.autosave_due(dt));
     }
     assert!(store.autosave_due(0.051));
-    assert_eq!(store.elapsed_since_attempt,0.0);
+    assert_eq!(store.elapsed_since_attempt, 0.0);
     assert!(!store.autosave_due(0.01));
     assert!(store.autosave_due(0.5));
-    assert_eq!(store.elapsed_since_attempt,0.0,"a long frame admits one attempt");
+    assert_eq!(
+        store.elapsed_since_attempt, 0.0,
+        "a long frame admits one attempt"
+    );
 }

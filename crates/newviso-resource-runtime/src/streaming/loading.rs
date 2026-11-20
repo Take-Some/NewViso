@@ -161,11 +161,29 @@ impl<S: AssetSource> AssetStreamer<S> {
             })
             .collect::<Vec<_>>();
         candidates.sort_by(|a, b| compare_load_candidates(b, a));
-        candidates
-            .into_iter()
-            .take(limit)
-            .map(|entry| entry.address.clone())
-            .collect()
+        // Multiple @entry requests from one large dictionary share an input
+        // container, but the provider may repeat expensive decompression for
+        // every selector. Keep other independent sources (including collision
+        // geometry) schedulable instead of filling all worker slots with a
+        // single dictionary. This is source-agnostic: never parse YTD/NEF8 here.
+        const MAX_IN_FLIGHT_PER_SOURCE: usize = 2;
+        let mut per_source = HashMap::<&str, usize>::new();
+        for address in &self.in_flight {
+            *per_source.entry(address.logical_path()).or_default() += 1;
+        }
+        let mut selected = Vec::with_capacity(limit);
+        for entry in candidates {
+            let active = per_source.entry(entry.address.logical_path()).or_default();
+            if *active >= MAX_IN_FLIGHT_PER_SOURCE {
+                continue;
+            }
+            *active += 1;
+            selected.push(entry.address.clone());
+            if selected.len() == limit {
+                break;
+            }
+        }
+        selected
     }
 
     fn finish_prepared_load(

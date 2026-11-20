@@ -264,11 +264,17 @@ impl Scene3dRuntime {
     }
 
     pub(super) fn warmup_particle_textures_gpu(&mut self) -> Result<(), String> {
-        if self.gpu.is_none() { return Ok(()); }
+        if self.gpu.is_none() {
+            return Ok(());
+        }
         let render = RenderClient::new();
         for (reference, source) in &self.particle_textures {
             if !self.particle_gpu_textures.contains_key(reference) {
-                let handle = upload_sky_texture(&render, &format!("newviso.particle.{}", source.name), source)?;
+                let handle = upload_sky_texture(
+                    &render,
+                    &format!("newviso.particle.{}", source.name),
+                    source,
+                )?;
                 self.particle_gpu_textures.insert(reference.clone(), handle);
             }
         }
@@ -306,7 +312,7 @@ impl Scene3dRuntime {
                 handle
             };
             let uniform_buffer =
-                render.create_buffer("newviso.particle.material", 48, "Uniform", "CpuToGpu")?;
+                render.create_buffer("newviso.particle.material", 80, "Uniform", "CpuToGpu")?;
             // Particle bit selects unlit textured shading in the scene shader.
             let params = [
                 0.0,
@@ -321,6 +327,8 @@ impl Scene3dRuntime {
                 key.1 as f32,
                 0.0,
                 0.0,
+                1.0, 0.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 0.0,
             ];
             render.write_buffer_f32(uniform_buffer, 0, &params)?;
             let bind_group = match render.create_bind_group6(
@@ -335,7 +343,7 @@ impl Scene3dRuntime {
                     None,
                 ],
                 Some(gpu.material_sampler),
-                Some((uniform_buffer, 0, 48)),
+                Some((uniform_buffer, 0, 80)),
             ) {
                 Ok(value) => value,
                 Err(error) => {

@@ -67,12 +67,7 @@ impl Scene3dRuntime {
         }
         .validate()?;
 
-        let existing = self
-            .runtime_entity_ids
-            .get(key)
-            .copied()
-            .map(SceneEntityId)
-            .or_else(|| self.world.entity_id_by_name(key));
+        let existing = self.live_runtime_entity_id(key);
 
         let id = if let Some(id) = existing {
             if let Some(entity) = self.world.entity(id) {
@@ -128,12 +123,7 @@ impl Scene3dRuntime {
             return Err("invalid generic SkyVisualDesc parameters".to_owned());
         }
 
-        let existing = self
-            .runtime_entity_ids
-            .get(key)
-            .copied()
-            .map(SceneEntityId)
-            .or_else(|| self.world.entity_id_by_name(key));
+        let existing = self.live_runtime_entity_id(key);
 
         let id = if let Some(id) = existing {
             let entity = self

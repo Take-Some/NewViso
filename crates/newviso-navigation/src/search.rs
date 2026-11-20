@@ -159,6 +159,15 @@ impl NavigationRuntime {
             };
         }
 
+        // A discounted off-mesh traversal may be cheaper than straight-line
+        // distance. Scale the heuristic by the lowest enabled traversal cost
+        // so A* does not terminate at a higher-cost route first.
+        let heuristic_scale = self
+            .links
+            .values()
+            .filter(|link| link.enabled)
+            .map(|link| link.cost_scale)
+            .fold(1.0_f32, f32::min);
         let mut open = BinaryHeap::new();
         let mut came_from = BTreeMap::<u64, u64>::new();
         let mut chosen = BTreeMap::<u64, Portal>::new();
@@ -166,10 +175,7 @@ impl NavigationRuntime {
         let mut closed = BTreeSet::new();
         open.push(HeapNode {
             id: start_id,
-            f: distance(
-                self.polygons[&start_id].centroid,
-                self.polygons[&end_id].centroid,
-            ),
+            f: distance(request.start, request.end) * heuristic_scale,
         });
 
         while let Some(current) = open.pop() {
@@ -260,7 +266,11 @@ impl NavigationRuntime {
                     came_from.insert(next.id, current.id);
                     chosen.insert(next.id, portal.clone());
                     g.insert(next.id, tentative);
-                    let h = distance(next.centroid, self.polygons[&end_id].centroid);
+                    let h = if next.id == end_id {
+                        0.0
+                    } else {
+                        distance(next.centroid, request.end) * heuristic_scale
+                    };
                     open.push(HeapNode {
                         id: next.id,
                         f: tentative + h,
